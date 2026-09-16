@@ -11,6 +11,7 @@ const SHELL = [
   "./index.html",
   "./tools/terminal.html",
   "./tools/dfuupdate.html",
+  "./tools/i2cdebug.html",
   "./pressure/",
   "./pressure/index.html",
   "./pressure/mlx90835.html",

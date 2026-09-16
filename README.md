@@ -65,6 +65,16 @@ For a board that is connected but should not be flashed, **Disconnect** releases
 leaves it in DFU mode, and **Run Application** performs the DfuSe leave sequence at the application
 base so the firmware starts.
 
+## I2C Debug
+
+`tools/i2cdebug.html` is for the case where a sensor simply does not answer. It scans every
+address three ways — a plain read, a 16-bit register read and a one-byte SMBus command — because
+a part that refuses one shape may answer another, and a scan that only tries one walks past a
+working sensor. It can hold SCL or SDA at a level so someone can measure at the chip's own pins,
+and it can repeat one transaction indefinitely to give a scope or logic analyser a stable
+trigger, which is how you see whether the slave acknowledges on the ninth clock. There is also a
+raw SCPI box for everything else.
+
 ## Pressure
 
 `pressure/index.html` lists the sensors and `pressure/mlx90835.html` is the readout: an MLX90835
@@ -139,6 +149,7 @@ index.html            frontpage and install prompt
 tools/
   terminal.html         SCPI terminal markup
   dfuupdate.html        DFU updater, self-contained
+  i2cdebug.html         I2C bench debugger — scan, line control, scope stimulus
 css/
   style.css             terminal and frontpage styles
   theme.css             shared Bootstrap theme

@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="I2C bench debugger for the Melexis IO board — scan the bus, drive the lines by hand, and hammer one address for a scope trigger.">
+  <title>I2C Debug</title>
+  <meta name="theme-color" content="#0b0e17">
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+  <link rel="manifest" href="../manifest.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
+  <link href="../css/theme.css" rel="stylesheet">
+  <style>
+    body { min-height: 100vh; }
+    .shell { width: min(1100px, calc(100vw - 32px)); margin: 32px auto; }
+
+    .home-link {
+      display: inline-flex; align-items: center; gap: 6px;
+      margin-bottom: 6px; padding: 4px 10px 4px 6px;
+      border-radius: var(--mx-radius); color: var(--mx-text-muted);
+      font-size: .75rem; font-weight: 500; text-decoration: none;
+      transition: color 140ms ease, background 140ms ease;
+    }
+    .home-link svg { width: 14px; height: 14px; flex-shrink: 0; }
+    .home-link:hover { color: var(--mx-text); background: var(--mx-surface); }
+
+    .top-toolbar {
+      display: flex; align-items: flex-end; justify-content: space-between;
+      flex-wrap: wrap; gap: 12px; margin-bottom: 20px;
+    }
+    .top-toolbar h1 { margin: 0; font-size: clamp(1.6rem, 2.6vw, 2.2rem); }
+    .toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .card { border: 1px solid var(--clr-border); border-radius: var(--radius-lg); background: var(--clr-surface); }
+    .card h2 { margin: 0 0 14px; color: var(--clr-text-muted); font-size: .6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+
+    .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: .8125rem; }
+    .kv dt { color: var(--clr-text-muted); font-weight: 500; }
+    .kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; word-break: break-all; }
+
+    .bus-map { display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 3px; margin-bottom: 14px; }
+    .bus-cell {
+      aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+      border-radius: 4px; border: 1px solid var(--clr-border);
+      background: var(--mx-bg); color: var(--clr-text-dim);
+      font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .625rem;
+    }
+    .bus-cell.is-found { background: var(--mx-accent); border-color: var(--mx-accent); color: #04141a; font-weight: 600; }
+    .bus-cell.is-probing { border-color: var(--mx-accent); color: var(--mx-text); }
+
+    .results { width: 100%; font-size: .8125rem; border-collapse: collapse; }
+    .results th { color: var(--clr-text-muted); font-size: .6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; padding: 0 10px 6px; text-align: left; }
+    .results td { padding: 6px 10px; border-top: 1px solid var(--clr-border); font-family: 'JetBrains Mono', ui-monospace, monospace; }
+    .results td.ok { color: var(--mx-accent); }
+    .results td.no { color: var(--clr-text-dim); }
+
+    .lines { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .line-box { border: 1px solid var(--clr-border); border-radius: var(--mx-radius); padding: 10px; }
+    .line-box h3 { margin: 0 0 8px; font-size: .8125rem; font-weight: 600; }
+    .line-state { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 1.25rem; }
+
+    .log {
+      margin: 0; padding: 10px 12px; max-height: 260px; overflow: auto;
+      border-radius: var(--mx-radius); background: var(--mx-bg);
+      color: var(--clr-text-muted); font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: .6875rem; line-height: 1.55; white-space: pre-wrap;
+    }
+    .console-input { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <a class="home-link" href="../index.html">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 12H5M12 19l-7-7 7-7"/>
+      </svg>
+      Home
+    </a>
+
+    <div class="top-toolbar">
+      <div>
+        <h1 class="fw-bold">I2C Debug</h1>
+        <div class="text-secondary" style="font-size:.8125rem">Find out why a sensor is not answering</div>
+      </div>
+      <div class="toolbar-actions">
+        <button id="btnConnect" class="btn btn-sm btn-primary">Connect</button>
+        <button id="btnDisconnect" class="btn btn-sm btn-outline-secondary" disabled>Disconnect</button>
+      </div>
+    </div>
+
+    <div class="row g-3">
+      <div class="col-12 col-lg-8">
+        <div class="card mb-3">
+          <div class="card-body">
+            <h2>Scan</h2>
+            <div id="busMap" class="bus-map"></div>
+            <div class="d-flex gap-2 align-items-end flex-wrap mb-2">
+              <div>
+                <label class="form-label" for="scanSpeed" style="font-size:.75rem">Bus speed</label>
+                <select id="scanSpeed" class="form-select form-select-sm" style="width:auto">
+                  <option value="100k">100 kHz</option>
+                  <option value="400k" selected>400 kHz</option>
+                  <option value="1000k">1 MHz</option>
+                  <option value="all">all three</option>
+                </select>
+              </div>
+              <button id="btnScan" class="btn btn-sm btn-outline-secondary" disabled>Scan</button>
+            </div>
+            <table class="results">
+              <thead>
+                <tr><th>Address</th><th>Plain read</th><th>16-bit register</th><th>SMBus command</th></tr>
+              </thead>
+              <tbody id="scanBody"></tbody>
+            </table>
+            <div id="scanNote" class="text-secondary" style="font-size:.75rem; padding-top:8px">
+              Every address is tried three ways, because a part that refuses one shape may answer
+              another: a plain address-only read, a 16-bit register read as the array sensors want,
+              and a one-byte command read as SMBus parts want. An address is listed if any of the
+              three is acknowledged.
+            </div>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-body">
+            <h2>Lines</h2>
+            <div class="lines">
+              <div class="line-box">
+                <h3>SCL</h3>
+                <div class="d-flex gap-2 align-items-center">
+                  <button id="sclHigh" class="btn btn-sm btn-outline-secondary" disabled>High</button>
+                  <button id="sclLow" class="btn btn-sm btn-outline-secondary" disabled>Low</button>
+                  <span id="sclState" class="line-state ms-auto">—</span>
+                </div>
+              </div>
+              <div class="line-box">
+                <h3>SDA</h3>
+                <div class="d-flex gap-2 align-items-center">
+                  <button id="sdaHigh" class="btn btn-sm btn-outline-secondary" disabled>High</button>
+                  <button id="sdaLow" class="btn btn-sm btn-outline-secondary" disabled>Low</button>
+                  <span id="sdaState" class="line-state ms-auto">—</span>
+                </div>
+              </div>
+            </div>
+            <div class="d-flex gap-2 mt-2">
+              <button id="btnRead" class="btn btn-sm btn-outline-secondary" disabled>Read both</button>
+              <button id="btnRelease" class="btn btn-sm btn-outline-secondary" disabled>Release to I2C</button>
+            </div>
+            <div class="text-secondary mt-2" style="font-size:.75rem; line-height:1.6">
+              Drives the connector pins as plain outputs so a line can be held while somebody
+              measures at the chip's own pins. A line that stays high at the chip while held low
+              here is not connected. The bus is unusable until released — and a held line blocks
+              every device on it, so release before scanning.
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <h2>Stimulus</h2>
+            <div class="d-flex gap-2 align-items-end flex-wrap">
+              <div>
+                <label class="form-label" for="stimAddr" style="font-size:.75rem">Address</label>
+                <input id="stimAddr" class="form-control form-control-sm console-input" style="width:7rem" value="0x3A">
+              </div>
+              <div>
+                <label class="form-label" for="stimInterval" style="font-size:.75rem">Every</label>
+                <select id="stimInterval" class="form-select form-select-sm" style="width:auto">
+                  <option value="20">20 ms</option>
+                  <option value="50" selected>50 ms</option>
+                  <option value="200">200 ms</option>
+                  <option value="1000">1 s</option>
+                </select>
+              </div>
+              <button id="btnStim" class="btn btn-sm btn-outline-secondary" disabled>Start</button>
+              <span id="stimCount" class="text-secondary ms-auto" style="font-size:.8125rem">—</span>
+            </div>
+            <div class="text-secondary mt-2" style="font-size:.75rem; line-height:1.6">
+              Repeats one identical transaction so a scope or logic analyser has a stable trigger.
+              Watch the ninth clock: the slave pulls SDA low there to acknowledge, and a line that
+              stays high is a part that is not answering.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-lg-4">
+        <div class="card mb-3">
+          <div class="card-body">
+            <h2>Board</h2>
+            <dl class="kv">
+              <dt>Status</dt><dd><span id="badgeConn" class="badge text-bg-secondary">Disconnected</span></dd>
+              <dt>Board</dt><dd id="infoBoard">—</dd>
+              <dt>Firmware</dt><dd id="infoFirmware">—</dd>
+              <dt>Supply</dt><dd id="infoVdd">—</dd>
+            </dl>
+            <label class="form-label mt-3" for="vddRail" style="font-size:.75rem">SPI supply rail</label>
+            <select id="vddRail" class="form-select form-select-sm" disabled>
+              <option value="">(leave as is)</option>
+              <option value=":VDD:3V3">3.3 V</option>
+              <option value=":VDD:5V">5 V (USB Vbus)</option>
+              <option value=":VDD:OFF">Off</option>
+            </select>
+            <div class="form-text" style="font-size:.6875rem">
+              This rail feeds the SPI side. The I2C connector is powered independently, so a
+              silent I2C part is never explained by this setting.
+            </div>
+            <button id="btnInfo" class="btn btn-sm btn-outline-secondary mt-3" disabled>Bus settings</button>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-body">
+            <h2>Send</h2>
+            <div class="d-flex gap-2">
+              <input id="cmdInput" class="form-control form-control-sm console-input" placeholder="*IDN?" disabled>
+              <button id="btnSend" class="btn btn-sm btn-outline-secondary" disabled>Send</button>
+            </div>
+            <div class="form-text" style="font-size:.6875rem">
+              Any SCPI command, verbatim. Up and down recall what was sent before.
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <h2>Log</h2>
+            <pre id="log" class="log"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+  (() => {
+    "use strict";
+
+    const FIRST_ADDR = 0x08, LAST_ADDR = 0x77;
+    const PROBE_TIMEOUT = 600;
+
+    const els = id => document.getElementById(id);
+    const ui = {
+      btnConnect: els("btnConnect"), btnDisconnect: els("btnDisconnect"),
+      badgeConn: els("badgeConn"), log: els("log"),
+      infoBoard: els("infoBoard"), infoFirmware: els("infoFirmware"), infoVdd: els("infoVdd"),
+      vddRail: els("vddRail"), btnInfo: els("btnInfo"),
+      busMap: els("busMap"), scanBody: els("scanBody"), btnScan: els("btnScan"), scanSpeed: els("scanSpeed"),
+      sclHigh: els("sclHigh"), sclLow: els("sclLow"), sclState: els("sclState"),
+      sdaHigh: els("sdaHigh"), sdaLow: els("sdaLow"), sdaState: els("sdaState"),
+      btnRead: els("btnRead"), btnRelease: els("btnRelease"),
+      stimAddr: els("stimAddr"), stimInterval: els("stimInterval"), btnStim: els("btnStim"), stimCount: els("stimCount"),
+      cmdInput: els("cmdInput"), btnSend: els("btnSend"),
+    };
+
+    const state = {
+      port: null, writer: null, reader: null, readLoop: null,
+      rxBuffer: "", waiters: [],
+      cells: new Map(), scanning: false,
+      gpioMode: false, stimulating: false,
+      history: [], historyAt: 0,
+    };
+
+    function log(message) {
+      ui.log.textContent += `[${new Date().toLocaleTimeString()}] ${message}\n`;
+      ui.log.scrollTop = ui.log.scrollHeight;
+    }
+
+    // ---- serial ----
+    function notifyWaiters() {
+      const pending = state.waiters;
+      state.waiters = [];
+      for (const resolve of pending) resolve();
+    }
+
+    function waitForData(timeoutMs) {
+      return new Promise((resolve) => {
+        let done = false;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        state.waiters.push(finish);
+        setTimeout(finish, timeoutMs);
+      });
+    }
+
+    function startReadLoop() {
+      const decoder = new TextDecoder();
+      state.readLoop = (async () => {
+        while (state.port && state.port.readable && state.reader) {
+          try {
+            const { value, done } = await state.reader.read();
+            if (done) break;
+            if (value) { state.rxBuffer += decoder.decode(value, { stream: true }); notifyWaiters(); }
+          } catch { break; }
+        }
+        notifyWaiters();
+      })();
+    }
+
+    const PROMPT_RE = /(?:^|\r?\n)\((\w+)\)>\s*$/;
+
+    async function scpi(command, timeoutMs = 3000) {
+      if (!state.writer) throw new Error("Not connected.");
+      state.rxBuffer = "";
+      await state.writer.write(new TextEncoder().encode(command + "\n"));   // LF only
+
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const match = state.rxBuffer.match(PROMPT_RE);
+        if (match) {
+          const payload = state.rxBuffer.slice(0, match.index);
+          if (match[1] !== "OK") throw new Error(`${command.split(" ")[0]} → (${match[1]})`);
+          return payload.trim();
+        }
+        await waitForData(15);
+      }
+      throw new Error(`Timed out waiting for a reply to ${command.split(" ")[0]}`);
+    }
+
+    const tried = async (command, timeoutMs = PROBE_TIMEOUT) => {
+      try { return { ok: true, data: await scpi(command, timeoutMs) }; }
+      catch (error) { return { ok: false, data: error.message }; }
+    };
+
+    const hex = n => "0x" + n.toString(16).toUpperCase();
+    const hex2 = n => "0x" + n.toString(16).toUpperCase().padStart(2, "0");
+
+    function parseAddress(value) {
+      const parsed = parseInt(String(value).trim().replace(/^0x/i, ""), 16);
+      return Number.isInteger(parsed) && parsed >= 0x00 && parsed <= 0x7F ? parsed : null;
+    }
+
+    // ---- board ----
+    async function readIdentity() {
+      const reply = await tried("*IDN?", 2000);
+      if (!reply.ok) { ui.infoBoard.textContent = "unknown"; return; }
+      const line = reply.data.split(/\r?\n/).find(l => l.trim()) ?? "";
+      log(`*IDN? ${line}`);
+      const fields = line.split(",").map(f => f.trim());
+      if (fields.length < 4) { ui.infoBoard.textContent = line || "—"; return; }
+
+      const [branch, build] = (fields[4] ?? "").split("/");
+      const date = (fields[5] ?? "").split("T")[0];
+      const version = [];
+      if (fields[3]) version.push(fields[3]); else if (branch) version.push(branch);
+      if (build && build !== ".") version.push(build);
+      if (date) version.push(date);
+
+      ui.infoBoard.textContent = fields[1];
+      ui.infoFirmware.textContent = version.join(" · ") || "unversioned";
+      ui.infoFirmware.title = line;
+    }
+
+    async function readVdd() {
+      const reply = await tried(":VDD?", 1500);
+      ui.infoVdd.textContent = reply.ok ? (reply.data.split(/\r?\n/)[0] || "—") : "—";
+    }
+
+    // ---- scan ----
+    function buildBusMap() {
+      ui.busMap.replaceChildren();
+      state.cells.clear();
+      for (let addr = FIRST_ADDR; addr <= LAST_ADDR; addr++) {
+        const cell = document.createElement("div");
+        cell.className = "bus-cell";
+        cell.textContent = addr.toString(16).toUpperCase().padStart(2, "0");
+        cell.title = hex2(addr);
+        ui.busMap.append(cell);
+        state.cells.set(addr, cell);
+      }
+    }
+
+    function addScanRow(addr, plain, reg, smbus) {
+      const row = document.createElement("tr");
+      const cell = (text, ok) => {
+        const td = document.createElement("td");
+        td.className = ok ? "ok" : "no";
+        td.textContent = text;
+        return td;
+      };
+      const addrCell = document.createElement("td");
+      addrCell.textContent = hex2(addr);
+      row.append(addrCell,
+        cell(plain.ok ? "ACK" : "—", plain.ok),
+        cell(reg.ok ? `ACK ${reg.data}` : "—", reg.ok),
+        cell(smbus.ok ? `ACK ${smbus.data}` : "—", smbus.ok));
+      ui.scanBody.append(row);
+    }
+
+    async function scanAt(speed) {
+      await scpi(`:I2C:FREQuency ${speed}`);
+      log(`Scanning at ${speed}.`);
+      let found = 0;
+      for (let addr = FIRST_ADDR; addr <= LAST_ADDR && state.scanning; addr++) {
+        const cell = state.cells.get(addr);
+        if (cell) cell.className = "bus-cell is-probing";
+
+        const plain = await tried(`:I2C:ReaD ${hex(addr)},1`);
+        const reg = plain.ok ? { ok: false, data: "" } : await tried(`:I2C:MemReaD ${hex(addr)},0x240B,2,2`);
+        const smbus = (plain.ok || reg.ok) ? { ok: false, data: "" } : await tried(`:I2C:MemReaD ${hex(addr)},0x06,1,3`);
+
+        if (plain.ok || reg.ok || smbus.ok) {
+          found += 1;
+          if (cell) cell.className = "bus-cell is-found";
+          addScanRow(addr, plain, reg, smbus);
+          log(`${hex2(addr)} answered at ${speed}.`);
+        } else if (cell) {
+          cell.className = "bus-cell";
+        }
+      }
+      log(`${speed}: ${found} device${found === 1 ? "" : "s"}.`);
+      return found;
+    }
+
+    async function scan() {
+      if (state.scanning) return;
+      if (state.gpioMode) { log("The lines are held as GPIO; release them first."); return; }
+      state.scanning = true;
+      ui.btnScan.disabled = true;
+      ui.scanBody.replaceChildren();
+      buildBusMap();
+      try {
+        await scpi(":I2C:INIT");
+        const speeds = ui.scanSpeed.value === "all" ? ["100k", "400k", "1000k"] : [ui.scanSpeed.value];
+        let total = 0;
+        for (const speed of speeds) total += await scanAt(speed);
+        if (total === 0) {
+          log("Nothing acknowledged. With signals present at the connector this means the part "
+            + "is not answering: check the wiring to its pins, then the part itself.");
+        }
+      } catch (error) {
+        log(`Scan failed: ${error.message}`);
+      } finally {
+        state.scanning = false;
+        ui.btnScan.disabled = !state.port;
+      }
+    }
+
+    // ---- lines ----
+    async function enterGpio() {
+      if (state.gpioMode) return;
+      await scpi(":I2C:DEINIT");
+      await scpi(":CON:SCL:GPIO:INIT:OUT");
+      await scpi(":CON:SDA:GPIO:INIT:OUT");
+      state.gpioMode = true;
+      log("Lines taken over as GPIO; the bus is out of service until released.");
+    }
+
+    async function driveLine(line, level) {
+      try {
+        await enterGpio();
+        await scpi(`:CON:${line}:GPIO ${level}`);
+        (line === "SCL" ? ui.sclState : ui.sdaState).textContent = String(level);
+        log(`${line} driven ${level ? "high" : "low"}.`);
+      } catch (error) {
+        log(`Could not drive ${line}: ${error.message}`);
+      }
+    }
+
+    async function readLines() {
+      try {
+        if (state.gpioMode) {
+          await scpi(":CON:SCL:GPIO:DEINIT");
+          await scpi(":CON:SDA:GPIO:DEINIT");
+        }
+        await scpi(":CON:SCL:GPIO:INIT:IN");
+        await scpi(":CON:SDA:GPIO:INIT:IN");
+        state.gpioMode = true;
+        const scl = await scpi(":CON:SCL:GPIO?");
+        const sda = await scpi(":CON:SDA:GPIO?");
+        ui.sclState.textContent = scl.trim() || "?";
+        ui.sdaState.textContent = sda.trim() || "?";
+        log(`Lines read: SCL ${scl.trim()}, SDA ${sda.trim()}.`);
+      } catch (error) {
+        log(`Could not read the lines: ${error.message}`);
+      }
+    }
+
+    async function releaseLines() {
+      try {
+        await scpi(":CON:SCL:GPIO:DEINIT");
+        await scpi(":CON:SDA:GPIO:DEINIT");
+        await scpi(":I2C:INIT");
+        state.gpioMode = false;
+        ui.sclState.textContent = "—";
+        ui.sdaState.textContent = "—";
+        log("Lines released, I2C back up.");
+      } catch (error) {
+        log(`Release failed: ${error.message}`);
+      }
+    }
+
+    // ---- stimulus ----
+    async function stimulusLoop(addr, interval) {
+      let sent = 0, acked = 0;
+      while (state.stimulating) {
+        const reply = await tried(`:I2C:ReaD ${hex(addr)},1`, 400);
+        sent += 1;
+        if (reply.ok) acked += 1;
+        ui.stimCount.textContent = `${sent} sent · ${acked} acknowledged`;
+        await new Promise(resolve => setTimeout(resolve, interval));
+      }
+      log(`Stimulus stopped: ${acked} of ${sent} acknowledged.`);
+    }
+
+    function toggleStimulus() {
+      if (state.stimulating) {
+        state.stimulating = false;
+        ui.btnStim.textContent = "Start";
+        return;
+      }
+      const addr = parseAddress(ui.stimAddr.value);
+      if (addr === null) { log("Address must be 7-bit hex, 0x00 to 0x7F."); return; }
+      if (state.gpioMode) { log("The lines are held as GPIO; release them first."); return; }
+      state.stimulating = true;
+      ui.btnStim.textContent = "Stop";
+      log(`Repeating a one-byte read of ${hex2(addr)} every ${ui.stimInterval.value} ms.`);
+      stimulusLoop(addr, Number(ui.stimInterval.value));
+    }
+
+    // ---- connection ----
+    function setConnected(connected) {
+      ui.badgeConn.className = connected ? "badge text-bg-success" : "badge text-bg-secondary";
+      ui.badgeConn.textContent = connected ? "Connected" : "Disconnected";
+      ui.btnConnect.disabled = connected;
+      ui.btnDisconnect.disabled = !connected;
+      for (const el of [ui.btnScan, ui.sclHigh, ui.sclLow, ui.sdaHigh, ui.sdaLow,
+                        ui.btnRead, ui.btnRelease, ui.btnStim, ui.btnInfo,
+                        ui.cmdInput, ui.btnSend, ui.vddRail]) {
+        el.disabled = !connected;
+      }
+      if (!connected) {
+        ui.infoBoard.textContent = "—";
+        ui.infoFirmware.textContent = "—";
+        ui.infoVdd.textContent = "—";
+        ui.stimCount.textContent = "—";
+      }
+    }
+
+    const PORT_KEY = "melexisio.port";
+
+    function rememberPort(port) {
+      const info = port && port.getInfo ? port.getInfo() : {};
+      if (!Number.isInteger(info.usbVendorId) || !Number.isInteger(info.usbProductId)) return;
+      try {
+        localStorage.setItem(PORT_KEY, `${info.usbVendorId.toString(16)}:${info.usbProductId.toString(16)}`);
+      } catch { /* storage unavailable */ }
+    }
+
+    async function authorisedPort() {
+      if (!("serial" in navigator)) return null;
+      let ports;
+      try { ports = await navigator.serial.getPorts(); } catch { return null; }
+      if (ports.length === 0) return null;
+      if (ports.length === 1) return ports[0];
+
+      let vid = NaN, pid = NaN;
+      try {
+        const [v, p] = (localStorage.getItem(PORT_KEY) ?? "").split(":");
+        vid = parseInt(v, 16); pid = parseInt(p, 16);
+      } catch { /* storage unavailable */ }
+      if (!Number.isInteger(vid)) return null;
+      const matches = ports.filter((port) => {
+        const info = port.getInfo();
+        return info.usbVendorId === vid && info.usbProductId === pid;
+      });
+      return matches.length === 1 ? matches[0] : null;
+    }
+
+    async function connect(existingPort) {
+      if (!("serial" in navigator)) {
+        log("Web Serial is unavailable. Use Chrome, Edge or Opera over https:// or http://localhost.");
+        return;
+      }
+      try {
+        state.port = existingPort ?? await authorisedPort() ?? await navigator.serial.requestPort();
+        await state.port.open({ baudRate: 115200 });
+        state.writer = state.port.writable.getWriter();
+        state.reader = state.port.readable.getReader();
+        startReadLoop();
+        rememberPort(state.port);
+        setConnected(true);
+        log("Serial port open.");
+
+        await readIdentity();
+        await scpi(":I2C:INIT");
+        await readVdd();
+        log("I2C initialised.");
+      } catch (error) {
+        if (error && error.name === "NotFoundError") log("Port selection cancelled.");
+        else log(`Connect failed: ${error.message}`);
+        await disconnect();
+      }
+    }
+
+    async function disconnect() {
+      state.scanning = false;
+      state.stimulating = false;
+      ui.btnStim.textContent = "Start";
+
+      if (state.reader) { try { await state.reader.cancel(); } catch { /* gone */ } }
+      if (state.readLoop) { try { await state.readLoop; } catch { /* reported */ } state.readLoop = null; }
+      if (state.reader) { try { state.reader.releaseLock(); } catch { /* released */ } state.reader = null; }
+      if (state.writer) { try { state.writer.releaseLock(); } catch { /* released */ } state.writer = null; }
+      if (state.port) { try { await state.port.close(); } catch { /* closed */ } state.port = null; }
+
+      state.rxBuffer = "";
+      state.gpioMode = false;
+      setConnected(false);
+    }
+
+    ui.btnConnect.addEventListener("click", () => connect());
+    ui.btnDisconnect.addEventListener("click", disconnect);
+    ui.btnScan.addEventListener("click", scan);
+    ui.sclHigh.addEventListener("click", () => driveLine("SCL", 1));
+    ui.sclLow.addEventListener("click", () => driveLine("SCL", 0));
+    ui.sdaHigh.addEventListener("click", () => driveLine("SDA", 1));
+    ui.sdaLow.addEventListener("click", () => driveLine("SDA", 0));
+    ui.btnRead.addEventListener("click", readLines);
+    ui.btnRelease.addEventListener("click", releaseLines);
+    ui.btnStim.addEventListener("click", toggleStimulus);
+    ui.btnInfo.addEventListener("click", async () => {
+      const reply = await tried(":I2C:INFO", 2000);
+      log(reply.ok ? `:I2C:INFO\n${reply.data}` : `:I2C:INFO failed: ${reply.data}`);
+    });
+    ui.vddRail.addEventListener("change", async () => {
+      if (!ui.vddRail.value) return;
+      const reply = await tried(ui.vddRail.value, 2000);
+      log(reply.ok ? `${ui.vddRail.value} applied.` : `${ui.vddRail.value} failed: ${reply.data}`);
+      await readVdd();
+    });
+
+    async function sendCommand() {
+      const command = ui.cmdInput.value.trim();
+      if (!command) return;
+      state.history.push(command);
+      state.historyAt = state.history.length;
+      ui.cmdInput.value = "";
+      const reply = await tried(command, 4000);
+      log(reply.ok ? `> ${command}\n${reply.data || "(no data)"}` : `> ${command}\n${reply.data}`);
+    }
+
+    ui.btnSend.addEventListener("click", sendCommand);
+    ui.cmdInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { sendCommand(); return; }
+      if (event.key === "ArrowUp" && state.historyAt > 0) {
+        state.historyAt -= 1;
+        ui.cmdInput.value = state.history[state.historyAt] ?? "";
+      }
+      if (event.key === "ArrowDown" && state.historyAt < state.history.length - 1) {
+        state.historyAt += 1;
+        ui.cmdInput.value = state.history[state.historyAt] ?? "";
+      }
+    });
+
+    window.addEventListener("beforeunload", () => { disconnect(); });
+
+    buildBusMap();
+    setConnected(false);
+
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("../service-worker.js").catch(() => {
+          /* Offline support is optional; the page works without it. */
+        });
+      });
+    }
+  })();
+  </script>
+</body>
+</html>
