@@ -617,7 +617,15 @@
     const hex = n => "0x" + n.toString(16).toUpperCase();
 
     /* <count> is in bytes, so a word count doubles. */
-    async function memRead(address, words, into, offset = 0, timeoutMs = 5000) {
+    /* One retry before giving up. These reads are long — a whole frame is over a
+     * kilobyte of hex — and a single transfer that loses arbitration or hits a
+     * glitch otherwise ends the stream with an error message, when repeating it
+     * almost always succeeds. Only the read is repeated; nothing is written, so
+     * a second attempt cannot disturb the sensor.
+     *
+     * Do not extend this to the data-ready wait: that one is meant to time out.
+     */
+    async function memReadOnce(address, words, into, offset = 0, timeoutMs = 5000) {
       const payload = await scpi(`:I2C:MemReaD ${hex(state.slave)},${hex(address)},2,${words * 2}`, timeoutMs);
       const bytes = payload.split(",");
       if (bytes.length < words * 2) {
@@ -628,6 +636,15 @@
         out[offset + i] = (parseInt(bytes[i * 2], 16) << 8) | parseInt(bytes[i * 2 + 1], 16);
       }
       return out;
+    }
+
+    async function memRead(address, words, into, offset = 0, timeoutMs = 5000) {
+      try {
+        return await memReadOnce(address, words, into, offset, timeoutMs);
+      } catch (error) {
+        log(`Read at ${hex(address)} failed (${error.message}); retrying once.`);
+        return memReadOnce(address, words, into, offset, timeoutMs);
+      }
     }
 
     async function memWrite(address, word) {

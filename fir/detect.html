@@ -366,12 +366,13 @@
         tried.push(`0x800D = 0x${word(ctrl)}, status 0x8000 = 0x${word(status)}`);
       } catch { tried.push("0x800D unreadable"); }
 
-      /* MLX90614 — SMBus, so it answers a command byte rather than a 16-bit
-       * register address, and every reply carries a PEC checksum. A correct PEC
-       * over a plausible ambient temperature is a signature nothing else here
-       * produces by accident. */
+      /* MLX90614 — SMBus, so it answers a one-byte command rather than a 16-bit
+       * register address, and every reply carries a PEC checksum. The read needs
+       * a repeated start, which MemReaD with a 1-byte address does and EXCHange
+       * does not. A correct PEC over a plausible ambient temperature is a
+       * signature nothing else here produces by accident. */
       try {
-        const reply = await scpi(`:I2C:EXCHange ${hex(addr)},3,0x06`, PROBE_TIMEOUT);
+        const reply = await scpi(`:I2C:MemReaD ${hex(addr)},0x06,1,3`, PROBE_TIMEOUT);
         const [lsb, msb, received] = reply.split(",").filter(b => b.trim()).map(b => parseInt(b, 16));
         const expected = pec([addr << 1, 0x06, (addr << 1) | 1, lsb, msb]);
         const raw = (msb << 8) | lsb;
@@ -542,6 +543,15 @@
       // acknowledge its address makes the board return a non-OK status.
       try {
         await scpi(`:I2C:ReaD ${hex(addr)},1`, PROBE_TIMEOUT);
+        return true;
+      } catch { /* an SMBus part refuses this; try its own shape below */ }
+
+      /* An MLX90614 does not acknowledge a read with no command byte, so the
+       * probe above walks straight past it. Asking for its ambient temperature
+       * is still a read — nothing is written to the device — and any part that
+       * answers it is worth listing. */
+      try {
+        await scpi(`:I2C:MemReaD ${hex(addr)},0x06,1,3`, PROBE_TIMEOUT);
         return true;
       } catch {
         return false;

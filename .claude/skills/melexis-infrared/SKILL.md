@@ -188,6 +188,10 @@ sets the achievable frame rate. Before building the UI:
   page state what it is.
 - Parse the hex reply without allocating per byte; the terminal's own per-byte rendering
   bug (`app.js`, since fixed) is the cautionary tale.
+- Retry a failed bulk read once before giving up. A frame is over a kilobyte of hex, and a
+  single transfer that glitches otherwise ends the stream with an error when repeating it
+  would have worked. Nothing is written, so a second attempt cannot disturb the sensor — but
+  do not extend the retry to the data-ready wait, which is meant to time out.
 - Measure before optimising the maths. `CalculateTo` over 768 pixels is cheap next to the
   transfer.
 
@@ -216,14 +220,20 @@ Configuration is read-modify-write on single words: refresh rate at `0x11F0` (va
 `0x11F4` (masks `0x0100` and `0x0800`; continuous vs step), I2C settings at `0x11FC`, slave
 address at `0x11FE`.
 
-**One gap to close before building this page.** Its port layer has four transaction types,
-not two (`MLX90642_depends.h`): `MLX90642_I2CRead` for all reads, plus `MLX90642_Config`,
-`MLX90642_I2CCmd` and `MLX90642_WakeUp`. The library only calls those three — their on-wire
-shapes are **not derivable from this source**, they are in the datasheet's communication
-protocol chapter. Reads map onto `:I2C:MemReaD` as usual; the other three have to be
-confirmed against the datasheet or a working port before assuming `:I2C:MemWRite` is the
-right shape. It also supports sleep (`GotoSleep` / `WakeUp` / `IsDeviceBusy`), which the
-other chips do not.
+**Configuration is a block write, not a register poke.** Its port layer has four transaction
+types, not two (`MLX90642_depends.h`): `MLX90642_I2CRead` for all reads, plus
+`MLX90642_Config`, `MLX90642_I2CCmd` and `MLX90642_WakeUp`, and the library never shows what
+those three look like on the wire. They are ordinary **writes with a 16-bit memory address**
+— the same shape as `:I2C:MemWRite <dev>,<reg>,2,<hi>,<lo>` — addressed to a command
+register, and the payload is a **block of six 16-bit words sent in one transaction**,
+carrying the frame rate, a flag field and a clock period. The words go out MSB first, so a
+little-endian host has to swap each one before sending.
+
+That much is established from a working EVB firmware; the field layout inside the six words
+is not, and it is exactly the kind of detail where a wrong bit is silently accepted. Confirm
+against the datasheet's communication chapter before writing configuration from a page.
+Reads map onto `:I2C:MemReaD` as usual. The part also supports sleep (`GotoSleep` / `WakeUp`
+/ `IsDeviceBusy`), which the other chips do not.
 
 ## Page conventions
 
