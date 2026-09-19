@@ -641,6 +641,20 @@
 
     const encoder = new TextEncoder();
     const data = encoder.encode(text);
+
+    /* Echo before writing, not after. Awaiting the write yields to the event
+     * loop and the read loop runs there, so a device that answers immediately
+     * gets the first chunk of its reply on screen before the echo — and the
+     * command appears inside its own response. What the user typed is known
+     * now, and does not depend on the write succeeding. */
+    if (echo) {
+      displayData(data, 'tx');
+    }
+
+    if (logTx) {
+      addLogEntry('tx', data);
+    }
+
     const writer = state.port.writable.getWriter();
 
     try {
@@ -651,14 +665,6 @@
 
     state.txBytes += data.length;
     updateStats();
-
-    if (echo) {
-      displayData(data, 'tx');
-    }
-
-    if (logTx) {
-      addLogEntry('tx', data);
-    }
 
     return data;
   }

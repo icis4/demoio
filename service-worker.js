@@ -9,6 +9,11 @@ const CACHE = "melexis-io-tools-v1";
 const SHELL = [
   "./",
   "./index.html",
+  "./isp/",
+  "./isp/index.html",
+  "./isp/js/dfu.js",
+  "./isp/js/dfuse.js",
+  "./isp/js/firmware-updater.js",
   "./tools/terminal.html",
   "./tools/dfuupdate.html",
   "./tools/i2cdebug.html",

@@ -146,6 +146,7 @@ pages during development, so the cache here is only an offline fallback. If that
 
 ```
 index.html            frontpage and install prompt
+isp/                  MLX9064x Thermal Viewer, copied unchanged from melexis.io
 tools/
   terminal.html         SCPI terminal markup
   dfuupdate.html        DFU updater, self-contained

@@ -10,20 +10,20 @@
   <link rel="manifest" href="../manifest.webmanifest">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet">
   <style>
     :root {
-      --clr-bg:          hsl(225, 30%, 6%);
-      --clr-surface:     hsl(225, 25%, 10%);
-      --clr-border:      hsl(225, 18%, 18%);
-      --clr-text:        hsl(210, 20%, 88%);
-      --clr-text-muted:  hsl(210, 15%, 55%);
-      --clr-text-dim:    hsl(210, 10%, 38%);
-      --clr-accent:      hsl(174, 72%, 52%);
-      --clr-accent-glow: hsla(174, 72%, 52%, .25);
-      --ff-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      --radius-sm: 6px;
-      --radius-lg: 14px;
+      --clr-bg:          #001A24;
+      --clr-surface:     #00293A;
+      --clr-border:      #0A4358;
+      --clr-text:        #EAF1F3;
+      --clr-text-muted:  #B2C4CB;
+      --clr-text-dim:    #7793A0;
+      --clr-accent:      #65BBA9;
+      --clr-accent-glow: rgba(101, 187, 169, .25);
+      --ff-sans: 'Lato', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      --radius-sm: 2px;
+      --radius-lg: 4px;
       --dur-fast: 140ms;
       --ease-out: cubic-bezier(.2, .8, .3, 1);
     }
@@ -50,8 +50,8 @@
       z-index: 0;
       pointer-events: none;
       background-image:
-        linear-gradient(hsla(174, 72%, 52%, .04) 1px, transparent 1px),
-        linear-gradient(90deg, hsla(174, 72%, 52%, .04) 1px, transparent 1px);
+        linear-gradient(rgba(101, 187, 169, .04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(101, 187, 169, .04) 1px, transparent 1px);
       background-size: 40px 40px;
       mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 40%, transparent 100%);
       -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 40%, transparent 100%);
@@ -70,7 +70,7 @@
     }
 
     .bg-glow--1 { top: -220px; left: -140px; }
-    .bg-glow--2 { bottom: -260px; right: -160px; background: hsla(190, 65%, 45%, .18); }
+    .bg-glow--2 { bottom: -260px; right: -160px; background: rgba(44, 109, 127, .18); }
 
     main {
       position: relative;

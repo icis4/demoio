@@ -14,3 +14,6 @@ Thumbs.db
 node_modules/
 npm-debug.log*
 *.log
+
+# WaveForms workspaces saved next to the pages while probing a bus
+*.dwf3work

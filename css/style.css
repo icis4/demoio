@@ -5,32 +5,41 @@
 /* ---- CSS Custom Properties ---- */
 :root {
   /* Colors — Deep Navy / Cyan accent palette */
-  --clr-bg:          hsl(225, 30%, 6%);
-  --clr-surface:     hsl(225, 25%, 10%);
-  --clr-surface-2:   hsl(225, 22%, 14%);
-  --clr-border:      hsl(225, 18%, 18%);
-  --clr-border-subtle: hsl(225, 18%, 14%);
+  /* --- Melexis brand palette, from melexis.io ---
+     royal blue #00354B · electric green #65BBA9 · gold #EEA320 · coral #DB4140
+     charcoal #3E4242 · steel grey #B2C4CB · teal #2C6D7F
+     The suite stays dark — every page here is an instrument UI with canvases,
+     thermal palettes and logs — so the brand hues are carried onto a dark
+     ground derived from the royal blue rather than the site's white. --- */
+  --clr-bg:            #001A24;
+  --clr-surface:       #00293A;
+  --clr-surface-2:     #00354B;
+  --clr-border:        #0A4358;
+  --clr-border-subtle: #04303F;
+  --clr-text:          #EAF1F3;
+  --clr-text-muted:    #B2C4CB;
+  --clr-text-dim:      #7793A0;
+  --clr-accent:        #65BBA9;
+  --clr-accent-dim:    #3B7F72;
+  --clr-accent-glow:   rgba(101, 187, 169, .25);
+  --clr-accent-bg:     rgba(101, 187, 169, .08);
+  --clr-danger:        #DB4140;
+  --clr-danger-dim:    #8A2B2A;
+  --clr-warning:       #EEA320;
+  --clr-success:       #65BBA9;
+  /* The terminal output sits on paper, the way the log does on melexis.io:
+     dark text on a light surface, inside otherwise dark chrome. */
+  --clr-paper:         #FFFFFF;
+  --clr-paper-2:       #EBEBEB;
+  --clr-paper-text:    #00222F;
+  --clr-paper-muted:   rgba(0, 53, 75, .70);
+  --clr-paper-dim:     rgba(0, 53, 75, .45);
 
-  --clr-text:        hsl(210, 20%, 88%);
-  --clr-text-muted:  hsl(210, 15%, 55%);
-  --clr-text-dim:    hsl(210, 10%, 38%);
+  --clr-tx:            #EEA320;
+  --clr-rx:            #65BBA9;
 
-  --clr-accent:      hsl(174, 72%, 52%);
-  --clr-accent-dim:  hsl(174, 60%, 28%);
-  --clr-accent-glow: hsla(174, 72%, 52%, .25);
-  --clr-accent-bg:   hsla(174, 72%, 52%, .08);
-
-  --clr-danger:      hsl(0, 72%, 58%);
-  --clr-danger-dim:  hsl(0, 50%, 35%);
-  --clr-warning:     hsl(38, 92%, 55%);
-  --clr-success:     hsl(142, 64%, 48%);
-
-  --clr-tx:          hsl(38, 92%, 62%);
-  --clr-rx:          hsl(174, 72%, 52%);
-
-  /* Typography */
-  --ff-sans:  'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --ff-mono:  'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
+  --ff-sans: 'Lato', system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Cantarell, 'Noto Sans', 'Helvetica Neue', Arial, sans-serif;
+  --ff-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 
   --fs-xs:   0.6875rem;
   --fs-sm:   0.75rem;
@@ -49,10 +58,10 @@
   --sp-8: 32px;
 
   /* Radii */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 20px;
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
+  --radius-xl: 6px;
 
   /* Shadows */
   --shadow-sm:  0 1px 3px hsla(0,0%,0%,.25);
@@ -102,8 +111,8 @@ a { color: var(--clr-accent); }
   position: fixed;
   inset: 0;
   background-image:
-    linear-gradient(hsla(174,72%,52%,.03) 1px, transparent 1px),
-    linear-gradient(90deg, hsla(174,72%,52%,.03) 1px, transparent 1px);
+    linear-gradient(rgba(101,187,169,.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(101,187,169,.03) 1px, transparent 1px);
   background-size: 60px 60px;
   pointer-events: none;
   z-index: 0;
@@ -119,7 +128,7 @@ a { color: var(--clr-accent); }
 
 .bg-glow--1 {
   width: 500px; height: 500px;
-  background: hsla(174, 72%, 52%, .06);
+  background: rgba(101, 187, 169, .06);
   top: -120px; left: -100px;
   animation: float 20s ease-in-out infinite;
 }
@@ -157,7 +166,7 @@ a { color: var(--clr-accent); }
   justify-content: space-between;
   height: var(--topbar-h);
   padding: 0 var(--sp-5);
-  background: hsla(225, 25%, 10%, .7);
+  background: rgba(0, 41, 58, .7);
   backdrop-filter: blur(18px) saturate(1.6);
   -webkit-backdrop-filter: blur(18px) saturate(1.6);
   border-bottom: 1px solid var(--clr-border-subtle);
@@ -269,13 +278,13 @@ a { color: var(--clr-accent); }
 
 .status-dot--connecting {
   background: var(--clr-warning);
-  box-shadow: 0 0 8px hsla(38, 92%, 55%, .5);
+  box-shadow: 0 0 8px rgba(238, 163, 32, .5);
   animation: pulse 1.2s ease-in-out infinite;
 }
 
 .status-dot--connected {
   background: var(--clr-success);
-  box-shadow: 0 0 8px hsla(142, 64%, 48%, .5);
+  box-shadow: 0 0 8px rgba(101, 187, 169, .5);
 }
 
 @keyframes pulse {
@@ -312,7 +321,7 @@ a { color: var(--clr-accent); }
   flex-direction: column;
   padding: var(--sp-4);
   gap: var(--sp-3);
-  background: hsla(225, 25%, 9%, .65);
+  background: rgba(0, 37, 52, .65);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-right: 1px solid var(--clr-border-subtle);
@@ -514,8 +523,8 @@ a { color: var(--clr-accent); }
 }
 
 .btn--primary {
-  background: linear-gradient(135deg, var(--clr-accent), hsl(190, 65%, 45%));
-  color: hsl(225, 30%, 8%);
+  background: linear-gradient(135deg, var(--clr-accent), #2C6D7F);
+  color: #00222F;
   box-shadow: 0 2px 8px var(--clr-accent-glow);
 }
 
@@ -531,12 +540,12 @@ a { color: var(--clr-accent); }
 }
 
 .btn--primary.btn--danger {
-  background: linear-gradient(135deg, var(--clr-danger), hsl(15, 65%, 50%));
-  box-shadow: 0 2px 8px hsla(0, 72%, 58%, .25);
+  background: linear-gradient(135deg, var(--clr-danger), #CC7A7A);
+  box-shadow: 0 2px 8px rgba(219, 65, 64, .25);
 }
 
 .btn--primary.btn--danger:hover {
-  box-shadow: 0 4px 18px hsla(0, 72%, 58%, .35);
+  box-shadow: 0 4px 18px rgba(219, 65, 64, .35);
 }
 
 .btn--ghost {
@@ -619,12 +628,14 @@ a { color: var(--clr-accent); }
   flex: 1;
   overflow-y: auto;
   padding: var(--sp-4);
+  background: var(--clr-paper);
+  color: var(--clr-paper-text);
   font-family: var(--ff-mono);
   font-size: var(--fs-sm);
   line-height: 1.7;
   scroll-behavior: smooth;
   scrollbar-width: thin;
-  scrollbar-color: var(--clr-border) transparent;
+  scrollbar-color: var(--clr-paper-2) transparent;
 }
 
 .terminal::-webkit-scrollbar {
@@ -646,15 +657,15 @@ a { color: var(--clr-accent); }
   justify-content: center;
   height: 100%;
   text-align: center;
-  color: var(--clr-text-dim);
+  color: var(--clr-paper-dim);
   gap: var(--sp-3);
   animation: fadeIn var(--dur-slow) var(--ease-out);
 }
 
 .terminal__welcome-icon {
   width: 64px; height: 64px;
-  color: var(--clr-accent);
-  opacity: .3;
+  color: var(--mx-teal, #2C6D7F);
+  opacity: .35;
   filter: drop-shadow(0 0 12px var(--clr-accent-glow));
 }
 
@@ -662,7 +673,7 @@ a { color: var(--clr-accent); }
   font-family: var(--ff-sans);
   font-size: var(--fs-lg);
   font-weight: 600;
-  color: var(--clr-text-muted);
+  color: var(--clr-paper-text);
 }
 
 .terminal__welcome p {
@@ -677,7 +688,7 @@ a { color: var(--clr-accent); }
 }
 
 .terminal__welcome-hint strong {
-  color: var(--clr-accent);
+  color: var(--mx-teal, #2C6D7F);
 }
 
 .terminal__output {
@@ -710,7 +721,7 @@ a { color: var(--clr-accent); }
 }
 
 .term-line__ts {
-  color: var(--clr-text-dim);
+  color: var(--clr-paper-dim);
   flex-shrink: 0;
   user-select: none;
   font-size: var(--fs-xs);
@@ -730,11 +741,11 @@ a { color: var(--clr-accent); }
 }
 
 .term-line__dir--rx {
-  color: var(--clr-rx);
+  color: var(--mx-teal, #2C6D7F);   /* the mint green is too pale on paper */
 }
 
 .term-line__dir--sys {
-  color: var(--clr-accent);
+  color: var(--clr-paper-muted);
 }
 
 .term-line__msg {
@@ -742,12 +753,12 @@ a { color: var(--clr-accent); }
 }
 
 .term-line--sys {
-  color: var(--clr-text-muted);
+  color: var(--clr-paper-muted);
   font-style: italic;
 }
 
 .term-line--sys .term-line__msg {
-  color: var(--clr-text-muted);
+  color: var(--clr-paper-muted);
 }
 
 .term-line--error {
@@ -759,7 +770,7 @@ a { color: var(--clr-accent); }
 }
 
 .term-hex {
-  color: var(--clr-text-dim);
+  color: var(--clr-paper-dim);
   font-size: var(--fs-xs);
   margin-left: 92px;
   padding: 0 0 2px;
@@ -772,7 +783,7 @@ a { color: var(--clr-accent); }
    ============================================================ */
 .input-bar {
   padding: var(--sp-3) var(--sp-4);
-  background: hsla(225, 25%, 8%, .8);
+  background: rgba(0, 33, 47, .8);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-top: 1px solid var(--clr-border-subtle);
@@ -849,7 +860,7 @@ a { color: var(--clr-accent); }
   width: 32px; height: 32px;
   padding: 0;
   background: var(--clr-accent);
-  color: hsl(225, 30%, 8%);
+  color: #00222F;
   border: none;
   border-radius: var(--radius-sm);
   display: flex;
@@ -903,7 +914,7 @@ a { color: var(--clr-accent); }
 
   #sidebar.open {
     transform: translateX(0);
-    box-shadow: var(--shadow-lg, 0 8px 32px hsla(225, 40%, 2%, .6));
+    box-shadow: var(--shadow-lg, 0 8px 32px rgba(0, 8, 12, .6));
   }
 
   .sidebar-backdrop.is-visible {
@@ -914,7 +925,7 @@ a { color: var(--clr-accent); }
     top: var(--topbar-h);
     bottom: 0;
     z-index: 9;
-    background: hsla(225, 40%, 3%, .6);
+    background: rgba(0, 12, 17, .6);
     backdrop-filter: blur(2px);
     -webkit-backdrop-filter: blur(2px);
   }
