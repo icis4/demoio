@@ -10,19 +10,19 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet">
   <style>
     :root {
-      --clr-bg:          hsl(225, 30%, 6%);
-      --clr-surface:     hsl(225, 25%, 10%);
-      --clr-border:      hsl(225, 18%, 18%);
-      --clr-text:        hsl(210, 20%, 88%);
-      --clr-text-muted:  hsl(210, 15%, 55%);
-      --clr-accent:      hsl(174, 72%, 52%);
-      --clr-accent-glow: hsla(174, 72%, 52%, .25);
-      --ff-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      --radius-sm: 6px;
-      --radius-lg: 14px;
+      --clr-bg:          #001A24;
+      --clr-surface:     #00293A;
+      --clr-border:      #0A4358;
+      --clr-text:        #EAF1F3;
+      --clr-text-muted:  #B2C4CB;
+      --clr-accent:      #65BBA9;
+      --clr-accent-glow: rgba(101, 187, 169, .25);
+      --ff-sans: 'Lato', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      --radius-sm: 2px;
+      --radius-lg: 4px;
       --dur-fast: 140ms;
       --ease-out: cubic-bezier(.2, .8, .3, 1);
     }
@@ -49,8 +49,8 @@
       z-index: 0;
       pointer-events: none;
       background-image:
-        linear-gradient(hsla(174, 72%, 52%, .04) 1px, transparent 1px),
-        linear-gradient(90deg, hsla(174, 72%, 52%, .04) 1px, transparent 1px);
+        linear-gradient(rgba(101, 187, 169, .04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(101, 187, 169, .04) 1px, transparent 1px);
       background-size: 40px 40px;
       mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 40%, transparent 100%);
       -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 40%, #000 40%, transparent 100%);
@@ -69,7 +69,7 @@
     }
 
     .bg-glow--1 { top: -220px; left: -140px; }
-    .bg-glow--2 { bottom: -260px; right: -160px; background: hsla(190, 65%, 45%, .18); }
+    .bg-glow--2 { bottom: -260px; right: -160px; background: rgba(44, 109, 127, .18); }
 
     main {
       position: relative;
@@ -143,6 +143,37 @@
       outline: 2px solid var(--clr-accent);
       outline-offset: 3px;
     }
+
+    .tool-group {
+      display: grid;
+      gap: 8px;
+      padding: 14px 16px 16px;
+      background: var(--clr-surface);
+      border: 1px solid var(--clr-border);
+      border-radius: var(--radius-lg);
+    }
+
+    .tool-group__label {
+      color: var(--clr-text-muted);
+      font-size: .6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    /* Inside the group the tiles are members, not cards of their own. */
+    .tool--sub {
+      padding: 12px 14px;
+      background: transparent;
+      border-color: transparent;
+    }
+
+    .tool--sub:hover {
+      background: var(--clr-bg);
+      border-color: var(--clr-border);
+    }
+
+    .tool--sub .tool__icon { width: 20px; height: 20px; }
 
     .tool__icon {
       flex-shrink: 0;
@@ -234,49 +265,35 @@
     <p class="tagline">Browser utilities for Melexis.IO device and chips.</p>
 
     <div class="tools">
-      <a class="tool" href="tools/terminal.html">
-        <svg class="tool__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M4 17l6-5-6-5M12 19h8"/>
-        </svg>
-        <span>
-          <span class="tool__name">Terminal</span>
-          <span class="tool__desc">SCPI over USB CDC serial</span>
-        </span>
-        <svg class="tool__arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M5 12h14M12 5l7 7-7 7"/>
-        </svg>
-      </a>
-
-      <a class="tool" href="tools/dfuupdate.html">
+      <a class="tool" href="fir/">
         <svg class="tool__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 2v7M9 6l3 3 3-3"/>
-          <rect x="4" y="12" width="16" height="9" rx="2"/>
-          <path d="M8 16.5h8"/>
+          <circle cx="6" cy="12" r="2"/>
+          <path d="M11 8a6 6 0 010 8M15 5a10 10 0 010 14M19 2a14 14 0 010 20"/>
         </svg>
         <span>
-          <span class="tool__name">DFU Update</span>
-          <span class="tool__desc">Flash firmware over USB DFU</span>
+          <span class="tool__name">Infrared</span>
+          <span class="tool__desc">Thermometers and thermal arrays</span>
         </span>
         <svg class="tool__arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M5 12h14M12 5l7 7-7 7"/>
         </svg>
       </a>
-
-      <a class="tool" href="tools/i2cdebug.html">
+      <a class="tool" href="isp/">
         <svg class="tool__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 8h4l2 8 3-12 2.5 10L18 8h3"/>
+          <rect x="3" y="4" width="18" height="16" rx="2"/>
+          <path d="M3 9.33h18M3 14.66h18M9 4v16M15 4v16"/>
+          <circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/>
         </svg>
         <span>
-          <span class="tool__name">I2C Debug</span>
-          <span class="tool__desc">Scan, drive the lines, trigger a scope</span>
+          <span class="tool__name">Thermal Viewer</span>
+          <span class="tool__desc">Live thermal image with people counting</span>
         </span>
         <svg class="tool__arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M5 12h14M12 5l7 7-7 7"/>
         </svg>
       </a>
-
       <a class="tool" href="pressure/">
         <svg class="tool__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">
@@ -291,7 +308,6 @@
           <path d="M5 12h14M12 5l7 7-7 7"/>
         </svg>
       </a>
-
       <a class="tool" href="triaxis/">
         <svg class="tool__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">
@@ -307,20 +323,49 @@
         </svg>
       </a>
 
-      <a class="tool" href="fir/">
-        <svg class="tool__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="6" cy="12" r="2"/>
-          <path d="M11 8a6 6 0 010 8M15 5a10 10 0 010 14M19 2a14 14 0 010 20"/>
+      <div class="tool-group">
+        <span class="tool-group__label">Tools</span>
+      <a class="tool tool--sub" href="tools/terminal.html">
+        <svg class="tool__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 17l6-5-6-5M12 19h8"/>
         </svg>
         <span>
-          <span class="tool__name">Infrared</span>
-          <span class="tool__desc">Thermometers and thermal arrays</span>
+          <span class="tool__name">Terminal</span>
+          <span class="tool__desc">SCPI over USB CDC serial</span>
         </span>
         <svg class="tool__arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M5 12h14M12 5l7 7-7 7"/>
         </svg>
       </a>
+      <a class="tool tool--sub" href="tools/dfuupdate.html">
+        <svg class="tool__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2v7M9 6l3 3 3-3"/>
+          <rect x="4" y="12" width="16" height="9" rx="2"/>
+          <path d="M8 16.5h8"/>
+        </svg>
+        <span>
+          <span class="tool__name">DFU Update</span>
+          <span class="tool__desc">Flash firmware over USB DFU</span>
+        </span>
+        <svg class="tool__arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M5 12h14M12 5l7 7-7 7"/>
+        </svg>
+      </a>
+      <a class="tool tool--sub" href="tools/i2cdebug.html">
+        <svg class="tool__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 8h4l2 8 3-12 2.5 10L18 8h3"/>
+        </svg>
+        <span>
+          <span class="tool__name">I2C Debug</span>
+          <span class="tool__desc">Scan, drive the lines, trigger a scope</span>
+        </span>
+        <svg class="tool__arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M5 12h14M12 5l7 7-7 7"/>
+        </svg>
+      </a>
+      </div>
     </div>
 
     <button id="installButton" class="install" type="button" hidden>

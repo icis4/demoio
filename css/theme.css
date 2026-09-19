@@ -6,38 +6,50 @@
 
 :root {
   /* --- Shared design tokens (same values as the rest of the site) --- */
-  --clr-bg:            hsl(225, 30%, 6%);
-  --clr-surface:       hsl(225, 25%, 10%);
-  --clr-surface-2:     hsl(225, 22%, 14%);
-  --clr-border:        hsl(225, 18%, 18%);
-  --clr-border-subtle: hsl(225, 18%, 14%);
-  --clr-text:          hsl(210, 20%, 88%);
-  --clr-text-muted:    hsl(210, 15%, 55%);
-  --clr-accent:        hsl(174, 72%, 52%);
-  --clr-accent-glow:   hsla(174, 72%, 52%, .25);
-  --clr-danger:        hsl(0, 72%, 58%);
-  --clr-warning:       hsl(38, 92%, 55%);
-  --clr-success:       hsl(142, 64%, 48%);
+  /* --- Melexis brand palette, from melexis.io ---
+     royal blue #00354B · electric green #65BBA9 · gold #EEA320 · coral #DB4140
+     charcoal #3E4242 · steel grey #B2C4CB · teal #2C6D7F
+     The suite stays dark — every page here is an instrument UI with canvases,
+     thermal palettes and logs — so the brand hues are carried onto a dark
+     ground derived from the royal blue rather than the site's white. --- */
+  --clr-bg:            #001A24;
+  --clr-surface:       #00293A;
+  --clr-surface-2:     #00354B;
+  --clr-border:        #0A4358;
+  --clr-border-subtle: #04303F;
+  --clr-text:          #EAF1F3;
+  --clr-text-muted:    #B2C4CB;
+  --clr-text-dim:      #7793A0;
+  --clr-accent:        #65BBA9;
+  --clr-accent-dim:    #3B7F72;
+  --clr-accent-glow:   rgba(101, 187, 169, .25);
+  --clr-accent-bg:     rgba(101, 187, 169, .08);
+  --clr-danger:        #DB4140;
+  --clr-danger-dim:    #8A2B2A;
+  --clr-warning:       #EEA320;
+  --clr-success:       #65BBA9;
+  --clr-tx:            #EEA320;
+  --clr-rx:            #65BBA9;
 
-  --ff-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --ff-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
+  --ff-sans: 'Lato', system-ui, -apple-system, 'Segoe UI', Roboto, Ubuntu, Cantarell, 'Noto Sans', 'Helvetica Neue', Arial, sans-serif;
+  --ff-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 
   /* --- Brand tokens, remapped onto the dark palette ---
      The Pressure page styles every Bootstrap component through these, so
      redefining them re-themes the whole app without touching its rules. --- */
-  --mx-royal-blue:         var(--clr-surface);
-  --mx-royal-blue-700:     hsla(225, 25%, 14%, .85);
-  --mx-royal-blue-600:     hsla(225, 25%, 16%, .70);
-  --mx-royal-blue-500:     hsla(225, 25%, 14%, .55);
+  --mx-royal-blue:         #00354B;
+  --mx-royal-blue-700:     rgba(0, 53, 75, .85);
+  --mx-royal-blue-600:     rgba(0, 53, 75, .70);
+  --mx-royal-blue-500:     rgba(0, 53, 75, .55);
   --mx-electric-green:     var(--clr-accent);
-  --mx-electric-green-800: hsla(174, 72%, 52%, .80);
+  --mx-electric-green-800: rgba(101, 187, 169, .80);
   --mx-gold-yellow:        var(--clr-warning);
   --mx-coral-red:          var(--clr-danger);
-  --mx-coral-red-800:      hsla(0, 72%, 58%, .80);
-  --mx-charcoal-grey:      var(--clr-surface-2);
+  --mx-coral-red-800:      rgba(219, 65, 64, .80);
+  --mx-charcoal-grey:      #3E4242;
   --mx-steel-grey:         var(--clr-text-muted);
-  --mx-teal:               hsl(190, 65%, 45%);
-  --mx-black:              hsl(225, 30%, 4%);
+  --mx-teal:               #2C6D7F;
+  --mx-black:              #000000;
   --mx-white:              var(--clr-text);
 
   --mx-bg:          var(--clr-bg);
@@ -45,8 +57,8 @@
   --mx-text:        var(--clr-text);
   --mx-text-muted:  var(--clr-text-muted);
   --mx-accent:      var(--clr-accent);
-  --mx-accent-soft: hsla(174, 72%, 52%, .85);
-  --mx-accent-2:    hsl(174, 60%, 70%);
+  --mx-accent-soft: rgba(101, 187, 169, .85);
+  --mx-accent-2:    #A6DCD2;
   --mx-link:        var(--clr-accent);
   --mx-border:      var(--clr-border);
   --mx-success:     var(--clr-success);
@@ -54,25 +66,25 @@
   --mx-error:       var(--clr-danger);
 
   /* Chart palette, retinted for a dark ground (brighter, more separable) */
-  --mx-t1:  hsl(174, 72%, 52%);
-  --mx-t2:  hsl(199, 75%, 60%);
-  --mx-t3:  hsl(38, 92%, 62%);
-  --mx-t4:  hsl(280, 60%, 70%);
-  --mx-t5:  hsl(142, 58%, 55%);
-  --mx-t6:  hsl(15, 80%, 65%);
-  --mx-t7:  hsl(220, 70%, 68%);
-  --mx-t8:  hsl(60, 60%, 62%);
-  --mx-t9:  hsl(330, 62%, 68%);
-  --mx-t10: hsl(95, 48%, 60%);
-  --mx-t11: hsl(0, 72%, 65%);
-  --mx-t12: hsl(250, 55%, 72%);
+  --mx-t1:  #2D6C7F;
+  --mx-t2:  #599DB2;
+  --mx-t3:  #8FC1CC;
+  --mx-t4:  #8FCCBC;
+  --mx-t5:  #59B29D;
+  --mx-t6:  #53A5A1;
+  --mx-t7:  #597F7C;
+  --mx-t8:  #C0CC8F;
+  --mx-t9:  #D8CFC3;
+  --mx-t10: #CCB28F;
+  --mx-t11: #CC7A7A;
+  --mx-t12: #A35471;
 
   --mx-bg-light: var(--clr-surface-2);
 
   --mx-font-sans: var(--ff-sans);
   --mx-font-mono: var(--ff-mono);
 
-  --mx-radius: 6px;
+  --mx-radius: 2px;
   --mx-shadow: 0 8px 32px hsla(0, 0%, 0%, .4);
   --mx-space: 16px;
 }
@@ -85,7 +97,7 @@
   --bs-secondary-color: var(--clr-text-muted);
   --bs-emphasis-color: var(--clr-text);
   --bs-link-color: var(--clr-accent);
-  --bs-link-hover-color: hsl(174, 72%, 64%);
+  --bs-link-hover-color: #8FD6C7;
   --bs-primary: var(--clr-accent);
   --bs-code-color: var(--clr-accent);
   --bs-border-radius: var(--mx-radius);
@@ -200,16 +212,16 @@ a:hover { color: var(--mx-white); text-decoration: underline; }
 .btn-primary {
   --bs-btn-bg: var(--clr-accent);
   --bs-btn-border-color: var(--clr-accent);
-  --bs-btn-color: hsl(225, 30%, 8%);
-  --bs-btn-hover-bg: hsl(174, 72%, 60%);
-  --bs-btn-hover-border-color: hsl(174, 72%, 60%);
-  --bs-btn-hover-color: hsl(225, 30%, 8%);
-  --bs-btn-active-bg: hsl(174, 72%, 46%);
-  --bs-btn-active-border-color: hsl(174, 72%, 46%);
-  --bs-btn-active-color: hsl(225, 30%, 8%);
+  --bs-btn-color: #00222F;
+  --bs-btn-hover-bg: #82CBBC;
+  --bs-btn-hover-border-color: #82CBBC;
+  --bs-btn-hover-color: #00222F;
+  --bs-btn-active-bg: #4FA593;
+  --bs-btn-active-border-color: #4FA593;
+  --bs-btn-active-color: #00222F;
   --bs-btn-disabled-bg: var(--clr-accent);
   --bs-btn-disabled-border-color: var(--clr-accent);
-  --bs-btn-disabled-color: hsl(225, 30%, 8%);
+  --bs-btn-disabled-color: #00222F;
 }
 
 .btn-outline-secondary {
@@ -252,7 +264,7 @@ input[type="text"]:focus, input[type="number"]:focus, input[type="email"]:focus,
 select:focus, textarea:focus {
   outline: none;
   border-color: var(--clr-accent);
-  box-shadow: 0 0 0 3px hsla(174, 72%, 52%, .12);
+  box-shadow: 0 0 0 3px rgba(101, 187, 169, .12);
 }
 
 input::placeholder, textarea::placeholder {
@@ -268,7 +280,7 @@ input::placeholder, textarea::placeholder {
 
 .form-control:focus, .form-select:focus {
   border-color: var(--clr-accent);
-  box-shadow: 0 0 0 3px hsla(174, 72%, 52%, .12);
+  box-shadow: 0 0 0 3px rgba(101, 187, 169, .12);
 }
 
 .form-control:disabled, .form-select:disabled {
