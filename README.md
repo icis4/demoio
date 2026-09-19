@@ -151,6 +151,7 @@ tools/
   terminal.html         SCPI terminal markup
   dfuupdate.html        DFU updater, self-contained
   i2cdebug.html         I2C bench debugger — scan, line control, scope stimulus
+  webusb-probe.html     WebUSB reachability probe, for phones without Web Serial
 css/
   style.css             terminal and frontpage styles
   theme.css             shared Bootstrap theme
