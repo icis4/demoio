@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="WebUSB probe — can a browser without Web Serial, such as Chrome on Android, talk to the Melexis IO board as a USB CDC device?">
+  <title>WebUSB Probe</title>
+  <meta name="theme-color" content="#001A24">
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
+  <link href="../css/theme.css" rel="stylesheet">
+  <style>
+    body { min-height: 100vh; }
+    .shell { width: min(820px, calc(100vw - 32px)); margin: 32px auto; }
+    h1 { margin: 0; font-size: clamp(1.5rem, 2.4vw, 2rem); }
+    .card { border: 1px solid var(--clr-border); border-radius: var(--radius-lg); background: var(--clr-surface); }
+    .card h2 { margin: 0 0 12px; color: var(--clr-text-muted); font-size: .6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+    .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: .8125rem; }
+    .kv dt { color: var(--clr-text-muted); font-weight: 500; }
+    .kv dd { margin: 0; text-align: right; word-break: break-all; }
+    .log {
+      margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto;
+      border-radius: var(--mx-radius); background: var(--clr-paper, #fff); color: var(--clr-paper-text, #00222F);
+      font-family: var(--ff-mono); font-size: .75rem; line-height: 1.6; white-space: pre-wrap;
+    }
+    .log b { color: #00354B; }
+    .log .bad { color: #DB4140; }
+    .log .good { color: #2C6D7F; }
+    .note { color: var(--clr-text-muted); font-size: .8125rem; line-height: 1.65; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="d-flex justify-content-between align-items-end flex-wrap gap-2 mb-3">
+      <div>
+        <h1 class="fw-bold">WebUSB Probe</h1>
+        <div class="text-secondary" style="font-size:.8125rem">Does the board answer where Web Serial does not exist?</div>
+      </div>
+      <div class="d-flex gap-2">
+        <button id="btnOpen" class="btn btn-sm btn-primary">Open device</button>
+        <button id="btnIdn" class="btn btn-sm btn-outline-secondary" disabled>Send *IDN?</button>
+        <button id="btnClose" class="btn btn-sm btn-outline-secondary" disabled>Close</button>
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-body">
+        <h2>What this answers</h2>
+        <p class="note mb-0">
+          Chrome on Android has no Web Serial, so the pages in this suite cannot open the board
+          there. It does have WebUSB, and the board is a USB CDC device — a small protocol: claim
+          the data interface, one control transfer to raise DTR, then bulk reads and writes. This
+          page does exactly that and nothing else, so a failure names the step it failed at.
+          <br><br>
+          What decides it is whether anything else owns the device. On desktop Linux the kernel's
+          <code>cdc_acm</code> driver does — it is what gives you <code>/dev/ttyACM0</code> — and
+          the browser is refused at <code>open()</code>, before it can even ask for the interface.
+          On Android nothing usually claims it, which is the case worth testing.
+        </p>
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-body">
+        <h2>Device</h2>
+        <dl class="kv">
+          <dt>Support</dt><dd id="infoSupport">—</dd>
+          <dt>Product</dt><dd id="infoProduct">—</dd>
+          <dt>IDs</dt><dd id="infoIds">—</dd>
+          <dt>Interfaces</dt><dd id="infoIfaces">—</dd>
+          <dt>Endpoints</dt><dd id="infoEndpoints">—</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-body">
+        <h2>Log</h2>
+        <pre id="log" class="log"></pre>
+      </div>
+    </div>
+  </main>
+
+  <script>
+  (() => {
+    "use strict";
+
+    /* USB CDC-ACM, the parts that matter:
+     *   interface class 0x02 is the communication interface, 0x0A the data one
+     *   class request 0x22 SET_CONTROL_LINE_STATE, value bit 0 DTR, bit 1 RTS
+     *   class request 0x20 SET_LINE_CODING, seven bytes: baud, stop, parity, bits
+     * The board ignores line coding — it is USB CDC, where the setting never
+     * reaches the firmware — so DTR alone is enough to get it talking. */
+    const CDC_COMM = 0x02, CDC_DATA = 0x0A;
+    const SET_CONTROL_LINE_STATE = 0x22;
+    const MELEXIS_VENDOR = 0x03e9;
+
+    const els = id => document.getElementById(id);
+    const ui = {
+      btnOpen: els("btnOpen"), btnIdn: els("btnIdn"), btnClose: els("btnClose"),
+      log: els("log"), infoSupport: els("infoSupport"), infoProduct: els("infoProduct"),
+      infoIds: els("infoIds"), infoIfaces: els("infoIfaces"), infoEndpoints: els("infoEndpoints"),
+    };
+
+    const state = { device: null, iface: null, inEp: null, outEp: null, commIface: null };
+
+    function log(message, kind) {
+      const line = document.createElement("span");
+      if (kind) line.className = kind;
+      line.textContent = `${new Date().toLocaleTimeString()}  ${message}\n`;
+      ui.log.append(line);
+      ui.log.scrollTop = ui.log.scrollHeight;
+    }
+
+    const hex4 = n => "0x" + n.toString(16).toUpperCase().padStart(4, "0");
+
+    ui.infoSupport.textContent = "usb" in navigator
+      ? "WebUSB available"
+      : "no WebUSB in this browser";
+    if (!("usb" in navigator)) {
+      log("This browser has no WebUSB. Chrome, Edge or Opera, and a secure context.", "bad");
+      ui.btnOpen.disabled = true;
+    } else if (!("serial" in navigator)) {
+      log("No Web Serial here — this is exactly the case the probe is for.", "good");
+    } else {
+      log("Web Serial is also available; this page still goes through WebUSB on purpose.");
+    }
+
+    async function open() {
+      try {
+        state.device = await navigator.usb.requestDevice({
+          filters: [{ vendorId: MELEXIS_VENDOR }],
+        });
+      } catch (error) {
+        log(`No device chosen: ${error.message}`);
+        return;
+      }
+
+      const d = state.device;
+      ui.infoProduct.textContent = d.productName || "(unnamed)";
+      ui.infoIds.textContent = `${hex4(d.vendorId)}:${hex4(d.productId)}`;
+      log(`Selected ${d.productName || "device"} ${hex4(d.vendorId)}:${hex4(d.productId)}`);
+
+      try {
+        await d.open();
+        log("Opened.", "good");
+
+        if (d.configuration === null) {
+          await d.selectConfiguration(1);
+          log("Configuration 1 selected.");
+        }
+
+        const interfaces = d.configuration.interfaces;
+        ui.infoIfaces.textContent = interfaces
+          .map(i => `#${i.interfaceNumber} class ${hex4(i.alternate.interfaceClass).slice(-2)}`)
+          .join(", ");
+
+        const data = interfaces.find(i => i.alternate.interfaceClass === CDC_DATA);
+        const comm = interfaces.find(i => i.alternate.interfaceClass === CDC_COMM);
+        if (!data) {
+          log("No CDC data interface on this device.", "bad");
+          return;
+        }
+        state.iface = data.interfaceNumber;
+        state.commIface = comm ? comm.interfaceNumber : null;
+
+        /* The decisive step. A refusal here is the whole answer: something else
+         * owns the interface, and on desktop Linux that something is cdc_acm. */
+        try {
+          await d.claimInterface(state.iface);
+          log(`Claimed the data interface #${state.iface}.`, "good");
+        } catch (error) {
+          log(`Could not claim interface #${state.iface}: ${error.message}`, "bad");
+          log("On Linux the kernel's cdc_acm driver holds it. Unbind it first, or run this "
+            + "on Android where nothing does.", "bad");
+          return;
+        }
+
+        for (const ep of data.alternate.endpoints) {
+          if (ep.direction === "in" && ep.type === "bulk") state.inEp = ep.endpointNumber;
+          if (ep.direction === "out" && ep.type === "bulk") state.outEp = ep.endpointNumber;
+        }
+        ui.infoEndpoints.textContent = `in ${state.inEp ?? "—"}, out ${state.outEp ?? "—"}`;
+        if (state.inEp == null || state.outEp == null) {
+          log("Bulk endpoints missing — nothing to read or write on.", "bad");
+          return;
+        }
+
+        if (state.commIface !== null) {
+          try {
+            await d.controlTransferOut({
+              requestType: "class", recipient: "interface",
+              request: SET_CONTROL_LINE_STATE, value: 0x0003, index: state.commIface,
+            });
+            log("DTR and RTS raised.", "good");
+          } catch (error) {
+            log(`Line state not set: ${error.message} — many devices talk anyway.`);
+          }
+        }
+
+        ui.btnIdn.disabled = false;
+        ui.btnClose.disabled = false;
+        ui.btnOpen.disabled = true;
+        log("Ready. Send *IDN? to see whether the board answers.", "good");
+      } catch (error) {
+        log(`Open failed: ${error.message}`, "bad");
+        if (/access denied|security/i.test(error.message)) {
+          /* On Linux the refusal lands here rather than at claimInterface:
+           * the browser will not open a device whose interfaces a kernel
+           * driver already holds, and cdc_acm holds both of this one's. */
+          log("Something else owns the device. On Linux that is cdc_acm, the driver that "
+            + "gives you /dev/ttyACM0 — unbind it for this device and try again, or run this "
+            + "page on Android, where nothing claims it.", "bad");
+          log("  echo -n <bus-port:config.interface> | sudo tee /sys/bus/usb/drivers/cdc_acm/unbind", "bad");
+        }
+      }
+    }
+
+    async function idn() {
+      const d = state.device;
+      const encoder = new TextEncoder();
+      const decoder = new TextDecoder();
+      try {
+        await d.transferOut(state.outEp, encoder.encode("*IDN?\n"));   // LF only
+        log("> *IDN?");
+
+        let reply = "";
+        const deadline = Date.now() + 2000;
+        while (Date.now() < deadline) {
+          const result = await d.transferIn(state.inEp, 256);
+          if (result.data && result.data.byteLength) {
+            reply += decoder.decode(result.data);
+            if (/\)>\s*$/.test(reply)) break;
+          }
+        }
+        if (reply) {
+          for (const line of reply.split(/\r?\n/).filter(l => l.trim())) log(`< ${line}`, "good");
+          log("The board answers over WebUSB — the pages can work without Web Serial.", "good");
+        } else {
+          log("Nothing came back within two seconds.", "bad");
+        }
+      } catch (error) {
+        log(`Transfer failed: ${error.message}`, "bad");
+      }
+    }
+
+    async function close() {
+      try {
+        if (state.iface !== null) await state.device.releaseInterface(state.iface);
+        await state.device.close();
+        log("Closed.");
+      } catch (error) {
+        log(`Close failed: ${error.message}`, "bad");
+      }
+      state.device = null; state.iface = null; state.inEp = null; state.outEp = null;
+      ui.btnIdn.disabled = true; ui.btnClose.disabled = true; ui.btnOpen.disabled = false;
+      ui.infoEndpoints.textContent = "—";
+    }
+
+    ui.btnOpen.addEventListener("click", open);
+    ui.btnIdn.addEventListener("click", idn);
+    ui.btnClose.addEventListener("click", close);
+  })();
+  </script>
+</body>
+</html>
