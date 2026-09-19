@@ -219,6 +219,8 @@
       await transport.open(options);
       state.transport = transport;
 
+      if (kind === 'serial') claims.announce();
+
       setSidebarOpen(false);
       setConnectionState('connected');
       logSystem(kind === 'ble'
@@ -268,6 +270,7 @@
     }
 
     state.transport = null;
+    claims.release();
     resetRenderedLines();
     setConnectionState('disconnected');
     logSystem('Disconnected.');
@@ -277,6 +280,7 @@
     state.isReading = false;
     state.readLoop = null;
     state.transport = null;
+    claims.release();
     resetActiveProbe();
     clearCommandCatalog();
     resetRenderedLines();
@@ -364,8 +368,14 @@
         displayData(value, 'rx');
       },
       (err) => {
-        if (state.isReading) {
-          logError(`Read error: ${err.message}`);
+        if (!state.isReading) return;
+
+        logError(`Read error: ${err.message}`);
+        /* Chrome reports a port taken over by another page exactly as it
+           reports unplugged hardware, and the board is almost never the
+           culprit. */
+        if (/device has been lost/i.test(err.message)) {
+          logSystem('If the board is still plugged in, another tab or program probably took the port.');
         }
       },
     );
@@ -1124,12 +1134,71 @@
   }
 
 
+  /* Two copies of this page both grabbing the board is the one way the
+     auto-connect below misfires: the second open takes the port and the first
+     is told "The device has been lost", which reads like a hardware fault and
+     is not one. Tabs announce ownership to each other so only one claims it
+     without being asked. A manual Connect still wins -- the user asking for
+     this tab is a good enough reason to take the port. */
+  const PORT_CLAIM_CHANNEL = 'melexisio.port-claim';
+  const CLAIM_REPLY_WAIT_MS = 150;
+
+  const claims = (() => {
+    if (typeof BroadcastChannel !== 'function') {
+      return { announce() {}, release() {}, async heldElsewhere() { return false; } };
+    }
+
+    const channel = new BroadcastChannel(PORT_CLAIM_CHANNEL);
+    let holding = false;
+
+    channel.addEventListener('message', (event) => {
+      // Somebody asking whether the port is taken; only a holder answers.
+      if (event.data === 'who-holds' && holding) channel.postMessage('holding');
+    });
+
+    return {
+      announce() {
+        holding = true;
+        channel.postMessage('holding');
+      },
+      release() {
+        holding = false;
+        channel.postMessage('released');
+      },
+      heldElsewhere() {
+        return new Promise((resolve) => {
+          let answered = false;
+          const onReply = (event) => {
+            if (event.data === 'holding') {
+              answered = true;
+              channel.removeEventListener('message', onReply);
+              resolve(true);
+            }
+          };
+          channel.addEventListener('message', onReply);
+          channel.postMessage('who-holds');
+          setTimeout(() => {
+            channel.removeEventListener('message', onReply);
+            if (!answered) resolve(false);
+          }, CLAIM_REPLY_WAIT_MS);
+        });
+      },
+    };
+  })();
+
   // ---- Boot ----
   document.addEventListener('DOMContentLoaded', async () => {
     init();
     // Nothing authorised yet means the Connect button still has to ask.
     // Bluetooth has no silent equivalent: pairing always needs a gesture.
-    if (await window.MelexisTransport.authorisedPort()) connect('serial');
+    if (!(await window.MelexisTransport.authorisedPort())) return;
+
+    if (await claims.heldElsewhere()) {
+      logSystem('Another tab has this board open. Close it, or click Connect to take the port.');
+      return;
+    }
+
+    connect('serial');
   });
 
 })();
