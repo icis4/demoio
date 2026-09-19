@@ -157,6 +157,15 @@ window.MelexisTransport = (() => {
     let txChar = null;   // notified by the board
     let label = '';
     let stop = null;     // resolves the read() promise
+    let sink = null;     // set once read() has somewhere to put the bytes
+    const pending = [];  // notifications that arrived before it did
+
+    function onNotify(event) {
+      const v = event.target.value;
+      if (!v || v.byteLength === 0) return;
+      const chunk = new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
+      if (sink) sink(chunk); else pending.push(chunk);
+    }
 
     return {
       kind: 'ble',
@@ -178,20 +187,20 @@ window.MelexisTransport = (() => {
         rxChar = await service.getCharacteristic(NUS_RX);
         txChar = await service.getCharacteristic(NUS_TX);
         label = device.name || 'BLE device';
+
+        /* Subscribing is a GATT round trip, so it has to finish before the
+           caller is told the link is up. Otherwise the first thing written --
+           the command-catalog probe -- is answered into a link nobody is
+           listening to yet, and the reply is simply lost. */
+        txChar.addEventListener('characteristicvaluechanged', onNotify);
+        await txChar.startNotifications();
       },
 
       async read(onChunk, onError) {
         if (!txChar) return;
 
-        const handler = (event) => {
-          const v = event.target.value;
-          if (v && v.byteLength > 0) {
-            onChunk(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
-          }
-        };
-
-        txChar.addEventListener('characteristicvaluechanged', handler);
-        await txChar.startNotifications();
+        sink = onChunk;
+        while (pending.length) onChunk(pending.shift());
 
         /* Nothing to poll: notifications arrive as events, so this promise
            just holds the caller until the link is torn down. */
@@ -204,7 +213,7 @@ window.MelexisTransport = (() => {
           device.addEventListener('gattserverdisconnected', gone, { once: true });
         });
 
-        txChar.removeEventListener('characteristicvaluechanged', handler);
+        sink = null;
       },
 
       async stopReading() {
@@ -226,9 +235,13 @@ window.MelexisTransport = (() => {
 
       async close() {
         const open = device;
+        const notify = txChar;
         device = null;
         rxChar = null;
         txChar = null;
+        sink = null;
+        pending.length = 0;
+        if (notify) notify.removeEventListener('characteristicvaluechanged', onNotify);
         if (open && open.gatt && open.gatt.connected) open.gatt.disconnect();
       },
     };
