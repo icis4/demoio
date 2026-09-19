@@ -267,6 +267,17 @@
     ui.btnOpen.addEventListener("click", open);
     ui.btnIdn.addEventListener("click", idn);
     ui.btnClose.addEventListener("click", close);
+
+    /* A claimed interface is held until the page lets go or the tab dies. Leaving
+     * without pressing Close therefore strands it, and the next attempt — in this
+     * tab or another — is refused by what looks like an unrelated owner. pagehide
+     * covers navigation and the phone putting the browser away; unload does not
+     * fire reliably on mobile. */
+    window.addEventListener("pagehide", () => {
+      if (!state.device) return;
+      if (state.iface !== null) state.device.releaseInterface(state.iface).catch(() => {});
+      state.device.close().catch(() => {});
+    });
   })();
   </script>
 </body>
