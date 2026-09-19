@@ -172,8 +172,15 @@
           log(`Claimed the data interface #${state.iface}.`, "good");
         } catch (error) {
           log(`Could not claim interface #${state.iface}: ${error.message}`, "bad");
-          log("On Linux the kernel's cdc_acm driver holds it. Unbind it first, or run this "
-            + "on Android where nothing does.", "bad");
+          /* The browser is told "no", not why. Naming one cause here would be a
+           * guess, and on Android it was the wrong one. */
+          log("Something else holds this interface. The usual owners: an app that was granted "
+            + "the device and is still running, the browser's own serial stack if it has one, "
+            + "or a kernel driver — on desktop Linux that is cdc_acm, the one that provides "
+            + "/dev/ttyACM0.", "bad");
+          log("Close anything that opened the board, unplug and replug it, then try again. "
+            + "If it keeps failing on a phone, the kernel there is claiming CDC devices and "
+            + "WebUSB cannot reach this board on that handset.", "bad");
           return;
         }
 
@@ -206,12 +213,11 @@
       } catch (error) {
         log(`Open failed: ${error.message}`, "bad");
         if (/access denied|security/i.test(error.message)) {
-          /* On Linux the refusal lands here rather than at claimInterface:
-           * the browser will not open a device whose interfaces a kernel
-           * driver already holds, and cdc_acm holds both of this one's. */
-          log("Something else owns the device. On Linux that is cdc_acm, the driver that "
-            + "gives you /dev/ttyACM0 — unbind it for this device and try again, or run this "
-            + "page on Android, where nothing claims it.", "bad");
+          /* The refusal can land here rather than at claimInterface, when the
+           * owner holds the whole device rather than one interface. */
+          log("Something else owns the device — an app still holding it, or a kernel driver. "
+            + "On desktop Linux that is cdc_acm, the one that provides /dev/ttyACM0; it can be "
+            + "unbound for this device:", "bad");
           log("  echo -n <bus-port:config.interface> | sudo tee /sys/bus/usb/drivers/cdc_acm/unbind", "bad");
         }
       }
