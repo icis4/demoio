@@ -8,8 +8,7 @@
 
   // ---- State ----
   const state = {
-    port: null,
-    reader: null,
+    transport: null,
     readLoop: null,
     isConnected: false,
     isReading: false,
@@ -46,6 +45,7 @@
   const els = {
     // Connection
     btnConnect:          $('btnConnect'),
+    btnConnectBle:       $('btnConnectBle'),
     baudRate:            $('baudRate'),
     dataBits:            $('dataBits'),
     stopBits:            $('stopBits'),
@@ -146,14 +146,27 @@
       updateSelectedCommandHelp();
     });
 
+    /* Web Bluetooth is absent on Firefox and Safari and on Chrome builds
+       without it, so the button only appears where it can work. */
+    if (els.btnConnectBle && window.MelexisTransport && window.MelexisTransport.bleAvailable()) {
+      els.btnConnectBle.hidden = false;
+      els.btnConnectBle.addEventListener('click', async () => {
+        if (state.isConnected) {
+          await disconnect();
+        } else {
+          await connect('ble');
+        }
+      });
+    }
+
     // Port-level events are only available where Web Serial is supported.
     if ('serial' in navigator) {
       navigator.serial.addEventListener('connect', () => {
         logSystem('USB device connected.');
       });
 
-      navigator.serial.addEventListener('disconnect', (e) => {
-        if (state.port === e.target) {
+      navigator.serial.addEventListener('disconnect', () => {
+        if (state.transport && state.transport.kind === 'serial') {
           handleDisconnect('Device was physically disconnected.');
         }
       });
@@ -183,60 +196,18 @@
   }
 
 
-  /* Web Serial's picker exists to grant permission, not to use it: a board the
-   * user has already authorised for this origin comes back from getPorts()
-   * silently. The suite shares one key for which board that was, so the terminal
-   * and the sensor pages all reopen the same one. */
-  const PORT_KEY = 'melexisio.port';
+  async function connect(kind = 'serial') {
+    const T = window.MelexisTransport;
 
-  function rememberPort(port) {
-    const info = port && port.getInfo ? port.getInfo() : {};
-    if (!Number.isInteger(info.usbVendorId) || !Number.isInteger(info.usbProductId)) return;
     try {
-      window.localStorage.setItem(PORT_KEY, `${info.usbVendorId.toString(16)}:${info.usbProductId.toString(16)}`);
-    } catch { /* storage unavailable */ }
-  }
-
-  async function authorisedPort() {
-    if (!('serial' in navigator)) return null;
-    let ports;
-    try {
-      ports = await navigator.serial.getPorts();
-    } catch {
-      return null;
-    }
-    if (ports.length === 0) return null;
-    if (ports.length === 1) return ports[0];
-
-    let vid = NaN, pid = NaN;
-    try {
-      const saved = (window.localStorage.getItem(PORT_KEY) || '').split(':');
-      vid = parseInt(saved[0], 16);
-      pid = parseInt(saved[1], 16);
-    } catch { /* storage unavailable */ }
-    if (!Number.isInteger(vid)) return null;   // several boards, no hint: let the user choose
-
-    const matches = ports.filter((port) => {
-      const info = port.getInfo();
-      return info.usbVendorId === vid && info.usbProductId === pid;
-    });
-    return matches.length === 1 ? matches[0] : null;
-  }
-
-  async function connect() {
-    try {
-      if (!('serial' in navigator)) {
-        logError('Web Serial API is not available. Make sure you are using Chrome/Edge/Opera and accessing the page via localhost or HTTPS.');
-        return;
-      }
-
       clearCommandCatalog();
       setConnectionState('connecting');
 
-      // Request port from user
-      state.port = await authorisedPort() || await navigator.serial.requestPort();
+      const transport = kind === 'ble' ? T.createBleTransport() : T.createSerialTransport();
 
-      // Build serial options
+      /* Line settings only mean something on a real UART. Over USB CDC they
+         are ignored by the device and over BLE there is no such concept, but
+         they are still passed so a UART bridge behaves. */
       const options = {
         baudRate:     parseInt(els.baudRate.value, 10),
         dataBits:     parseInt(els.dataBits.value, 10),
@@ -245,18 +216,20 @@
         flowControl:  els.flowControl.value,
       };
 
-      await state.port.open(options);
-      rememberPort(state.port);
+      await transport.open(options);
+      state.transport = transport;
 
       setSidebarOpen(false);
       setConnectionState('connected');
-      logSystem(`Connected at ${options.baudRate} baud (${options.dataBits}${options.parity[0].toUpperCase()}${options.stopBits}).`);
+      logSystem(kind === 'ble'
+        ? `Connected over Bluetooth to ${transport.label}.`
+        : `Connected at ${transport.label}.`);
 
-      // Start reading
       state.readLoop = startReading();
       requestCommandCatalog();
 
     } catch (err) {
+      state.transport = null;
       setConnectionState('disconnected');
       if (err.name === 'NotFoundError') {
         logSystem('No device selected.');
@@ -271,16 +244,10 @@
     resetActiveProbe();
     clearCommandCatalog();
 
-    const port = state.port;
+    const transport = state.transport;
 
-    // Cancelling wakes up the pending read(); the read loop itself owns the
-    // lock and releases it, so wait for the loop to finish before closing.
-    if (state.reader) {
-      try {
-        await state.reader.cancel();
-      } catch {
-        // An already-errored stream cannot be cancelled; closing still applies.
-      }
+    if (transport) {
+      await transport.stopReading();
     }
 
     if (state.readLoop) {
@@ -292,16 +259,15 @@
       state.readLoop = null;
     }
 
-    if (port) {
+    if (transport) {
       try {
-        await port.close();
+        await transport.close();
       } catch (err) {
         logError(`Disconnect error: ${err.message}`);
       }
     }
 
-    state.port = null;
-    state.reader = null;
+    state.transport = null;
     resetRenderedLines();
     setConnectionState('disconnected');
     logSystem('Disconnected.');
@@ -309,9 +275,8 @@
 
   function handleDisconnect(reason) {
     state.isReading = false;
-    state.reader = null;
     state.readLoop = null;
-    state.port = null;
+    state.transport = null;
     resetActiveProbe();
     clearCommandCatalog();
     resetRenderedLines();
@@ -384,42 +349,30 @@
   // ============================================================
 
   async function startReading() {
-    if (!state.port || !state.port.readable) return;
+    const transport = state.transport;
+    if (!transport) return;
+
     state.isReading = true;
 
-    while (state.isReading && state.port && state.port.readable) {
-      const reader = state.port.readable.getReader();
-      state.reader = reader;
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          if (value && value.length > 0) {
-            state.rxBytes += value.length;
-            updateStats();
+    await transport.read(
+      (value) => {
+        state.rxBytes += value.length;
+        updateStats();
 
-            if (processProbeChunk(value)) {
-              continue;
-            }
+        if (processProbeChunk(value)) return;
 
-            displayData(value, 'rx');
-          }
-        }
-      } catch (err) {
+        displayData(value, 'rx');
+      },
+      (err) => {
         if (state.isReading) {
           logError(`Read error: ${err.message}`);
         }
-      } finally {
-        reader.releaseLock();
-        if (state.reader === reader) {
-          state.reader = null;
-        }
-      }
-    }
+      },
+    );
   }
 
   async function sendMessage() {
-    if (!state.isConnected || !state.port || !state.port.writable) return;
+    if (!state.isConnected || !state.transport) return;
 
     const text = els.messageInput.value;
 
@@ -630,8 +583,8 @@
   }
 
   async function sendRawText(text, options = {}) {
-    if (!state.isConnected || !state.port || !state.port.writable) {
-      throw new Error('Serial port is not writable.');
+    if (!state.isConnected || !state.transport) {
+      throw new Error('Not connected.');
     }
 
     const {
@@ -655,13 +608,7 @@
       addLogEntry('tx', data);
     }
 
-    const writer = state.port.writable.getWriter();
-
-    try {
-      await writer.write(data);
-    } finally {
-      writer.releaseLock();
-    }
+    await state.transport.write(data);
 
     state.txBytes += data.length;
     updateStats();
@@ -1181,7 +1128,8 @@
   document.addEventListener('DOMContentLoaded', async () => {
     init();
     // Nothing authorised yet means the Connect button still has to ask.
-    if (await authorisedPort()) connect();
+    // Bluetooth has no silent equivalent: pairing always needs a gesture.
+    if (await window.MelexisTransport.authorisedPort()) connect('serial');
   });
 
 })();
