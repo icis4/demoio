@@ -1458,6 +1458,25 @@
       }
     });
 
+    /* A claimed interface is held until the page lets go or the tab dies, and a
+       DfuSe bootloader left mid-conversation stops answering SET_INTERFACE until
+       it re-enumerates. Leaving without pressing Disconnect is therefore enough
+       to make the next attempt fail with "Unable to set device interface", from
+       this page or any other — a confusing way to learn that the board simply
+       needs unplugging. pagehide rather than unload: the latter does not fire
+       reliably, least of all on mobile. */
+    window.addEventListener("pagehide", () => {
+      if (!appState.device || !appState.interfaceInfo) {
+        return;
+      }
+      const device = appState.device;
+      device
+        .releaseInterface(appState.interfaceInfo.interfaceNumber)
+        .catch(() => {})
+        .then(() => device.close())
+        .catch(() => {});
+    });
+
     elements.disconnectButton.addEventListener("click", async () => {
       setBusy(true);
       try {
