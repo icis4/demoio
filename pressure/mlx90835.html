@@ -905,57 +905,16 @@
             let spiPollInFlight = false;
             let isI2cConnected = false;
             let i2cPollInFlight = false;
-            /* The I2C read is a frame of its own: write the READ opcode, then take the
-               answer back. There is no byte lost to the outgoing command as on SPI, so
-               the status sits at [0] and the layout is
-               [status, prs_msb, prs_lsb, ntc_msb, ntc_lsb, tint_msb, tint_lsb, crc] —
-               the same eight bytes the vendor API reads with i2c_readN(8). */
-            const I2C_FRAME_BYTES = 8;
-            const buildI2cReadCommand = () => `:I2C:EXCHANGE ${I2CADDR}, ${I2C_FRAME_BYTES}, ${hexByte(Mlx90835Command.READ)}`;
-            const SPI_DATA_BYTES = 8;
-            const SPI_FRAME_BYTES = SPI_DATA_BYTES + 3; // ignored + data + status + crc
-            const buildSpiReadCommand = () => `:SPI:EXCH ${SPI_FRAME_BYTES},${hexByte(Mlx90835Command.READ_MEASUREMENT)}, 0`;
-            let spiReadCommand = ':SPI:EXCH';
-            let spiReadCommandProbed = false;
-
-            function parseSpiRead4Bytes(lines) {
-                // Expected:
-                // :SPI:EXCH N,<READ_MEASUREMENT>, 0
-                // N = dataBytes + 3 (ignored + status + crc)
-                // (OK)>
-                // Byte layout: [ignored, data_msb, data_lsb, status, crc]
-                const arr = Array.isArray(lines) ? lines : String(lines ?? '').split('\n');
-                for (let i = 0; i < arr.length; i++) {
-                    const s = String(arr[i] ?? '').trim();
-                    if (!s) continue;
-                    if (s.includes('(OK)>')) continue;
-                    if (!s.includes(',')) continue;
-                    const parts = s.split(',').map(p => p.trim()).filter(Boolean);
-                    if (parts.length < SPI_FRAME_BYTES) continue;
-                    const bytes = [];
-                    for (let j = 0; j < parts.length && bytes.length < SPI_FRAME_BYTES; j++) {
-                        const token = parts[j];
-                        if (!/^(?:0x)?[0-9a-fA-F]{1,2}$/.test(token)) {
-                            bytes.length = 0;
-                            break;
-                        }
-                        const n = parseInt(token.replace(/^0x/i, ''), 16);
-                        if (!Number.isFinite(n) || n < 0 || n > 255) {
-                            bytes.length = 0;
-                            break;
-                        }
-                        bytes.push(n);
-                    }
-                    if (bytes.length === SPI_FRAME_BYTES) {
-                        const dataWord = ((bytes[1] & 0xFF) << 8) | (bytes[2] & 0xFF);
-                        const data = (dataWord & 0x8000) ? (dataWord - 0x10000) : dataWord;
-                        const status = bytes[3] & 0xFF;
-                        const crc = bytes[4] & 0xFF;
-                        return { data, status, crc, bytes };
-                    }
-                }
-                return null;
-            }
+            /* Write the READ opcode and take the frame back, as the vendor API does
+               with i2c_readN(8). */
+            const I2C_READ_BYTES = 8;
+            const buildI2cReadCommand = () => `:I2C:EXCHANGE ${I2CADDR}, ${I2C_READ_BYTES}, ${hexByte(Mlx90835Command.READ)}`;
+            /* Exactly one byte goes out. Adding a second (the padding `, 0` this page
+               used to send) shifts the whole reply by one and drops the status off the
+               front, which is what made the pressure read as the NTC field. Twelve
+               bytes back is room for the longest frame the chip can send. */
+            const SPI_READ_BYTES = 12;
+            const buildSpiReadCommand = () => `:SPI:EXCH ${SPI_READ_BYTES}, ${hexByte(Mlx90835Command.READ_MEASUREMENT)}`;
 
             function parseByteTokens(lines) {
                 const out = [];
@@ -977,33 +936,209 @@
                 return out;
             }
 
-            function parseI2cFrame(lines) {
-                // The board answers a multi-byte read as comma-separated hex bytes.
+            /* Datasheet figure 11: the reply is [status, prs_msb, prs_lsb, ntc_msb,
+               ntc_lsb, ... , crc]. On SPI one byte comes back while the command is
+               still going out and means nothing, so the frame starts one byte in; on
+               I2C the read begins after the opcode and the status is first. Reading
+               that wrong is how the same chip showed 486 counts on one bus and 9 on
+               the other.
+
+               Two things are not knowable in advance. How many data bytes follow
+               depends on which measurements the chip is configured to output, and the
+               checksum does not start from zero the way the vendor API's own CRC does
+               — on this part the seed is 0xA2. Both are therefore pinned down from
+               live frames: the checksum only holds where the frame really ends. Running
+               it over a good frame including its own CRC byte leaves zero, and the
+               padding after that is zero too, so every later position appears to hold
+               as well — the first position that holds is the frame's end. */
+            /* 0x1006 says what the chip puts in a frame and how wide each field is.
+               The datasheet spells the fields out: for either temperature 0 disables
+               it and 1..7 mean 8, 9, 10, 11, 12, 12, 12 bits; for pressure the same
+               index means 10, 10, 11, 12, 13, 14, 14, 14. Eight bits fit one byte and
+               anything wider takes two, which is what decides the frame's length. */
+            const TEMP_OUT_BITS = [0, 8, 9, 10, 11, 12, 12, 12];
+            const PRESSURE_OUT_BITS = [10, 10, 11, 12, 13, 14, 14, 14];
+            /* Measured on the bench against a known barometer: the checksum covers the
+               status byte and every data byte after it, starting from zero, exactly as
+               the datasheet and the vendor API say. */
+            const CRC_SEED = 0x00;
+            let outputConfig = null;
+
+            function decodeOutputConfig(word) {
+                const field = (shift) => (word >> shift) & 0x07;
+                const bytesFor = (v) => (v === 0 ? 0 : (v === 1 ? 1 : 2));
+                const ntc = field(6);
+                const dev = field(3);
+                return {
+                    raw: word & 0xFFFF,
+                    pressureBits: PRESSURE_OUT_BITS[field(0)],
+                    ntcBits: TEMP_OUT_BITS[ntc],
+                    ntcBytes: bytesFor(ntc),
+                    devBits: TEMP_OUT_BITS[dev],
+                    devBytes: bytesFor(dev),
+                };
+            }
+
+            /* One transfer function serves both temperatures — the datasheet draws them
+               in a single figure — at 0.125 °C per count for a 10-bit output, and
+               proportionally finer as the output widens. The vendor GUI carries a
+               separate formula for the device temperature (220*(raw-1)/4093-55); it
+               puts a chip sitting on a bench at 120 °C, while this one puts it at 28,
+               so it is not the one this part uses. */
+            const temperatureCelsius = (raw, bits) => raw / (8 * Math.pow(2, bits - 10)) - 73.15;
+
+            /* The default transfer curve of the MLX90835GXP-AAA-001: 193 counts at
+               0 bar, 3896 at 10 bar. A part calibrated differently needs its own
+               numbers, so counts remain what the chart plots and this is only shown
+               beside them. On the bench it put a stationary chip at 953 hPa against a
+               barometer reading the same. */
+            const TRANSFER_CURVE = { zero: 193, top: 3896, topBar: 10 };
+            const pressureHectopascal = (counts) =>
+                (counts - TRANSFER_CURVE.zero) * TRANSFER_CURVE.topBar * 1000 / (TRANSFER_CURVE.top - TRANSFER_CURVE.zero);
+
+            function describeOutputConfig(cfg) {
+                const parts = [`pressure ${cfg.pressureBits}-bit`];
+                parts.push(cfg.ntcBytes ? `NTC ${cfg.ntcBits}-bit` : 'no NTC');
+                parts.push(cfg.devBytes ? `device ${cfg.devBits}-bit` : 'no device temperature');
+                return parts.join(', ');
+            }
+
+            // Both buses hand back the frame itself, status first.
+            const FRAME_START = { I2C: 0, SPI: 0 };
+            const MIN_FRAME_BYTES = 4; // status + pressure + crc
+            const LOCK_FRAMES = 3;
+            const frameSync = {};
+
+            function frameSyncFor(bus) {
+                if (!frameSync[bus]) frameSync[bus] = { lock: null, candidates: null, seen: 0, reported: false };
+                return frameSync[bus];
+            }
+
+            function resetFrameSync() {
+                for (const bus of Object.keys(frameSync)) delete frameSync[bus];
+            }
+
+            function parseFrameBytes(lines) {
+                /* The board answers a multi-byte read as comma-separated hex bytes. An
+                   echoed command line has commas too, but its first field is not a byte,
+                   which is what keeps it out of here. */
                 const arr = Array.isArray(lines) ? lines : String(lines ?? '').split('\n');
                 for (let i = 0; i < arr.length; i++) {
-                    const s = String(arr[i] ?? '').trim();
-                    if (!s || s.includes('(OK)>')) continue;
-                    const parts = s.split(',').map(p => p.trim()).filter(Boolean);
-                    if (parts.length < I2C_FRAME_BYTES) continue;
+                    const line = String(arr[i] ?? '').trim();
+                    if (!line || line.includes('(OK)>')) continue;
+                    const parts = line.split(',').map(p => p.trim()).filter(Boolean);
+                    if (parts.length < MIN_FRAME_BYTES) continue;
                     const bytes = [];
-                    for (let j = 0; j < I2C_FRAME_BYTES; j++) {
-                        const token = parts[j];
+                    for (const token of parts) {
                         if (!/^(?:0x)?[0-9a-fA-F]{1,2}$/.test(token)) { bytes.length = 0; break; }
                         bytes.push(parseInt(token.replace(/^0x/i, ''), 16));
                     }
-                    if (bytes.length !== I2C_FRAME_BYTES) continue;
-                    const word = ((bytes[1] & 0xFF) << 8) | (bytes[2] & 0xFF);
-                    return {
-                        status: bytes[0] & 0xFF,
-                        // Read the same way as the SPI frame, so a chip plots alike on either bus.
-                        data: (word & 0x8000) ? word - 0x10000 : word,
-                        ntc: ((bytes[3] & 0xFF) << 8) | (bytes[4] & 0xFF),
-                        tint: ((bytes[5] & 0xFF) << 8) | (bytes[6] & 0xFF),
-                        crc: bytes[I2C_FRAME_BYTES - 1] & 0xFF,
-                        bytes,
-                    };
+                    if (bytes.length >= MIN_FRAME_BYTES) return bytes;
+                }
+                return [];
+            }
+
+            function crcCandidates(bytes, start) {
+                const out = [];
+                for (let crcAt = start + MIN_FRAME_BYTES - 1; crcAt < bytes.length; crcAt++) {
+                    if (crc8Mlx90835(bytes, start, crcAt, CRC_SEED) === (bytes[crcAt] & 0xFF)) {
+                        out.push({ crcAt });
+                    }
+                }
+                return out;
+            }
+
+            function decodeFrame(bytes, start, crcAt) {
+                const word = (i) => ((bytes[i] & 0xFF) << 8) | ((bytes[i + 1] ?? 0) & 0xFF);
+                const dataBytes = crcAt - start - 1; // everything between status and crc
+                const frame = { status: bytes[start] & 0xFF, pressure: word(start + 1), ntc: null, dev: null };
+                let at = start + 3;
+                const take = (count) => {
+                    const v = count === 2 ? word(at) : (bytes[at] & 0xFF);
+                    at += count;
+                    return v;
+                };
+                if (outputConfig) {
+                    // Pressure first, then the NTC, then the device's own temperature.
+                    if (outputConfig.ntcBytes) frame.ntc = take(outputConfig.ntcBytes);
+                    if (outputConfig.devBytes) frame.dev = take(outputConfig.devBytes);
+                } else if (dataBytes >= 4) {
+                    // Without the configuration only the first temperature can be placed.
+                    frame.ntc = word(start + 3);
+                }
+                return frame;
+            }
+
+            function readFrame(bytes, bus) {
+                const sync = frameSyncFor(bus);
+                const start = FRAME_START[bus] ?? 0;
+                const show = () => bytes.map(hexByte).join(', ');
+
+                if (sync.lock) {
+                    const { crcAt } = sync.lock;
+                    if (crcAt >= bytes.length) {
+                        debugPrint(`${bus} reply short of the frame: ${show()}`);
+                        return null;
+                    }
+                    if (crc8Mlx90835(bytes, start, crcAt, CRC_SEED) !== (bytes[crcAt] & 0xFF)) {
+                        debugPrint(`${bus} frame CRC failed: ${show()}`);
+                        return null;
+                    }
+                    return decodeFrame(bytes, start, crcAt);
+                }
+
+                const key = (c) => `${c.crcAt}`;
+                const found = crcCandidates(bytes, start);
+                if (outputConfig) {
+                    // status + pressure + whichever temperatures are enabled, then the crc
+                    const expected = start + 3 + outputConfig.ntcBytes + outputConfig.devBytes;
+                    if (found.some(c => c.crcAt === expected)) {
+                        sync.lock = { crcAt: expected };
+                        debugPrint(`${bus} frame: ${expected - start - 1} data bytes after the status.`);
+                        return decodeFrame(bytes, start, expected);
+                    }
+                }
+                const keys = new Set(found.map(key));
+                sync.candidates = sync.candidates
+                    ? sync.candidates.filter(c => keys.has(key(c)))
+                    : found;
+                sync.seen += 1;
+
+                if (sync.candidates.length && sync.seen >= LOCK_FRAMES) {
+                    sync.lock = sync.candidates.reduce((a, b) => (b.crcAt < a.crcAt ? b : a));
+                    debugPrint(`${bus} frame: ${sync.lock.crcAt - start - 1} data bytes after the status.`);
+                    return decodeFrame(bytes, start, sync.lock.crcAt);
+                }
+                if (sync.candidates.length === 0) {
+                    sync.candidates = null;
+                    sync.seen = 0;
+                    if (!sync.reported) {
+                        sync.reported = true;
+                        debugPrint(`${bus}: no CRC-valid frame in the reply, nothing plotted: ${show()}`);
+                    }
                 }
                 return null;
+            }
+
+            function setPressure(counts) {
+                const el = document.getElementById('pressureValue');
+                const note = document.getElementById('pressureCounts');
+                if (!el) return;
+                if (!Number.isFinite(counts)) {
+                    el.textContent = '–';
+                    if (note) note.textContent = '';
+                    return;
+                }
+                el.textContent = `${pressureHectopascal(counts).toFixed(0)} hPa`;
+                el.title = 'hPa from the AAA-001 default curve, not from this chip\u2019s calibration';
+                if (note) note.textContent = `${counts} counts`;
+            }
+
+            function plotFrame(frame) {
+                setChipStatusDecoded('0x' + frame.status.toString(16).toUpperCase().padStart(2, '0'), frame.status);
+                setTemperature(frame);
+                setPressure(frame.pressure);
+                addPointValue(frame.pressure);
             }
 
             async function pollI2cReadAndPlot() {
@@ -1014,18 +1149,13 @@
                 const cmd = buildI2cReadCommand();
                 try {
                     const lines = await scpi_command(cmd, { timeoutMs: 5000, idleMs: 250, allowIdleReturn: true });
-                    const parsed = parseI2cFrame(lines);
-                    if (!parsed) {
-                        const bytes = parseByteTokens(lines);
-                        debugPrint(`${cmd} returned ${bytes.length} byte(s): ${bytes.join(', ')}`);
+                    const bytes = parseFrameBytes(lines);
+                    if (!bytes.length) {
+                        debugPrint(`${cmd} returned no frame: ${parseByteTokens(lines).join(', ')}`);
                         return;
                     }
-                    if (!checkI2cCrc(parsed.bytes)) {
-                        debugPrint(`I2C frame CRC failed: ${parsed.bytes.map(hexByte).join(', ')}`);
-                        return;
-                    }
-                    setChipStatusDecoded('0x' + parsed.status.toString(16).toUpperCase().padStart(2, '0'), parsed.status);
-                    addPointValue(Number(parsed.data.toFixed(2)));
+                    const frame = readFrame(bytes, 'I2C');
+                    if (frame) plotFrame(frame);
                 } catch (e) {
                     debugPrint(`${cmd} failed: ${String(e?.message || e)}`);
                 } finally {
@@ -1033,69 +1163,24 @@
                 }
             }
 
-            async function pollSpiRead4AndPlot() {
+            async function pollSpiReadAndPlot() {
                 if (spiPollInFlight) return;
                 if (!isSpiConnected) return;
                 if (!port || !writer || !inputStream) return;
                 spiPollInFlight = true;
+                const cmd = buildSpiReadCommand();
                 try {
-                    // Send with only '\n' terminator.
-                    // Some firmwares are case/colon sensitive; probe a few variants once and keep the first one that answers.
-                    const candidates = spiReadCommandProbed
-                        ? [spiReadCommand]
-                        : [buildSpiReadCommand()];
-
-                    let lines = null;
-                    let lastErr = null;
-                    try {
-                        for (let i = 0; i < candidates.length; i++) {
-                            const cmd = candidates[i];
-                            try {
-                                lines = await scpi_command(':SPI:CS0 0;' + cmd + ';:SPI:CS0 1', { timeoutMs: 5000, idleMs: 250, allowIdleReturn: true });
-                                spiReadCommand = cmd;
-                                spiReadCommandProbed = true;
-                                break;
-                            } catch (e) {
-                                lastErr = e;
-                                const msg = String(e?.message || e);
-                                // If we got any response at all (e.g. (ERROR)>), stop probing and surface it.
-                                if (!msg.includes('Timeout waiting for response')) {
-                                    spiReadCommand = cmd;
-                                    spiReadCommandProbed = true;
-                                    throw e;
-                                }
-                            }
-                        }
-                    } finally {
-                        //await scpi_command(':SPI:CS0 1');
-                    }
-
-                    if (!lines) {
-                        throw lastErr || new Error('Timeout waiting for response');
-                    }
-
-                    const parsed = parseSpiRead4Bytes(lines);
-                    const bytes = parseByteTokens(lines).slice(0, SPI_FRAME_BYTES);
-                    const data = parsed
-                        ? parsed.data
-                        : (bytes.length === SPI_FRAME_BYTES
-                            ? ((((bytes[1] & 0xFF) << 8) | (bytes[2] & 0xFF)) & 0x8000)
-                                ? (((bytes[1] & 0xFF) << 8) | (bytes[2] & 0xFF)) - 0x10000
-                                : (((bytes[1] & 0xFF) << 8) | (bytes[2] & 0xFF))
-                            : null);
-                    const status = parsed
-                        ? parsed.status
-                        : (bytes.length === SPI_FRAME_BYTES ? (bytes[3] & 0xFF) : null);
-                    if (!Number.isFinite(data)) {
-                        debugPrint(`${spiReadCommand} returned ${bytes.length} byte(s): ${bytes.join(', ')}`);
+                    const lines = await scpi_command(`:SPI:CS0 0;${cmd};:SPI:CS0 1`, { timeoutMs: 5000, idleMs: 250, allowIdleReturn: true });
+                    const bytes = parseFrameBytes(lines);
+                    if (!bytes.length) {
+                        const loose = parseByteTokens(lines);
+                        debugPrint(`${cmd} returned no frame: ${loose.join(', ')}`);
                         return;
                     }
-                    if (Number.isFinite(status)) {
-                        setChipStatusDecoded('0x' + Number(status).toString(16).toUpperCase().padStart(2, '0'), status);
-                    }
-                    addPointValue(Number(data.toFixed(2)));
+                    const frame = readFrame(bytes, 'SPI');
+                    if (frame) plotFrame(frame);
                 } catch (e) {
-                    debugPrint(`${spiReadCommand} failed: ${String(e?.message || e)}`);
+                    debugPrint(`${cmd} failed: ${String(e?.message || e)}`);
                 } finally {
                     spiPollInFlight = false;
                 }
@@ -1116,7 +1201,7 @@
                    answered, so the poll follows the same choice. */
                 timerCallback = isI2cConnected
                     ? () => { void pollI2cReadAndPlot(); }
-                    : () => { void pollSpiRead4AndPlot(); };
+                    : () => { void pollSpiReadAndPlot(); };
                 timer = setInterval(timerCallback, intervalMsFromRate());
                 return true;
             }
@@ -1419,10 +1504,10 @@
             /* The CRC this chip uses is not the SMBus one: the lookup table in the
                vendor API starts 0x00, 0x31, 0x62, 0x53, i.e. polynomial 0x31, init
                0x00, no reflection and no final xor. */
-            function crc8Mlx90835(data, start = 0, end = undefined) {
+            function crc8Mlx90835(data, start = 0, end = undefined, seed = 0x00) {
                 const from = Math.max(0, Number(start) | 0);
                 const to = Number.isFinite(end) ? Math.min(data.length, Number(end) | 0) : data.length;
-                let crc = 0x00;
+                let crc = seed & 0xFF;
                 for (let i = from; i < to; i++) {
                     crc ^= (Number(data[i]) & 0xFF);
                     for (let bit = 0; bit < 8; bit++) {
@@ -1430,37 +1515,6 @@
                     }
                 }
                 return crc & 0xFF;
-            }
-
-            /* The API computes a CRC over everything it sends but never checks the one
-               that comes back, so which bytes the chip covers is not written down
-               anywhere. Both readings are tried on the first frame and the one that
-               matches is kept, so the check costs nothing once the chip has answered. */
-            const I2C_CRC_SPANS = [
-                { label: 'status and data', start: 0 },
-                { label: 'data only', start: 1 },
-            ];
-            let i2cCrcSpan = null;
-            let i2cCrcUnmatchedReported = false;
-
-            function checkI2cCrc(bytes) {
-                const expected = bytes[bytes.length - 1] & 0xFF;
-                const end = bytes.length - 1;
-                if (i2cCrcSpan) {
-                    return crc8Mlx90835(bytes, i2cCrcSpan.start, end) === expected;
-                }
-                for (const span of I2C_CRC_SPANS) {
-                    if (crc8Mlx90835(bytes, span.start, end) === expected) {
-                        i2cCrcSpan = span;
-                        debugPrint(`I2C frame CRC covers ${span.label}.`);
-                        return true;
-                    }
-                }
-                if (!i2cCrcUnmatchedReported) {
-                    i2cCrcUnmatchedReported = true;
-                    debugPrint('I2C frame CRC matches neither reading; frames are being discarded.');
-                }
-                return false;
             }
 
             function setI2cBadge(connected, detailText = '', disconnectedText = 'Disconnected') {
@@ -1551,6 +1605,106 @@
                 await scpi_command(`:SPI:CS0 0;:SPI:EXCH 4, ${hexByte(Mlx90835Command.CLEAR_ERROR_FLAGS)};:SPI:CS0 1`);
                 await scpi_command(`:SPI:CS0 0;:SPI:EXCH 4, ${hexByte(Mlx90835Command.START_CONTINUOUS_MODE)};:SPI:CS0 1`);
                 debugPrint(`SPI continuous mode requested (${source})`);
+            }
+
+            async function readStatusByte(bus) {
+                const lines = bus === 'I2C'
+                    ? await scpi_command(`:I2C:EXCHANGE ${I2CADDR}, 1, ${hexByte(Mlx90835Command.WRITE)}, ${hexByte(Mlx90835Command.READ_STATUS_BYTE)}`)
+                    : await scpi_command(`:SPI:CS0 0;:SPI:EXCH 2, ${hexByte(Mlx90835Command.READ_STATUS_BYTE)};:SPI:CS0 1`);
+                const bytes = parseByteTokens(lines);
+                return bytes.length ? (bytes[0] & 0xFF) : NaN;
+            }
+
+            function sendChipCommand(bus, command) {
+                return bus === 'I2C'
+                    ? scpi_command(`:I2C:EXCHANGE ${I2CADDR}, 1, ${hexByte(Mlx90835Command.WRITE)}, ${hexByte(command)}`)
+                    : scpi_command(`:SPI:CS0 0;:SPI:EXCH 2, ${hexByte(command)};:SPI:CS0 1`);
+            }
+
+            /* A memory read is two exchanges: MEMORY_FETCH with the address and its
+               checksum, then a read of the four bytes it prepared. The chip only
+               answers this outside a running measurement, so the caller idles it first.
+
+               Both checksums start from zero: the one over the address going out and
+               the one over [status, data, data] coming back. */
+            async function readMemoryWord(addr, bus) {
+                const hi = (addr >> 8) & 0xFF;
+                const lo = addr & 0xFF;
+                const crc = crc8Mlx90835([hi, lo], 0, 2, CRC_SEED);
+                const fetch = [Mlx90835Command.MEMORY_FETCH, hi, lo, crc].map(hexByte).join(', ');
+
+                let lines;
+                if (bus === 'I2C') {
+                    await scpi_command(`:I2C:EXCHANGE ${I2CADDR}, 1, ${hexByte(Mlx90835Command.WRITE)}, ${fetch}`);
+                    lines = await scpi_command(`:I2C:EXCHANGE ${I2CADDR}, 4, ${hexByte(Mlx90835Command.READ)}`);
+                } else {
+                    await scpi_command(`:SPI:CS0 0;:SPI:EXCH 4, ${fetch};:SPI:CS0 1`);
+                    lines = await scpi_command(`:SPI:CS0 0;:SPI:EXCH 6, ${hexByte(Mlx90835Command.READ_MEASUREMENT)};:SPI:CS0 1`);
+                }
+
+                const bytes = parseFrameBytes(lines);
+                const start = FRAME_START[bus] ?? 0;
+                if (bytes.length < start + 4) {
+                    debugPrint(`Memory read came back short: ${bytes.map(hexByte).join(', ')}`);
+                    return null;
+                }
+                if (crc8Mlx90835(bytes, start, start + 3, CRC_SEED) !== (bytes[start + 3] & 0xFF)) {
+                    debugPrint(`Memory read checksum failed: ${bytes.map(hexByte).join(', ')}`);
+                    return null;
+                }
+                return ((bytes[start + 1] & 0xFF) << 8) | (bytes[start + 2] & 0xFF);
+            }
+
+            function setOutputSummary(text, title = '') {
+                const el = document.getElementById('outputConfig');
+                if (!el) return;
+                el.textContent = text || '–';
+                if (title) el.title = title; else el.removeAttribute('title');
+            }
+
+            function setTemperature(frame) {
+                const el = document.getElementById('tempValue');
+                if (!el) return;
+                if (!outputConfig) {
+                    el.textContent = Number.isFinite(frame?.ntc) ? `${frame.ntc} counts` : '–';
+                    return;
+                }
+                const readings = [];
+                if (outputConfig.devBytes && Number.isFinite(frame.dev)) {
+                    readings.push(`device ${temperatureCelsius(frame.dev, outputConfig.devBits).toFixed(1)} °C · ${frame.dev} counts`);
+                }
+                if (outputConfig.ntcBytes && Number.isFinite(frame.ntc)) {
+                    readings.push(`NTC ${temperatureCelsius(frame.ntc, outputConfig.ntcBits).toFixed(1)} °C · ${frame.ntc} counts`);
+                }
+                el.replaceChildren(...readings.map((text) => {
+                    const line = document.createElement('span');
+                    line.textContent = text;
+                    return line;
+                }));
+                if (!readings.length) el.textContent = '–';
+                el.title = 'the NTC reading means nothing unless a thermistor is wired to the chip';
+            }
+
+            async function readOutputConfig(bus) {
+                try {
+                    await sendChipCommand(bus, Mlx90835Command.START_IDLE_MODE);
+                    await new Promise(r => setTimeout(r, 20));
+                    const idle = await readStatusByte(bus);
+                    if (Number.isFinite(idle)) {
+                        debugPrint(`Status after the idle request: ${hexByte(idle)} — ${decodeStatusByte(idle).replace(/\t+/g, ' ').trim()}`);
+                    }
+                    const word = await readMemoryWord(Mlx90835Address.EE_OUT_FILT_CONF, bus);
+                    if (!Number.isFinite(word)) {
+                        debugPrint('Output configuration could not be read; the frame will be read by its checksum instead.');
+                        return;
+                    }
+                    outputConfig = decodeOutputConfig(word);
+                    const summary = describeOutputConfig(outputConfig);
+                    debugPrint(`Output configuration 0x${word.toString(16).toUpperCase().padStart(4, '0')}: ${summary}`);
+                    setOutputSummary(summary, `EE_OUT_FILT_CONF = 0x${word.toString(16).toUpperCase().padStart(4, '0')}`);
+                } catch (e) {
+                    debugPrint(`Output configuration read failed: ${String(e?.message || e)}`);
+                }
             }
 
             async function setI2cContinuousMode(source = 'start') {
@@ -1788,8 +1942,11 @@
                     setSpiBadge(false);
                     clearDebugLog();
                     deviceLost = false;
-                    i2cCrcSpan = null;
-                    i2cCrcUnmatchedReported = false;
+                    resetFrameSync();
+                    outputConfig = null;
+                    setOutputSummary('–');
+                    setTemperature(null);
+                    setPressure(NaN);
                     debugPrint('--- CONNECT ---');
 
                     // Disable Connect immediately (before opening chooser) to avoid double-click races.
@@ -1841,7 +1998,9 @@
                     // I2C handshake (best-effort): updates I2C status badge
                     const i2c = await tryI2cHandshake();
                     if (i2c && i2c.notPresent) {
-                        await startSpiFallback();
+                        if (await startSpiFallback()) await readOutputConfig('SPI');
+                    } else if (i2c && i2c.ok) {
+                        await readOutputConfig('I2C');
                     }
                 } catch (err) {
                     const errName = String(err?.name || '');
@@ -1908,6 +2067,10 @@
                     setI2cBadge(false);
                     setChipStatus('–');
                     setSpiBadge(false);
+                    outputConfig = null;
+                    setOutputSummary('–');
+                    setTemperature(null);
+                    setPressure(NaN);
                 }
             }
 
