@@ -24,6 +24,57 @@
         crossorigin="anonymous">
     <link href="../css/theme.css" rel="stylesheet">
     <style>
+        /* The panel is a label/value table, not a row of badges: the values here run
+           from a one-word status to a full sentence about the chip's output format,
+           and a flex row with space-between pushes those into a ragged mess. */
+        .panel-grid {
+            display: grid;
+            grid-template-columns: max-content 1fr;
+            gap: 0.45rem 0.9rem;
+            align-items: baseline;
+        }
+
+        .panel-label {
+            font-weight: 600;
+            color: var(--mx-text-muted, rgba(255, 255, 255, 0.72));
+        }
+
+        .panel-value {
+            overflow-wrap: anywhere;
+        }
+
+        .panel-block {
+            grid-column: 1 / -1;
+            display: flex;
+            flex-direction: column;
+            gap: 0.1rem;
+        }
+
+        .panel-block .panel-label {
+            font-size: 0.82rem;
+            letter-spacing: 0.02em;
+        }
+
+        .panel-reading {
+            font-size: 1.35rem;
+            line-height: 1.2;
+        }
+
+        .panel-note {
+            font-size: 0.82rem;
+            color: var(--mx-text-muted, rgba(255, 255, 255, 0.6));
+        }
+
+        /* A value that is really two readings gets a line each, rather than one
+           sentence wrapping wherever the column happens to end. */
+        .panel-value > span {
+            display: block;
+        }
+
+        .panel-grid .badge {
+            justify-self: start;
+        }
+
         body {
             font-family: var(--mx-font-sans);
             margin: 0;
@@ -636,21 +687,33 @@
                 <div class="card panel-card">
                     <div class="card-body">
                         <div class="vstack gap-2">
-                            <div class="d-flex align-items-center justify-content-between">
-                                <span class="fw-semibold">Connection</span>
+                            <div class="panel-grid">
+                                <span class="panel-label">Connection</span>
                                 <span id="connStatus" class="badge text-bg-secondary">Disconnected</span>
-                            </div>
-                            <div class="d-flex align-items-center justify-content-between">
-                                <span class="fw-semibold">Chip Status</span>
-                                <span id="chipStatus" class="text-muted">–</span>
-                            </div>
-                            <div class="d-flex align-items-center justify-content-between">
-                                <span class="fw-semibold">I2C</span>
+                                <span class="panel-label">I2C</span>
                                 <span id="i2cStatus" class="badge text-bg-secondary">Disconnected</span>
-                            </div>
-                            <div class="d-flex align-items-center justify-content-between">
-                                <span class="fw-semibold">SPI</span>
+                                <span class="panel-label">SPI</span>
                                 <span id="spiStatus" class="badge text-bg-secondary">Disconnected</span>
+
+                                <!-- What the chip says about itself needs the full width:
+                                     these run from one word to a whole output format. -->
+                                <div class="panel-block">
+                                    <span class="panel-label">Pressure</span>
+                                    <span id="pressureValue" class="panel-reading">–</span>
+                                    <span id="pressureCounts" class="panel-note"></span>
+                                </div>
+                                <div class="panel-block">
+                                    <span class="panel-label">Chip status</span>
+                                    <span id="chipStatus" class="panel-value">–</span>
+                                </div>
+                                <div class="panel-block">
+                                    <span class="panel-label">Temperature</span>
+                                    <span id="tempValue" class="panel-value">–</span>
+                                </div>
+                                <div class="panel-block">
+                                    <span class="panel-label">Output</span>
+                                    <span id="outputConfig" class="panel-value">–</span>
+                                </div>
                             </div>
                             <div class="mt-2">
                                 <button id="btnExportCsv" class="btn btn-outline-warning btn-sm">Export CSV</button>
@@ -743,7 +806,7 @@
             const data = {
                 labels: [],
                 datasets: [{
-                    label: 'Pressure (psi)',
+                    label: 'Pressure (raw counts)',
                     data: [],
                     borderColor: '#65BBA9',
                     backgroundColor: 'rgba(101, 187, 169, 0.18)',
@@ -769,7 +832,7 @@
                                     grid: { color: 'rgba(255, 255, 255, 0.10)' }
                                 },
                                 y: {
-                                    title: { display: true, text: 'psi', color: 'rgba(255, 255, 255, 0.82)' },
+                                    title: { display: true, text: 'counts', color: 'rgba(255, 255, 255, 0.82)' },
                                     ticks: { color: 'rgba(255, 255, 255, 0.72)' },
                                     grid: { color: 'rgba(255, 255, 255, 0.10)' }
                                 }
@@ -1084,7 +1147,7 @@
 
             const debugLogEl = () => document.getElementById('debugLog');
             const debugBuffer = [];
-            const DEBUG_MAX_LINES = 300;
+            const DEBUG_MAX_LINES = 2000;
             function clearDebugLog() {
                 debugBuffer.splice(0, debugBuffer.length);
                 const el = debugLogEl();
@@ -1442,6 +1505,19 @@
                 return msg;
             }
 
+            /* decodeStatusByte() keeps the vendor's tabbed line for the tooltip; this is
+               the same information written to be read. */
+            function summariseStatus(statusByte) {
+                const b = Number(statusByte) & 0xFF;
+                const modes = ['start-up', 'continuous', 'single', 'burst', 'WOC', 'idle', 'unknown', 'failsafe'];
+                const parts = [modes[(b & 0x70) >> 4]];
+                if (b & 0x80) parts.push('reset');
+                if (b & 0x08) parts.push('comm error');
+                if (b & 0x04) parts.push('exec error');
+                if (b & 0x02) parts.push('data ready');
+                return parts.join(' · ');
+            }
+
             function setChipStatusDecoded(hexText, statusByte) {
                 const el = document.getElementById('chipStatus');
                 if (!el) return;
@@ -1452,8 +1528,7 @@
                 }
 
                 const decodedRaw = decodeStatusByte(statusByte);
-                const decodedDisplay = decodedRaw.replace(/\t+/g, ' ').trim();
-                el.textContent = decodedDisplay ? `${hexText} — ${decodedDisplay}` : hexText;
+                el.textContent = `${hexText} · ${summariseStatus(statusByte)}`;
                 // Keep the original tabbed format available on hover.
                 el.title = decodedRaw.trim();
             }
@@ -1988,7 +2063,7 @@
             window.crc8Mlx90835 = crc8Mlx90835;
 
             function exportCsv() {
-                const rows = [['time', 'pressure']];
+                const rows = [['time', 'pressure_raw']];
                 const labels = data.labels;
                 const values = data.datasets[0].data;
                 for (let i = 0; i < values.length; i++) {
