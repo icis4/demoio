@@ -1582,7 +1582,8 @@
                     pipeAbort = new AbortController();
                     const textDecoder = new TextDecoderStream();
                     rxPipe = port.readable.pipeTo(textDecoder.writable, { signal: pipeAbort.signal }).catch((e) => {
-                        if (String(e?.name) !== 'AbortError') {
+                        // An abort is how disconnect stops this pipe, not a failure.
+                        if (e && String(e?.name) !== 'AbortError') {
                             debugPrint(`RX pipe failed: ${String(e?.message || e)}`);
                         }
                     });
@@ -1656,7 +1657,7 @@
                        on its own; the RX one only stops when aborted. Without this the close
                        below fails, the port stays open and DTR stays asserted — which on this
                        board is the green LED still lit after a disconnect. */
-                    if (pipeAbort) { pipeAbort.abort(); pipeAbort = null; }
+                    if (pipeAbort) { pipeAbort.abort(new DOMException('Disconnecting', 'AbortError')); pipeAbort = null; }
                     if (txPipe) { try { await txPipe; } catch { } txPipe = null; }
                     if (rxPipe) { try { await rxPipe; } catch { } rxPipe = null; }
                     if (port) {
