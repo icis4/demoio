@@ -1418,6 +1418,17 @@
                         return { ok: false, notPresent: true };
                     }
 
+                    /* A bus with nothing on it still parses: MISO floating low reads
+                       0x00 and floating high 0xFF, which the decoder happily calls
+                       "start-up" and "FAILSAFE". Neither is evidence of a chip, and
+                       accepting them is how the page reported SPI while the part was
+                       wired to the I2C pins. */
+                    if (parsed === 0x00 || parsed === 0xFF) {
+                        debugPrint(`SPI status byte 0x${parsed.toString(16).toUpperCase().padStart(2, '0')} is what an empty bus returns; treating as not present.`);
+                        setSpiBadge(false, '', 'Not present');
+                        return { ok: false, notPresent: true };
+                    }
+
                     const hex = '0x' + parsed.toString(16).toUpperCase();
                     setChipStatusDecoded(hex, parsed & 0xFF);
                     setSpiBadge(true);
@@ -1493,6 +1504,17 @@
                     const m = raw.match(/0x[0-9a-f]+|\b[0-9a-f]{1,8}\b/i);
                     if (m) parsed = parseInt(m[0].replace(/^0x/i, ''), 16);
                     if (!Number.isFinite(parsed)) {
+                        setI2cBadge(false, '', 'Not present');
+                        return { ok: false, notPresent: true };
+                    }
+
+                    /* A bus with nothing on it still parses: MISO floating low reads
+                       0x00 and floating high 0xFF, which the decoder happily calls
+                       "start-up" and "FAILSAFE". Neither is evidence of a chip, and
+                       accepting them is how the page reported SPI while the part was
+                       wired to the I2C pins. */
+                    if (parsed === 0x00 || parsed === 0xFF) {
+                        debugPrint(`I2C status byte 0x${parsed.toString(16).toUpperCase().padStart(2, '0')} is what an empty bus returns; treating as not present.`);
                         setI2cBadge(false, '', 'Not present');
                         return { ok: false, notPresent: true };
                     }
