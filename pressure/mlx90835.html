@@ -1680,6 +1680,23 @@
                 return matches.length === 1 ? matches[0] : null;
             }
 
+            /* A board that goes away mid-session leaves the page looking connected
+               while every command times out. Web Serial says so twice — a port-level
+               disconnect event and a broken RX pipe — so both lead here, once. */
+            let deviceLost = false;
+            function handleDeviceLost(reason) {
+                if (deviceLost || !port) return;
+                deviceLost = true;
+                debugPrint(`Device lost (${reason}); disconnecting.`);
+                void disconnectSerial();
+            }
+
+            if ('serial' in navigator) {
+                navigator.serial.addEventListener('disconnect', (e) => {
+                    if (port && port === e.target) handleDeviceLost('unplugged');
+                });
+            }
+
             async function connectSerial() {
                 if (!('serial' in navigator)) {
                     alert('Web Serial API not supported in this browser. Use Chrome/Edge.');
@@ -1695,6 +1712,7 @@
                     setChipStatus('–');
                     setSpiBadge(false);
                     clearDebugLog();
+                    deviceLost = false;
                     i2cCrcSpan = null;
                     i2cCrcUnmatchedReported = false;
                     debugPrint('--- CONNECT ---');
@@ -1718,6 +1736,7 @@
                         // An abort is how disconnect stops this pipe, not a failure.
                         if (e && String(e?.name) !== 'AbortError') {
                             debugPrint(`RX pipe failed: ${String(e?.message || e)}`);
+                            handleDeviceLost(String(e?.message || e));
                         }
                     });
                     inputStream = textDecoder.readable;
