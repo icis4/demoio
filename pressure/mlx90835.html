@@ -1001,6 +1001,11 @@
             let port = null;
             let reader = null;
             let writer = null;
+            // pipeTo locks port.readable and port.writable for as long as the pipe lives,
+            // so both have to be torn down before the port can be closed.
+            let pipeAbort = null;
+            let rxPipe = null;
+            let txPipe = null;
             let inputStream = null;
             let connectInProgress = false;
             let serialPumpTask = null;
@@ -1574,15 +1579,16 @@
                     // Both pipes must report failures: writer.write() only queues into
                     // the encoder, so a broken pipe swallows the bytes and every command
                     // times out with nothing received and no error anywhere.
+                    pipeAbort = new AbortController();
                     const textDecoder = new TextDecoderStream();
-                    port.readable.pipeTo(textDecoder.writable).catch((e) => {
+                    rxPipe = port.readable.pipeTo(textDecoder.writable, { signal: pipeAbort.signal }).catch((e) => {
                         if (String(e?.name) !== 'AbortError') {
                             debugPrint(`RX pipe failed: ${String(e?.message || e)}`);
                         }
                     });
                     inputStream = textDecoder.readable;
                     const textEncoder = new TextEncoderStream();
-                    textEncoder.readable.pipeTo(port.writable).catch((e) => {
+                    txPipe = textEncoder.readable.pipeTo(port.writable).catch((e) => {
                         if (String(e?.name) !== 'AbortError') {
                             debugPrint(`TX pipe failed: ${String(e?.message || e)}`);
                         }
@@ -1646,7 +1652,19 @@
                         try { writer.releaseLock(); } catch { }
                         writer = null;
                     }
-                    // Small settle delay to allow underlying streams to tear down
+                    /* The pipes hold the port's streams. Closing the writer ends the TX pipe
+                       on its own; the RX one only stops when aborted. Without this the close
+                       below fails, the port stays open and DTR stays asserted — which on this
+                       board is the green LED still lit after a disconnect. */
+                    if (pipeAbort) { pipeAbort.abort(); pipeAbort = null; }
+                    if (txPipe) { try { await txPipe; } catch { } txPipe = null; }
+                    if (rxPipe) { try { await rxPipe; } catch { } rxPipe = null; }
+                    if (port) {
+                        // Not swallowed: a failure here is exactly why the board would look busy.
+                        try { await port.close(); }
+                        catch (e) { debugPrint(`Port close failed: ${String(e?.message || e)}`); }
+                        port = null;
+                    }
                     await new Promise(r => setTimeout(r, 200));
                     if (port) { try { await port.close(); } catch { } port = null; }
                     inputStream = null;
