@@ -1186,6 +1186,24 @@
                 }
             }
 
+            /* Start and Stop belong to the stream, not to the click that began it:
+               a disconnect ends the stream too, and before this the buttons kept the
+               state from the previous session, leaving Start dead on reconnect. */
+            function setStreamButtons(running) {
+                const btnDemo = document.getElementById('btnDemo');
+                const btnStop = document.getElementById('btnStop');
+                if (btnDemo) {
+                    btnDemo.disabled = running;
+                    btnDemo.classList.toggle('disabled', running);
+                }
+                if (btnStop) {
+                    btnStop.disabled = !running;
+                    btnStop.classList.toggle('disabled', !running);
+                    btnStop.classList.toggle('btn-danger', running);
+                    btnStop.classList.toggle('btn-outline-secondary', !running);
+                }
+            }
+
             function startStream() {
                 if (timer) return false;
                 if (!port || !writer || !inputStream) {
@@ -2067,6 +2085,7 @@
                     setI2cBadge(false);
                     setChipStatus('–');
                     setSpiBadge(false);
+                    setStreamButtons(false);
                     outputConfig = null;
                     setOutputSummary('–');
                     setTemperature(null);
@@ -2205,19 +2224,11 @@
                         return;
                     }
                 }
-                const started = startStream();
-                if (!started) return;
-                const btnDemo = document.getElementById('btnDemo');
-                const btnStop = document.getElementById('btnStop');
-                if (btnDemo) { btnDemo.disabled = true; btnDemo.classList.add('disabled'); }
-                if (btnStop) { btnStop.disabled = false; btnStop.classList.remove('disabled'); btnStop.classList.add('btn-danger'); btnStop.classList.remove('btn-outline-secondary'); }
+                if (startStream()) setStreamButtons(true);
             });
             document.getElementById('btnStop')?.addEventListener('click', () => {
                 stopStream();
-                const btnDemo = document.getElementById('btnDemo');
-                const btnStop = document.getElementById('btnStop');
-                if (btnDemo) { btnDemo.disabled = false; btnDemo.classList.remove('disabled'); }
-                if (btnStop) { btnStop.disabled = true; btnStop.classList.add('disabled'); btnStop.classList.remove('btn-danger'); btnStop.classList.add('btn-outline-secondary'); }
+                setStreamButtons(false);
             });
             // Expose for future updates
             window.pressureChart = chart;
