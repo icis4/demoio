@@ -51,6 +51,7 @@
     stopBits:            $('stopBits'),
     parity:              $('parity'),
     flowControl:         $('flowControl'),
+    lineMode:            $('lineMode'),
 
     // Layout
     sidebar:             $('sidebar'),
@@ -183,10 +184,8 @@
   }
 
 
-  /* Web Serial's picker exists to grant permission, not to use it: a board the
-   * user has already authorised for this origin comes back from getPorts()
-   * silently. The suite shares one key for which board that was, so the terminal
-   * and the sensor pages all reopen the same one. */
+  /* This page always asks which port to use, but it records which board was
+     picked: the sensor pages reopen that one without a dialog of their own. */
   const PORT_KEY = 'melexisio.port';
 
   function rememberPort(port) {
@@ -195,32 +194,6 @@
     try {
       window.localStorage.setItem(PORT_KEY, `${info.usbVendorId.toString(16)}:${info.usbProductId.toString(16)}`);
     } catch { /* storage unavailable */ }
-  }
-
-  async function authorisedPort() {
-    if (!('serial' in navigator)) return null;
-    let ports;
-    try {
-      ports = await navigator.serial.getPorts();
-    } catch {
-      return null;
-    }
-    if (ports.length === 0) return null;
-    if (ports.length === 1) return ports[0];
-
-    let vid = NaN, pid = NaN;
-    try {
-      const saved = (window.localStorage.getItem(PORT_KEY) || '').split(':');
-      vid = parseInt(saved[0], 16);
-      pid = parseInt(saved[1], 16);
-    } catch { /* storage unavailable */ }
-    if (!Number.isInteger(vid)) return null;   // several boards, no hint: let the user choose
-
-    const matches = ports.filter((port) => {
-      const info = port.getInfo();
-      return info.usbVendorId === vid && info.usbProductId === pid;
-    });
-    return matches.length === 1 ? matches[0] : null;
   }
 
   async function connect() {
@@ -233,18 +206,12 @@
       clearCommandCatalog();
       setConnectionState('connecting');
 
-      // Request port from user
-      state.port = await authorisedPort() || await navigator.serial.requestPort();
+      /* Always ask. The machine offers several CDC ports — the board, an
+         ST-Link, whatever else is plugged in — and picking is the one decision
+         this page should not make on somebody's behalf. */
+      state.port = await navigator.serial.requestPort();
 
-      // Build serial options
-      const options = {
-        baudRate:     parseInt(els.baudRate.value, 10),
-        dataBits:     parseInt(els.dataBits.value, 10),
-        stopBits:     parseInt(els.stopBits.value, 10),
-        parity:       els.parity.value,
-        flowControl:  els.flowControl.value,
-      };
-
+      const options = lineOptions(state.port);
       await state.port.open(options);
       rememberPort(state.port);
 
@@ -699,6 +666,37 @@
     if (wrong.length === 0) return;
     logError("An ST-Link bridges to a UART that needs 115200 7O2 — set that in the "
       + "sidebar and reconnect, or pick the board's own port instead.");
+  }
+
+  /* Auto takes the settings from the device that was picked — 115200 8N1 for
+     everything here except an ST-Link's 7O2 UART — and shows them in the fields
+     afterwards, so what was used is visible rather than implied. Custom hands
+     the fields back to the operator. */
+  function lineOptions(port) {
+    const flowControl = els.flowControl.value;
+    if (els.lineMode.value !== 'auto') {
+      return {
+        baudRate:    parseInt(els.baudRate.value, 10),
+        dataBits:    parseInt(els.dataBits.value, 10),
+        stopBits:    parseInt(els.stopBits.value, 10),
+        parity:      els.parity.value,
+        flowControl,
+      };
+    }
+    const line = window.melexisSerial?.lineOptions(port)
+      ?? { baudRate: 115200, dataBits: 8, parity: 'none', stopBits: 1 };
+    els.baudRate.value = String(line.baudRate);
+    els.dataBits.value = String(line.dataBits);
+    els.stopBits.value = String(line.stopBits);
+    els.parity.value = line.parity;
+    return { ...line, flowControl };
+  }
+
+  function applyLineMode() {
+    const automatic = els.lineMode.value === 'auto';
+    for (const field of [els.baudRate, els.dataBits, els.stopBits, els.parity]) {
+      field.disabled = automatic;
+    }
   }
 
   /* A device that was never going to answer connects exactly like one that
@@ -1234,17 +1232,12 @@
   };
 
   // ---- Boot ----
-  document.addEventListener('DOMContentLoaded', async () => {
+  /* No reconnect on load: which port this talks to is a decision the operator
+     makes at Connect, every time. */
+  document.addEventListener('DOMContentLoaded', () => {
     init();
-    // Nothing authorised yet means the Connect button still has to ask.
-    if (!(await authorisedPort())) return;
-
-    if (await claims.heldElsewhere()) {
-      logSystem('Another tab has this board open. Close it, or click Connect to take the port.');
-      return;
-    }
-
-    connect();
+    els.lineMode.addEventListener('change', applyLineMode);
+    applyLineMode();
   });
 
 })();

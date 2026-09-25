@@ -61,9 +61,18 @@
             <summary class="advanced__summary">Line settings</summary>
             <p class="advanced__note">
               Ignored over USB CDC, which is how the Melexis IO and EVB boards enumerate —
-              line coding never reaches the device. They matter for the mip-firmware build
-              that talks over a real UART at 4 Mbit/s.
+              line coding never reaches the device. They matter where a real UART is behind
+              the port: an ST-Link needs 115200 7O2, and the mip-firmware build runs at
+              4 Mbit/s. Auto reads them off the device that was picked.
             </p>
+            <div class="field">
+              <label class="field__label" for="lineMode">Mode</label>
+              <select id="lineMode" class="field__select">
+                <option value="auto" selected>Auto — from the device</option>
+                <option value="custom">Custom — use the fields below</option>
+              </select>
+            </div>
+
             <div class="field">
               <label class="field__label" for="baudRate">Baud Rate</label>
               <select id="baudRate" class="field__select">
