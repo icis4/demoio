@@ -951,11 +951,15 @@
                it over a good frame including its own CRC byte leaves zero, and the
                padding after that is zero too, so every later position appears to hold
                as well — the first position that holds is the frame's end. */
-            /* 0x1006 says what the chip puts in a frame and how wide each field is.
-               The datasheet spells the fields out: for either temperature 0 disables
-               it and 1..7 mean 8, 9, 10, 11, 12, 12, 12 bits; for pressure the same
-               index means 10, 10, 11, 12, 13, 14, 14, 14. Eight bits fit one byte and
-               anything wider takes two, which is what decides the frame's length. */
+            /* REG2 says what the chip puts in a frame and how wide each field is. The
+               EEPROM word at 0x1006 holds the same fields, but only as the value
+               loaded at power-up: REG2 lives in virtual memory and can be changed
+               while the part runs, so the register is the one to ask (confirmed by
+               the application engineer). The datasheet spells the fields out: for
+               either temperature 0 disables it and 1..7 mean 8, 9, 10, 11, 12, 12, 12
+               bits; for pressure the same index means 10, 10, 11, 12, 13, 14, 14, 14.
+               Eight bits fit one byte and anything wider takes two, which is what
+               decides the frame's length. */
             const TEMP_OUT_BITS = [0, 8, 9, 10, 11, 12, 12, 12];
             const PRESSURE_OUT_BITS = [10, 10, 11, 12, 13, 14, 14, 14];
             /* Measured on the bench against a known barometer: the checksum covers the
@@ -984,7 +988,10 @@
                proportionally finer as the output widens. The vendor GUI carries a
                separate formula for the device temperature (220*(raw-1)/4093-55); it
                puts a chip sitting on a bench at 120 °C, while this one puts it at 28,
-               so it is not the one this part uses. */
+               so it is not the one this part uses. The application engineer says the
+               conversion changed a few times between samples, for both temperatures,
+               and is checking which one this sample was built with — so this stays
+               the reading that matches the bench until they answer. */
             const temperatureCelsius = (raw, bits) => raw / (8 * Math.pow(2, bits - 10)) - 73.15;
 
             /* The default transfer curve of the MLX90835GXP-AAA-001: 193 counts at
@@ -1059,7 +1066,8 @@
                     return v;
                 };
                 if (outputConfig) {
-                    // Pressure first, then the NTC, then the device's own temperature.
+                    /* Pressure, then the NTC, then the device's own temperature —
+                       confirmed by the application engineer. */
                     if (outputConfig.ntcBytes) frame.ntc = take(outputConfig.ntcBytes);
                     if (outputConfig.devBytes) frame.dev = take(outputConfig.devBytes);
                 } else if (dataBytes >= 4) {
@@ -1711,7 +1719,7 @@
                     if (Number.isFinite(idle)) {
                         debugPrint(`Status after the idle request: ${hexByte(idle)} — ${decodeStatusByte(idle).replace(/\t+/g, ' ').trim()}`);
                     }
-                    const word = await readMemoryWord(Mlx90835Address.EE_OUT_FILT_CONF, bus);
+                    const word = await readMemoryWord(Mlx90835Address.REG2_PRS_TEMP_DATA_FILTER, bus);
                     if (!Number.isFinite(word)) {
                         debugPrint('Output configuration could not be read; the frame will be read by its checksum instead.');
                         return;
@@ -1719,7 +1727,7 @@
                     outputConfig = decodeOutputConfig(word);
                     const summary = describeOutputConfig(outputConfig);
                     debugPrint(`Output configuration 0x${word.toString(16).toUpperCase().padStart(4, '0')}: ${summary}`);
-                    setOutputSummary(summary, `EE_OUT_FILT_CONF = 0x${word.toString(16).toUpperCase().padStart(4, '0')}`);
+                    setOutputSummary(summary, `REG2_PRS_TEMP_DATA_FILTER = 0x${word.toString(16).toUpperCase().padStart(4, '0')}`);
                 } catch (e) {
                     debugPrint(`Output configuration read failed: ${String(e?.message || e)}`);
                 }
