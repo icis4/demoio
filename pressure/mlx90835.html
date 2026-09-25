@@ -1984,8 +1984,10 @@
                     // Reuse the authorised board; the chooser is only for granting access.
                     port = await authorisedPort() || await navigator.serial.requestPort();
                     await new Promise(r => setTimeout(r, 150));
-                    // Match MelexisIO defaults (can be adjusted if device requires 9600)
-                    await port.open({ baudRate: 921600, dataBits: 7, stopBits: 2, parity: 'odd' });
+                    /* The board's CDC ignores line coding, so this page used to open
+                       921600 7O2 for no reason. Detect hands over what was actually
+                       chosen, which is what an ST-Link path needs. */
+                    await port.open(window.melexisSerial.lineOptions(port));
                     rememberPort(port);
                     // Both pipes must report failures: writer.write() only queues into
                     // the encoder, so a broken pipe swallows the bytes and every command

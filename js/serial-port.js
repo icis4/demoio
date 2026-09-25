@@ -31,11 +31,11 @@
       announce() {},
       release() {},
       heldElsewhere() { return Promise.resolve(false); },
-      reason(error) { return Promise.resolve(describe(error)); },
+      reason(error) { return Promise.resolve(messageOf(error)); },
     };
   }
 
-  function describe(error) {
+  function messageOf(error) {
     return error && error.message ? error.message : String(error);
   }
 
@@ -66,10 +66,18 @@
         channel.postMessage("released");
       },
 
-      /* A refused open says nothing about why. When another tab holds the board,
-         that is the why, and it is the one the reader can act on. */
+      /* A refused open says nothing about why, and a lost device says something
+         that is not true. Both have an answer the reader can act on. */
       async reason(error) {
-        const message = describe(error);
+        const message = messageOf(error);
+        /* Chrome's handle to a board can go bad on its own — after a tab fight,
+           or a run of quick open/close cycles. The OS still lists the device and
+           it still answers from a shell; only the browser cannot reach it, and
+           only a replug clears that. */
+        if (/device has been lost|network ?error/i.test(message)) {
+          return "the browser has lost its handle to this board — unplug the USB cable "
+            + "and plug it back in; the board itself is fine";
+        }
         if (!/failed to open|access denied|busy|in use/i.test(message)) return message;
         return (await claim.heldElsewhere())
           ? "another tab has this board open — disconnect there first"
@@ -140,8 +148,73 @@
     return KNOWN[id] ? `${KNOWN[id]} (${id})` : id;
   }
 
+  /* ---- How to open the port ----
+   *
+   * Detect is where a session starts and where the line is chosen, so it hands
+   * the choice on: the chip pages take it from the link, fall back to whatever
+   * was last used, and only then to the CDC default. It matters solely on the
+   * ST-Link path, where the settings reach a real UART — but that is exactly
+   * the path where a page opening 115200 8N1 of its own accord hears nothing.
+   */
+  const LINE_KEY = "melexisio.line";
+  /* 115200 8N1 suits everything this suite meets — an ESP32 wants exactly that,
+     and the board's CDC ignores line coding altogether — with one exception:
+     an ST-Link bridges to a UART running 7O2. So the device decides, and the
+     table only has to carry what differs. */
+  const DEFAULT_LINE = "115200,8,none,1";
+  const LINE_BY_DEVICE = {
+    "0483:374e": { line: "115200,7,odd,2", why: "an ST-Link's UART needs 7O2" },
+  };
+
+  function parseLine(value) {
+    const [baud, bits, parity, stop] = String(value ?? "").split(",");
+    const options = {
+      baudRate: parseInt(baud, 10),
+      dataBits: parseInt(bits, 10),
+      parity,
+      stopBits: parseInt(stop, 10),
+    };
+    const sane = Number.isInteger(options.baudRate)
+      && [7, 8].includes(options.dataBits)
+      && ["none", "odd", "even"].includes(options.parity)
+      && [1, 2].includes(options.stopBits);
+    return sane ? options : null;
+  }
+
+  function rememberLine(value) {
+    try { localStorage.setItem(LINE_KEY, value); } catch { /* storage unavailable */ }
+  }
+
+  function deviceId(port) {
+    const info = port && typeof port.getInfo === "function" ? port.getInfo() : {};
+    if (!Number.isInteger(info.usbVendorId)) return null;
+    return `${info.usbVendorId.toString(16).padStart(4, "0")}:${(info.usbProductId ?? 0).toString(16).padStart(4, "0")}`;
+  }
+
+  // What this device needs, when it needs anything in particular.
+  const lineFor = (port) => LINE_BY_DEVICE[deviceId(port)] ?? null;
+
+  /* A page asks for a link's settings first, then what the device itself needs,
+     then what was last used, and only then the default. */
+  function lineOptions(port) {
+    const handedOver = new URLSearchParams(location.hash.replace(/^#/, "")).get("line");
+    let remembered = null;
+    try { remembered = localStorage.getItem(LINE_KEY); } catch { /* storage unavailable */ }
+    return parseLine(handedOver)
+      ?? parseLine(lineFor(port)?.line)
+      ?? parseLine(remembered)
+      ?? parseLine(DEFAULT_LINE);
+  }
+
+  const describeLine = (options) =>
+    `${options.baudRate} ${options.dataBits}${options.parity[0].toUpperCase()}${options.stopBits}`;
+
   window.melexisSerial = {
     describe,
+    lineFor,
+    lineOptions,
+    rememberLine,
+    describeLine,
     claim: typeof BroadcastChannel === "function" ? sharedClaim() : inertClaim(),
     lowerSignals,
   };

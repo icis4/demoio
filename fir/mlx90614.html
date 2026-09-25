@@ -690,14 +690,14 @@
 
       try {
         state.port = existingPort ?? await authorisedPort() ?? await navigator.serial.requestPort();
-        await state.port.open({ baudRate: 115200 });
+        await state.port.open(window.melexisSerial.lineOptions(state.port));
         state.writer = state.port.writable.getWriter();
         state.reader = state.port.readable.getReader();
         startReadLoop();
         rememberPort(state.port);
         setConnected(true);
         claim.announce();
-        log("Serial port open.");
+        log(`Serial port open: ${window.melexisSerial.describe(state.port)}, ${window.melexisSerial.describeLine(window.melexisSerial.lineOptions(state.port))}.`);
 
         await scpi(":I2C:INIT");
         // SMBus on this part is specified for 10-100 kHz; the other pages here

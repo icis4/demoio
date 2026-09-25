@@ -137,6 +137,20 @@
               <dt>Identified</dt><dd id="infoNamed">—</dd>
             </dl>
 
+            <label class="form-label mt-3" for="lineSettings" style="font-size:.75rem">Line settings</label>
+            <select id="lineSettings" class="form-select form-select-sm">
+              <option value="auto" selected>Automatic — from the device</option>
+              <option value="115200,8,none,1">115200 8N1 — Melexis IO, ESP32</option>
+              <option value="115200,7,odd,2">115200 7O2 — ST-Link UART</option>
+              <option value="921600,8,none,1">921600 8N1</option>
+              <option value="921600,7,odd,2">921600 7O2</option>
+              <option value="9600,8,none,1">9600 8N1</option>
+            </select>
+            <div class="form-text" style="font-size:.6875rem">
+              The board's USB CDC ignores these and an ESP32 wants 8N1, so automatic
+              only changes anything for an ST-Link, whose UART needs 7O2.
+            </div>
+
             <label class="form-label mt-3" for="busSpeed" style="font-size:.75rem">Bus speed</label>
             <select id="busSpeed" class="form-select form-select-sm">
               <option value="100k">100 kHz</option>
@@ -222,7 +236,7 @@
       busMap: els("busMap"), resultsBody: els("resultsBody"), resultsEmpty: els("resultsEmpty"),
       infoBoard: els("infoBoard"), infoFirmware: els("infoFirmware"),
       infoProbed: els("infoProbed"), infoFound: els("infoFound"), infoNamed: els("infoNamed"),
-      busSpeed: els("busSpeed"), quickScan: els("quickScan"),
+      busSpeed: els("busSpeed"), quickScan: els("quickScan"), lineSettings: els("lineSettings"),
     };
 
     const state = {
@@ -461,9 +475,12 @@
     }
 
     /* What the chip pages need to take over: which address answered, which board
-     * to reuse, and permission to connect without another click. */
+     * to reuse, how the line was opened, and permission to connect without
+     * another click. */
     function openParams(addr) {
-      const params = [`addr=${hex2(addr)}`, "connect=1"];
+      const line = lineSettings(state.port);
+      const params = [`addr=${hex2(addr)}`, "connect=1",
+        `line=${line.baudRate},${line.dataBits},${line.parity},${line.stopBits}`];
       const info = state.port ? state.port.getInfo() : null;
       if (info && Number.isInteger(info.usbVendorId) && Number.isInteger(info.usbProductId)) {
         params.push(`vid=${info.usbVendorId.toString(16)}`, `pid=${info.usbProductId.toString(16)}`);
@@ -693,67 +710,43 @@
       } catch { /* storage unavailable */ }
     }
 
-    function rememberedIds() {
-      try {
-        const [vid, pid] = (localStorage.getItem(PORT_KEY) ?? "").split(":");
-        return { vid: parseInt(vid, 16), pid: parseInt(pid, 16) };
-      } catch {
-        return {};
-      }
+    /* Automatic asks the device; anything else is the operator overruling it. */
+    function lineSettings(port) {
+      if (ui.lineSettings.value === "auto") return window.melexisSerial.lineOptions(port);
+      const [baudRate, dataBits, parity, stopBits] = ui.lineSettings.value.split(",");
+      return {
+        baudRate: parseInt(baudRate, 10),
+        dataBits: parseInt(dataBits, 10),
+        parity,
+        stopBits: parseInt(stopBits, 10),
+      };
     }
 
-    async function authorisedPort(preferred = {}) {
-      if (!("serial" in navigator)) return null;
-      let ports;
-      try {
-        ports = await navigator.serial.getPorts();
-      } catch {
-        return null;
-      }
-      if (ports.length === 0) return null;
-      if (ports.length === 1) return ports[0];
-
-      const want = Number.isInteger(preferred.vid) ? preferred : rememberedIds();
-      if (!Number.isInteger(want.vid)) return null;      // several boards, no hint: let the user choose
-      const matches = ports.filter((port) => {
-        const info = port.getInfo();
-        return info.usbVendorId === want.vid && info.usbProductId === want.pid;
-      });
-      return matches.length === 1 ? matches[0] : null;
-    }
-
-    async function autoConnect() {
-      const params = new URLSearchParams(location.hash.replace(/^#/, ""));
-      const port = await authorisedPort({
-        vid: parseInt(params.get("vid") ?? "", 16),
-        pid: parseInt(params.get("pid") ?? "", 16),
-      });
-      if (!port) return;                                  // nothing authorised yet: the button asks
-      /* Another tab holding the board would be robbed by this reconnect, and
-         would report the theft as a hardware fault. */
-      if (await claim.heldElsewhere()) {
-        log("Another tab has this board open. Disconnect there, or close that tab, then press Connect.");
-        return;
-      }
-      await connect(port);
-    }
-
-    async function connect(existingPort) {
+    async function connect() {
       if (!("serial" in navigator)) {
         log("Web Serial is unavailable. Use Chrome, Edge or Opera over https:// or http://localhost.");
         return;
       }
 
       try {
-        state.port = existingPort ?? await authorisedPort() ?? await navigator.serial.requestPort();
-        await state.port.open({ baudRate: 115200 });
+        /* This page is where a bench session starts, and the machine may offer
+           several CDC ports — the board, an ST-Link, whatever else is plugged in.
+           So it always asks rather than reopening the last one silently, and it
+           opens with the settings chosen beside the button. */
+        state.port = await navigator.serial.requestPort();
+        const line = lineSettings(state.port);
+        const needed = window.melexisSerial.lineFor(state.port);
+        window.melexisSerial.rememberLine(
+          `${line.baudRate},${line.dataBits},${line.parity},${line.stopBits}`);
+        await state.port.open(line);
         state.writer = state.port.writable.getWriter();
         state.reader = state.port.readable.getReader();
         startReadLoop();
         rememberPort(state.port);
         setConnected(true);
         claim.announce();
-        log("Serial port open.");
+        log(`Serial port open: ${window.melexisSerial.describe(state.port)}, `
+          + `${window.melexisSerial.describeLine(line)}${needed ? ` — ${needed.why}` : ""}.`);
 
         await readIdentity();
 
@@ -796,7 +789,6 @@
 
     buildBusMap();
     setConnected(false);
-    autoConnect();
 
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => {
