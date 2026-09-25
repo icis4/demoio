@@ -188,7 +188,10 @@
      *   MLX90640  EEPROM word 10 (0x240A), bit 6 clear.
      *   MLX90641  the same bit set — MLX90641_API's CheckEEPROMValid()
      *             rejects a part whose bit 6 is clear, which is how the two
-     *             arrays are told apart at their shared address 0x33.
+     *             arrays are told apart at their shared address 0x33. A live
+     *             90641 reads 0x0AD9 there, with status 0x0008 and control
+     *             0x0901; it also answers 0x1230 with drifting data, which the
+     *             90642's slave-address check above rejects.
      *   MLX90642  its own map: chip ID at 0x1230 and firmware at 0xFFF8.
      * A chip may be re-addressed (both the 90632 and the 90642 keep their
      * slave address in memory), so every answering address is tested against

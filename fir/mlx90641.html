@@ -624,6 +624,12 @@
      * a second attempt cannot disturb the sensor.
      *
      * Do not extend this to the data-ready wait: that one is meant to time out.
+     *
+     * Measured on a live part: 100 of these long reads, at 400 kHz and at 1 MHz,
+     * came back complete every time (832 words in 51 ms and 32 ms), so the retry
+     * is rare by design rather than routine. A transfer the board refuses —
+     * (ERROR)> for an address nobody answers, (ERANGE)> for a read longer than it
+     * allows — leaves the bus fit for the next one, which is what this depends on.
      */
     async function memReadOnce(address, words, into, offset = 0, timeoutMs = 5000) {
       const payload = await scpi(`:I2C:MemReaD ${hex(state.slave)},${hex(address)},2,${words * 2}`, timeoutMs);
