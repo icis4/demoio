@@ -51,6 +51,7 @@ const SHELL = [
   "./css/theme.css",
   "./css/style.css",
   "./js/app.js",
+  "./js/serial-port.js",
   "./favicon.svg",
   "./manifest.webmanifest",
 ];

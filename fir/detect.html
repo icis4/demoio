@@ -176,7 +176,10 @@
     </p>
   </main>
 
+  <script src="../js/serial-port.js"></script>
+
   <script>
+    const claim = window.melexisSerial.claim;
   (() => {
     "use strict";
 
@@ -726,6 +729,12 @@
         pid: parseInt(params.get("pid") ?? "", 16),
       });
       if (!port) return;                                  // nothing authorised yet: the button asks
+      /* Another tab holding the board would be robbed by this reconnect, and
+         would report the theft as a hardware fault. */
+      if (await claim.heldElsewhere()) {
+        log("Another tab has this board open. Disconnect there, or close that tab, then press Connect.");
+        return;
+      }
       await connect(port);
     }
 
@@ -743,6 +752,7 @@
         startReadLoop();
         rememberPort(state.port);
         setConnected(true);
+        claim.announce();
         log("Serial port open.");
 
         await readIdentity();
@@ -753,7 +763,7 @@
         if (error && error.name === "NotFoundError") {
           log("Port selection cancelled.");
         } else {
-          log(`Connect failed: ${error.message}`);
+          log(`Connect failed: ${await claim.reason(error)}`);
         }
         await disconnect();
       }
@@ -768,9 +778,14 @@
       if (state.readLoop) { try { await state.readLoop; } catch { /* reported */ } state.readLoop = null; }
       if (state.reader) { try { state.reader.releaseLock(); } catch { /* released */ } state.reader = null; }
       if (state.writer) { try { state.writer.releaseLock(); } catch { /* released */ } state.writer = null; }
-      if (state.port) { try { await state.port.close(); } catch { /* closed */ } state.port = null; }
+      if (state.port) {
+        await window.melexisSerial.lowerSignals(state.port);
+        try { await state.port.close(); } catch { /* closed */ }
+        state.port = null;
+      }
 
       state.rxBuffer = "";
+      claim.release();
       setConnected(false);
     }
 

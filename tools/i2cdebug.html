@@ -236,7 +236,10 @@
     </div>
   </main>
 
+  <script src="../js/serial-port.js"></script>
+
   <script>
+    const claim = window.melexisSerial.claim;
   (() => {
     "use strict";
 
@@ -583,6 +586,7 @@
         startReadLoop();
         rememberPort(state.port);
         setConnected(true);
+        claim.announce();
         log("Serial port open.");
 
         await readIdentity();
@@ -591,7 +595,7 @@
         log("I2C initialised.");
       } catch (error) {
         if (error && error.name === "NotFoundError") log("Port selection cancelled.");
-        else log(`Connect failed: ${error.message}`);
+        else log(`Connect failed: ${await claim.reason(error)}`);
         await disconnect();
       }
     }
@@ -605,10 +609,15 @@
       if (state.readLoop) { try { await state.readLoop; } catch { /* reported */ } state.readLoop = null; }
       if (state.reader) { try { state.reader.releaseLock(); } catch { /* released */ } state.reader = null; }
       if (state.writer) { try { state.writer.releaseLock(); } catch { /* released */ } state.writer = null; }
-      if (state.port) { try { await state.port.close(); } catch { /* closed */ } state.port = null; }
+      if (state.port) {
+        await window.melexisSerial.lowerSignals(state.port);
+        try { await state.port.close(); } catch { /* closed */ }
+        state.port = null;
+      }
 
       state.rxBuffer = "";
       state.gpioMode = false;
+      claim.release();
       setConnected(false);
     }
 

@@ -798,8 +798,10 @@
             });
         }
     </script>
+    <script src="../js/serial-port.js"></script>
     <script>
         (function () {
+            const claim = window.melexisSerial.claim;
             const ctx = document.getElementById('pressureChart');
             if (!ctx) return;
 
@@ -2013,6 +2015,7 @@
                     if (btnC) { btnC.disabled = true; btnC.classList.add('disabled'); btnC.classList.remove('btn-success'); btnC.classList.add('btn-secondary'); }
                     if (btnD) { btnD.disabled = false; btnD.classList.remove('disabled', 'btn-outline-secondary'); btnD.classList.add('btn-success'); }
                     if (badge) { badge.className = 'badge text-bg-success'; badge.textContent = 'Connected'; }
+                    claim.announce();
                     // Query ID before starting background read loop
                     try {
                         await scpi_command('*IDN?', { timeoutMs: 5000, idleMs: 500, terminatorRegex: /\s*\)>/, allowIdleReturn: true });
@@ -2043,7 +2046,7 @@
                         return;
                     }
                     console.error('Serial connect error', err);
-                    debugPrint(`Connect error: ${String(err?.message || err)}`);
+                    debugPrint(`Connect error: ${await claim.reason(err)}`);
                     alert('Failed to connect to serial device.');
                 } finally {
                     connectInProgress = false;
@@ -2073,6 +2076,7 @@
                     if (txPipe) { try { await txPipe; } catch { } txPipe = null; }
                     if (rxPipe) { try { await rxPipe; } catch { } rxPipe = null; }
                     if (port) {
+                        await window.melexisSerial.lowerSignals(port);
                         // Not swallowed: a failure here is exactly why the board would look busy.
                         try { await port.close(); }
                         catch (e) { debugPrint(`Port close failed: ${String(e?.message || e)}`); }
@@ -2090,6 +2094,7 @@
                     if (btnC) { btnC.disabled = false; btnC.classList.remove('disabled', 'btn-secondary'); btnC.classList.add('btn-success'); }
                     if (btnD) { btnD.disabled = true; btnD.classList.add('disabled'); btnD.classList.remove('btn-success'); btnD.classList.add('btn-outline-secondary'); }
                     if (badge) { badge.className = 'badge text-bg-secondary'; badge.textContent = 'Disconnected'; }
+                    claim.release();
                     setI2cBadge(false);
                     setChipStatus('–');
                     setSpiBadge(false);
@@ -2219,7 +2224,16 @@
             document.getElementById('btnConnect')?.addEventListener('click', connectSerial);
 
             // Reopen a board that was authorised earlier; otherwise wait for the button.
-            authorisedPort().then((p) => { if (p) connectSerial(); });
+            /* Another tab holding the board would be robbed by this reconnect, and
+               would report the theft as a hardware fault. */
+            authorisedPort().then(async (p) => {
+                if (!p) return;
+                if (await claim.heldElsewhere()) {
+                    debugPrint('Another tab has this board open. Disconnect there, or close that tab, then press Connect.');
+                    return;
+                }
+                connectSerial();
+            });
             document.getElementById('btnDisconnect')?.addEventListener('click', disconnectSerial);
             document.getElementById('btnDemo')?.addEventListener('click', async () => {
                 if (port && writer && inputStream && (isI2cConnected || isSpiConnected)) {

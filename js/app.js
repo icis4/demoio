@@ -295,6 +295,7 @@
 
     if (port) {
       try {
+        await window.melexisSerial?.lowerSignals(port);
         await port.close();
       } catch (err) {
         logError(`Disconnect error: ${err.message}`);
@@ -1192,51 +1193,11 @@
      one. Tabs announce ownership to each other so only one claims it without
      being asked. A manual Connect still wins — the user asking for this tab is
      a good enough reason to take the port. */
-  const PORT_CLAIM_CHANNEL = 'melexisio.port-claim';
-  const CLAIM_REPLY_WAIT_MS = 150;
-
-  const claims = (() => {
-    if (typeof BroadcastChannel !== 'function') {
-      return { announce() {}, release() {}, async heldElsewhere() { return false; } };
-    }
-
-    const channel = new BroadcastChannel(PORT_CLAIM_CHANNEL);
-    let holding = false;
-
-    channel.addEventListener('message', (event) => {
-      // Somebody asking whether the port is taken; only a holder answers.
-      if (event.data === 'who-holds' && holding) channel.postMessage('holding');
-    });
-
-    return {
-      announce() {
-        holding = true;
-        channel.postMessage('holding');
-      },
-      release() {
-        holding = false;
-        channel.postMessage('released');
-      },
-      heldElsewhere() {
-        return new Promise((resolve) => {
-          let answered = false;
-          const onReply = (event) => {
-            if (event.data === 'holding') {
-              answered = true;
-              channel.removeEventListener('message', onReply);
-              resolve(true);
-            }
-          };
-          channel.addEventListener('message', onReply);
-          channel.postMessage('who-holds');
-          setTimeout(() => {
-            channel.removeEventListener('message', onReply);
-            if (!answered) resolve(false);
-          }, CLAIM_REPLY_WAIT_MS);
-        });
-      },
-    };
-  })();
+  /* Shared with the sensor pages, so it does not matter which of them holds
+     the board; js/serial-port.js explains why the coordination exists. */
+  const claims = window.melexisSerial?.claim ?? {
+    announce() {}, release() {}, heldElsewhere() { return Promise.resolve(false); },
+  };
 
   // ---- Boot ----
   document.addEventListener('DOMContentLoaded', async () => {
