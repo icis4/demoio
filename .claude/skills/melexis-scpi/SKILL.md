@@ -135,6 +135,12 @@ leaves the host. For the Melexis IO board, which is what this suite is built aro
 serial problem is therefore never a baud problem: look at framing, the LF-only rule, or
 the bus instead.
 
+Reached through an **ST-Link** (0483:374e, which exposes a virtual COM port beside the
+board's own and is offered in the same picker), the settings are real: that path bridges
+to a UART and needs **115200 7O2**, nothing else. The SCPI above it is identical either
+way — same commands, same replies, same LF-only framing — so the transport changes what
+the port must be opened with and nothing else.
+
 The exception is **mip-firmware, which also exists in a build that talks over a real UART
 at 4 Mbit/s**. There the baud rate is the difference between working and silence, so the
 terminal keeps the controls — behind an **Advanced** disclosure, since they do nothing for

@@ -251,7 +251,10 @@
       claims.announce();
       setSidebarOpen(false);
       setConnectionState('connected');
-      logSystem(`Connected at ${options.baudRate} baud (${options.dataBits}${options.parity[0].toUpperCase()}${options.stopBits}).`);
+      const device = window.melexisSerial?.describe(state.port) ?? 'serial device';
+      logSystem(`Connected to ${device} at ${options.baudRate} baud (${options.dataBits}${options.parity[0].toUpperCase()}${options.stopBits}).`);
+      warnAboutLineSettings(device, options);
+      watchForSilence();
 
       // Start reading
       state.readLoop = startReading();
@@ -683,6 +686,37 @@
   // :SYST:HELP:LIST, mip-firmware does not implement it and exposes the same
   // list as a RAM file instead. Both are optional — whatever happens, the help
   // probe must still run, or an unsupported device ends up with no help at all.
+  /* The Melexis IO board is USB CDC and takes any line coding, so the settings
+     in the sidebar cost nothing there. An ST-Link is not the same thing: it
+     bridges to a real UART, and the firmware behind it runs 115200 7O2 and
+     nothing else. Connecting with anything else looks identical and stays
+     silent. */
+  const STLINK_UART = { baudRate: 115200, dataBits: 7, parity: 'odd', stopBits: 2 };
+
+  function warnAboutLineSettings(device, options) {
+    if (!/ST-Link/i.test(device)) return;
+    const wrong = Object.keys(STLINK_UART).filter((key) => options[key] !== STLINK_UART[key]);
+    if (wrong.length === 0) return;
+    logError("An ST-Link bridges to a UART that needs 115200 7O2 — set that in the "
+      + "sidebar and reconnect, or pick the board's own port instead.");
+  }
+
+  /* A device that was never going to answer connects exactly like one that
+     will, and the probes that follow only report their own timeouts, which say
+     nothing about the cause. If not one byte arrives, name the two things that
+     are usually behind it. */
+  const SILENCE_HINT_MS = 3000;
+
+  function watchForSilence() {
+    const bytesAtConnect = state.rxBytes;
+    setTimeout(() => {
+      if (!state.isConnected || state.rxBytes !== bytesAtConnect) return;
+      logError('This device has not sent a single byte. Either the picker offered '
+        + 'another CDC port — an ST-Link exposes one, and its UART needs 115200 7O2 — '
+        + 'or the board is not the one you meant. Disconnect and try the other port.');
+    }, SILENCE_HINT_MS);
+  }
+
   async function requestCommandCatalog() {
     if (!state.isConnected) return;
 

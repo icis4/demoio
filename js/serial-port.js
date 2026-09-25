@@ -124,7 +124,24 @@
     }
   }
 
+  /* Which device is this, in words. Chrome's picker lists every USB CDC port on
+     the machine, and an ST-Link exposes one that looks just like the board; a
+     page that names what it opened turns a silent session into an obvious
+     mis-pick. */
+  const KNOWN = {
+    "03e9:0041": "Melexis IO",
+    "0483:374e": "ST-Link virtual port",
+  };
+
+  function describe(port) {
+    const info = port && typeof port.getInfo === "function" ? port.getInfo() : {};
+    if (!Number.isInteger(info.usbVendorId)) return "serial device";
+    const id = `${info.usbVendorId.toString(16).padStart(4, "0")}:${(info.usbProductId ?? 0).toString(16).padStart(4, "0")}`;
+    return KNOWN[id] ? `${KNOWN[id]} (${id})` : id;
+  }
+
   window.melexisSerial = {
+    describe,
     claim: typeof BroadcastChannel === "function" ? sharedClaim() : inertClaim(),
     lowerSignals,
   };
