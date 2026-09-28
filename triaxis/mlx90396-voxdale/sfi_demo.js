@@ -3,13 +3,129 @@
  * Standalone SFI Joystick, 3D Dome Kinematics, Centered Z-UP XYZ Chart, Polar Radar & Battle Matrix
  */
 
-// --- Simulation State ---
+// --- GLTFLoader (r128 non-module build, matches the global THREE loaded in index.html) ---
+let gltfLoaderPromise = null;
+function ensureGLTFLoader() {
+  if (!gltfLoaderPromise) {
+    gltfLoaderPromise = new Promise((resolve, reject) => {
+      if (window.THREE && THREE.GLTFLoader) { resolve(THREE.GLTFLoader); return; }
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js';
+      script.onload = () => resolve(THREE.GLTFLoader);
+      script.onerror = () => reject(new Error('Failed to load GLTFLoader'));
+      document.head.appendChild(script);
+    });
+  }
+  return gltfLoaderPromise;
+}
+
+// --- Calibration & Signal Math Engine ---
+export const DEFAULT_CALIBRATION_PARAMS = {
+  k1: 1.0,   // Alpha K-factor
+  o11: 0.0,  // Alpha upper orthogonality
+  o12: 0.0,  // Alpha lower orthogonality
+  k2: 1.0,   // Beta K-factor
+  o21: 0.0,  // Beta upper orthogonality
+  o22: 0.0   // Beta lower orthogonality
+};
+
+let activeCalibrationParams = { ...DEFAULT_CALIBRATION_PARAMS };
+
+export function setCalibrationParams(newParams) {
+  activeCalibrationParams = { ...activeCalibrationParams, ...newParams };
+}
+
+export function getCalibrationParams() {
+  return { ...activeCalibrationParams };
+}
+
+export function resetCalibrationParams() {
+  activeCalibrationParams = { ...DEFAULT_CALIBRATION_PARAMS };
+  return activeCalibrationParams;
+}
+
+export function calculateDesmosAngles(x, y, z, params = DEFAULT_CALIBRATION_PARAMS) {
+  const { k1, o11, o12, k2, o21, o22 } = params;
+
+  const crossY = k1 * (y - o11 * z);
+  const numA = Math.sqrt(z * z + crossY * crossY);
+  const denA = x - o12 * z;
+  const a1_rad = Math.atan2(numA, denA);
+
+  const crossX = k2 * (x - o21 * z);
+  const numB = Math.sqrt(z * z + crossX * crossX);
+  const denB = y - o22 * z;
+  const b1_rad = Math.atan2(numB, denB);
+
+  const radToDeg = 180 / Math.PI;
+
+  return {
+    alphaDeg: a1_rad * radToDeg,
+    betaDeg: b1_rad * radToDeg,
+    alphaRad: a1_rad,
+    betaRad: b1_rad
+  };
+}
+
+export function computeSfi1Px(bx, by, bz, params = DEFAULT_CALIBRATION_PARAMS) {
+  const alphaStrength = Math.sqrt(bz * bz + bx * bx);
+  const betaStrength = Math.sqrt(bz * bz + by * by);
+  const signalStrength = Math.sqrt(bx * bx + by * by + bz * bz);
+  const angles = calculateDesmosAngles(bx, by, bz, params);
+
+  return {
+    mode: '1px',
+    alphaStrength,
+    betaStrength,
+    signalStrength,
+    alphaSignal: { z: bz, x: bx },
+    betaSignal: { z: bz, y: by },
+    ...angles
+  };
+}
+
+export function computeSfi2Px(dbx_dx, dbz_dx, dby_dy, dbz_dy, params = DEFAULT_CALIBRATION_PARAMS) {
+  const alphaStrength = Math.sqrt(dbz_dx * dbz_dx + dbx_dx * dbx_dx);
+  const betaStrength = Math.sqrt(dbz_dy * dbz_dy + dby_dy * dby_dy);
+  const signalStrength = Math.sqrt(
+    dbx_dx * dbx_dx + dby_dy * dby_dy + dbz_dx * dbz_dx + dbz_dy * dbz_dy
+  );
+
+  const alphaZ = params.k1 * (dbz_dx - params.o11 * dbx_dx);
+  const alphaX = dbx_dx - params.o12 * dbz_dx;
+  const betaZ = params.k2 * (dbz_dy - params.o21 * dby_dy);
+  const betaY = dby_dy - params.o22 * dbz_dy;
+  const radToDeg = 180 / Math.PI;
+  const angles = {
+    alphaRad: Math.atan2(Math.abs(alphaZ), alphaX),
+    betaRad: Math.atan2(Math.abs(betaZ), betaY)
+  };
+  angles.alphaDeg = angles.alphaRad * radToDeg;
+  angles.betaDeg = angles.betaRad * radToDeg;
+
+  return {
+    mode: '2px',
+    alphaStrength,
+    betaStrength,
+    signalStrength,
+    alphaSignal: { dbz_dx, dbx_dx },
+    betaSignal: { dbz_dy, dby_dy },
+    ...angles
+  };
+}
+
+// --- Simulation & Telemetry State ---
 let autoPattern = true;
 let coilActive = false;
 let animTime = 0;
 let joyX = 0, joyY = 0, joyZ = 0;
+let targetJoyX = 0, targetJoyY = 0, targetJoyZ = 0;
+
+let displayStdBx = 0, displayStdBy = 0, displayStdBz = 0;
+let displayMlxDBx = 0, displayMlxDBy = 0, displayMlxDBz = 0, displayMlxDBzY = 0;
+let targetStdBx = 0, targetStdBy = 0, targetStdBz = 0;
+let targetMlxDBx = 0, targetMlxDBy = 0, targetMlxDBz = 0, targetMlxDBzY = 0;
 let isLiveHardwareConnected = false;
-let sens = [1.0, 1.0, 1.0, 1.0];
 
 let stdTraceHistory = [];
 let mlxTraceHistory = [];
@@ -18,50 +134,44 @@ let mainSceneObj = null;
 let stdPlot = null;
 let mlxPlot = null;
 let joyAssemblyRef = null;
-let xyzChartObj = null;
+let joyRestPosition = new THREE.Vector3();
+let joyPivotPoint = new THREE.Vector3();
+let joyTipMarker = null;
+let joyTrailMesh = null;
+let joyTrailHistory = [];
+const tmpVec = new THREE.Vector3();
 
-// Radar 2D Canvases
 let radarCanvasStd = null, radarCtxStd = null;
 let radarCanvasMlx = null, radarCtxMlx = null;
 
-// Hardware Callback
 let onHardwareCoilToggle = null;
-
-// 4D Canvas State
-let canvas4D, ctx4D;
-let width4D = 0, height4D = 0;
-let stick4D = { x: 0, y: 0, z: 0, velocity: 0, force: 0 };
-let prevStick4D = { x: 0, y: 0, z: 0 };
-let trail4D = [];
-
-// Raw Live Hardware Packet Holder
 let liveHardwarePacket = null;
+const SINGLE_PIXEL_LSB_PER_MT = 20;
+const DIFFERENTIAL_LSB_PER_MT_MM = 120;
+const TRACE_HISTORY_POINTS = 45;
 
 export function setHardwareCoilCallback(cb) {
   onHardwareCoilToggle = cb;
 }
 
-// EXACT ORIGINAL DOME ENTRY FUNCTION
+export function setSfiHardwareTracking(enabled) {
+  isLiveHardwareConnected = Boolean(enabled);
+}
+
 export function updateSfiDomeKinematics(x, y, z, telemetryPayload = null) {
-  isLiveHardwareConnected = true;
-  joyX = Math.max(-1, Math.min(1, x));
-  joyY = Math.max(-1, Math.min(1, y));
-  joyZ = Math.max(-1, Math.min(1, z));
+  targetJoyX = Math.max(-1, Math.min(1, x));
+  targetJoyY = Math.max(-1, Math.min(1, y));
+  targetJoyZ = Math.max(-1, Math.min(1, z));
 
   if (telemetryPayload) {
     liveHardwarePacket = telemetryPayload;
   }
-
-  stick4D.targetX = joyX * 90;
-  stick4D.targetY = joyY * 90;
-  stick4D.targetZ = Math.max(0, (joyZ + 1) * 35);
 }
 
 export function initSfiDemo() {
   const container = document.getElementById('canvas3d-container');
   if (!container || !window.THREE) return;
 
-  // DOM Elements
   const btnPattern = document.getElementById('btn-pattern');
   const btnCoil = document.getElementById('btn-coil');
   const btnCoilToggle = document.getElementById('btn-coil-toggle');
@@ -75,7 +185,7 @@ export function initSfiDemo() {
       btnCoilToggle?.classList.add('active');
       if (coilLbl) {
         coilLbl.innerText = 'COIL: ACTIVE (+5.0 mT STRAY FIELD)';
-        coilLbl.style.color = '#ff3366';
+        coilLbl.style.color = '#ef4444';
       }
     } else {
       btnCoil?.classList.remove('active');
@@ -99,23 +209,15 @@ export function initSfiDemo() {
   });
 
   btnResetTrace?.addEventListener('click', () => {
-    stdTraceHistory = [];
-    mlxTraceHistory = [];
-    trail4D = [];
     resetPlotLines();
   });
 
-  // --- 1. THREE.JS DOME SCENE SETUP ---
-const scene = new THREE.Scene();
-
+  // --- 1. THREE.JS SCENE SETUP (CAD GLB MODEL) ---
+  const scene = new THREE.Scene();
   const width = container.clientWidth || 800;
   const height = container.clientHeight || 560;
-  
-  // 1. Widen FOV slightly (from 35 to 42)
+
   const camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 1000);
-  
-  // 2. Move camera back and slightly higher (was: 0, 8.5, 12.5)
-  camera.position.set(0, 11, 21);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setClearColor(0x000000, 0);
@@ -124,211 +226,275 @@ const scene = new THREE.Scene();
   container.appendChild(renderer.domElement);
 
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
-  // 3. Center target between the base and top of knob (was: 0, 0.5, 0)
-  controls.target.set(0, 1.8, 0);
   controls.enableDamping = true;
   controls.dampingFactor = 0.05;
+  controls.minDistance = 4;
+  controls.maxDistance = 60;
 
-  // 4. Optional: Set zoom bounds so user cannot zoom through the dome
-  controls.minDistance = 10;
-  controls.maxDistance = 38;
-
-  scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+  scene.add(new THREE.AmbientLight(0xffffff, 1.1));
   const dirLight = new THREE.DirectionalLight(0x00d2ff, 1.4);
   dirLight.position.set(10, 25, 15);
   scene.add(dirLight);
+  const hemiLight = new THREE.HemisphereLight(0xb0d0ff, 0x334455, 0.6);
+  scene.add(hemiLight);
 
-  // Blue Hemispherical Base
-  const baseMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(5.2, 32, 16, 0, Math.PI * 2, Math.PI * 0.5, Math.PI * 0.5),
-    new THREE.MeshStandardMaterial({ color: 0x0a2540, roughness: 0.2, metalness: 0.5 })
-  );
-  scene.add(baseMesh);
+  const MODEL_URL = 'resources/CAD-MLX90396_Demo.glb';
+  const DOME_WORLD_RADIUS = 5.2;
 
-  // Rim Accent
-  const rimMesh = new THREE.Mesh(
-    new THREE.TorusGeometry(5.25, 0.18, 16, 100),
-    new THREE.MeshStandardMaterial({ color: 0xd97706, metalness: 0.9, roughness: 0.1 })
-  );
-  rimMesh.rotation.x = Math.PI / 2;
-  scene.add(rimMesh);
-
-  // Internal PCB
-  const pcbMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(4.8, 4.8, 0.2, 32),
-    new THREE.MeshStandardMaterial({ color: 0x15803d, roughness: 0.4 })
-  );
-  pcbMesh.position.y = 0.1;
-  scene.add(pcbMesh);
-
-  // IC Package
-  const icMesh = new THREE.Mesh(
-    new THREE.BoxGeometry(1.6, 0.35, 1.6),
-    new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.2 })
-  );
-  icMesh.position.y = 0.4;
-  scene.add(icMesh);
-
-  // Pin 1 Dot
-  const pin1Dot = new THREE.Mesh(
-    new THREE.SphereGeometry(0.08, 16, 16),
-    new THREE.MeshBasicMaterial({ color: 0xffffff })
-  );
-  pin1Dot.position.set(-0.6, 0.59, -0.6);
-  scene.add(pin1Dot);
-
-  // Joystick Assembly
-  const domeRadius = 5.2;
   const joyAssembly = new THREE.Group();
   joyAssemblyRef = joyAssembly;
 
-  const axialMagnetGroup = new THREE.Group();
-  axialMagnetGroup.position.y = 0.61;
-
-  const northPoleMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.9, 0.9, 0.25, 32),
-    new THREE.MeshStandardMaterial({ color: 0xff1144, roughness: 0.2, metalness: 0.3 })
-  );
-  northPoleMesh.position.y = 0.125;
-  axialMagnetGroup.add(northPoleMesh);
-
-  const ringMesh = new THREE.Mesh(
-    new THREE.TorusGeometry(0.91, 0.03, 16, 32),
-    new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.9 })
-  );
-  ringMesh.rotation.x = Math.PI / 2;
-  ringMesh.position.y = 0.25;
-  axialMagnetGroup.add(ringMesh);
-
-  const southPoleMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.9, 0.9, 0.25, 32),
-    new THREE.MeshStandardMaterial({ color: 0x0088ff, roughness: 0.2, metalness: 0.3 })
-  );
-  southPoleMesh.position.y = 0.375;
-  axialMagnetGroup.add(southPoleMesh);
-  joyAssembly.add(axialMagnetGroup);
-
-  const shaftMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.22, 0.22, 3.2, 16),
-    new THREE.MeshStandardMaterial({ color: 0xd97706, metalness: 0.6 })
-  );
-  shaftMesh.position.y = 2.4;
-  joyAssembly.add(shaftMesh);
-
-  const knobMesh = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.85, 0.65, 1.8, 24),
-    new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.2 })
-  );
-  knobMesh.position.y = 4.2;
-  joyAssembly.add(knobMesh);
-  scene.add(joyAssembly);
-
-const domeMesh = new THREE.Mesh(
-  new THREE.SphereGeometry(domeRadius, 32, 24, 0, Math.PI * 2, 0, Math.PI * 0.5),
-  new THREE.MeshStandardMaterial({
-    color: 0x4a5568,
-    transparent: true,
-    opacity: 0.4,
-    roughness: 0.15,
-    metalness: 0.1
-  })
-);
-scene.add(domeMesh);
-
-  // Knob Drag Interaction
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
   let isDraggingKnob = false;
 
-  container.addEventListener('mousedown', (e) => {
-    const rect = renderer.domElement.getBoundingClientRect();
-    mouse.x = ((e.clientX - rect.left) / container.clientWidth) * 2 - 1;
-    mouse.y = -((e.clientY - rect.top) / container.clientHeight) * 2 + 1;
+  function setupMouseInteractions(interactiveObj) {
+    container.addEventListener('mousedown', (e) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / container.clientWidth) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / container.clientHeight) * 2 + 1;
 
-    raycaster.setFromCamera(mouse, camera);
-    if (raycaster.intersectObject(knobMesh).length > 0 || e.shiftKey) {
-      isDraggingKnob = true;
-      controls.enabled = false;
-      autoPattern = false;
+      raycaster.setFromCamera(mouse, camera);
+      if ((interactiveObj && raycaster.intersectObject(interactiveObj, true).length > 0) || e.shiftKey) {
+        isDraggingKnob = true;
+        controls.enabled = false;
+        autoPattern = false;
+      }
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isDraggingKnob) return;
+      targetJoyX = Math.max(-1, Math.min(1, (((e.clientX - renderer.domElement.getBoundingClientRect().left) / container.clientWidth) * 2 - 1) * 1.5));
+      targetJoyY = Math.max(-1, Math.min(1, (-((e.clientY - renderer.domElement.getBoundingClientRect().top) / container.clientHeight) * 2 + 1) * 1.5));
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (isDraggingKnob) {
+        isDraggingKnob = false;
+        controls.enabled = true;
+      }
+    });
+  }
+
+  (async () => {
+    try {
+      const GLTFLoaderClass = await ensureGLTFLoader();
+      const gltf = await new GLTFLoaderClass().loadAsync(MODEL_URL);
+      const model = gltf.scene;
+
+      // Remove CAD camera nodes; they are not part of the visible model.
+      const cameraNodes = [];
+      model.traverse((node) => {
+        if (node.isCamera) cameraNodes.push(node);
+      });
+      cameraNodes.forEach((node) => node.parent && node.parent.remove(node));
+
+      // Reparent the moving joystick parts (as whole top-level nodes) into the
+      // animated assembly group. Moving whole subtrees keeps every child's
+      // transform (e.g. the magnet's meshes under its group) intact. Static by
+      // construction: dome, base, PCB, compass, coil, unnamed nodes, or
+      // instanced duplicates (mesh_9_instance_1 = the mirrored coil).
+      const STATIC_PART_NAMES = new Set([
+        'DomeAssy',
+        'BottomBodyCoilTest2-1',
+        'MelexisPCB-1',
+        'TestCompass2-1',
+        'CoilRoundLarge-1',
+        'current camera'
+      ]);
+      const isStaticName = (name) =>
+        STATIC_PART_NAMES.has(name) || name === '' || name.includes('_instance_');
+
+      const partsContainer = model.getObjectByName('Snowglobe') || model;
+      const movingParts = [];
+      Array.from(partsContainer.children).forEach((child) => {
+        if (!isStaticName(child.name)) movingParts.push(child);
+      });
+      movingParts.forEach((node) => joyAssembly.add(node));
+      console.log('[CAD GLB] moving parts:', movingParts.map((n) => n.name));
+
+      scene.add(model);
+      if (joyAssembly.children.length > 0) scene.add(joyAssembly);
+
+      // Normalize the CAD dome radius to the world scale used by dome kinematics.
+      const domeNode = model.getObjectByName('DomeAssy') || model.getObjectByName('Dome-1') || model;
+      const domeBox = new THREE.Box3().setFromObject(domeNode);
+      const domeHeight = Math.max(0.0001, domeBox.max.y - domeBox.min.y);
+      const scale = DOME_WORLD_RADIUS / domeHeight;
+      model.scale.setScalar(scale);
+      if (joyAssembly.children.length > 0) joyAssembly.scale.setScalar(scale);
+
+      // Center on X/Z.
+      const wholeBox = new THREE.Box3().setFromObject(model);
+      const center = wholeBox.getCenter(new THREE.Vector3());
+      model.position.x = -center.x;
+      model.position.z = -center.z;
+      if (joyAssembly.children.length > 0) {
+        // Keep the assembly at its CAD rest position so the magnet keeps the
+        // ~11 mm CAD airgap above the sensor when untilted.
+        joyAssembly.position.x = -center.x;
+        joyAssembly.position.z = -center.z;
+        joyRestPosition.copy(joyAssembly.position);
+      }
+
+      // Frame the camera on the model bounding box.
+      const finalBox = new THREE.Box3().setFromObject(model);
+      const size = finalBox.getSize(new THREE.Vector3());
+      const yCenter = (finalBox.min.y + finalBox.max.y) / 2;
+      controls.target.set(0, yCenter, 0);
+      controls.update();
+      camera.position.set(size.x * 1.5, yCenter + size.y * 0.8, size.z * 2.1);
+      camera.lookAt(controls.target);
+
+      // Mark the pivot point in world space. A real joystick pivots where the
+      // stick passes through the housing opening (the ball joint / sleeve), not
+      // at the PCB below it. Pivoting the assembly about the JoystickInnerPart
+      // sleeve keeps the stick centered in the dome opening at every tilt
+      // angle, so the dome hole never limits the stick's movement.
+      const sleeve = joyAssembly.getObjectByName('JoystickInnerPart-1') ||
+        model.getObjectByName('JoystickInnerPart-1') || model;
+      const sleeveBox = new THREE.Box3().setFromObject(sleeve);
+      joyPivotPoint.set(
+        (sleeveBox.min.x + sleeveBox.max.x) / 2,
+        (sleeveBox.min.y + sleeveBox.max.y) / 2,
+        (sleeveBox.min.z + sleeveBox.max.z) / 2
+      );
+
+      const knob = joyAssembly.getObjectByName('JoystickButton-1') || joyAssembly;
+      setupMouseInteractions(knob);
+
+      // Bright marker on the lower tip of the M3 rod (the magnet holder) that
+      // tracks the stick; leaves a short fading trail behind it. Values are in
+      // CAD units because the marker is a child of the scaled assembly group.
+      const markerRadius = 0.0035;
+      joyTipMarker = new THREE.Mesh(
+        new THREE.SphereGeometry(markerRadius, 16, 16),
+        new THREE.MeshStandardMaterial({
+          color: 0xff3b30,
+          emissive: 0xff2200,
+          emissiveIntensity: 2.5,
+          roughness: 0.3,
+          metalness: 0.1
+        })
+      );
+      const magnetNode = joyAssembly.getObjectByName('mesh_7') ||
+        joyAssembly.getObjectByName('mesh_7_1') || null;
+      const rodNode = joyAssembly.getObjectByName('M3_rod-1') || joyAssembly;
+      if (magnetNode) {
+        joyTipMarker.position.copy(magnetNode.position);
+        joyTipMarker.position.y = magnetNode.position.y + 0.0004;
+      } else {
+        joyTipMarker.position.set(0, 0.0252, 0);
+      }
+      joyAssembly.add(joyTipMarker);
+
+      joyTrailHistory = [];
+      const TRAIL_POINTS = 14;
+      joyTrailMesh = new THREE.Group();
+      for (let i = 0; i < TRAIL_POINTS; i++) {
+        const dot = new THREE.Mesh(
+          new THREE.SphereGeometry(markerRadius * scale * (1 - i * 0.045), 8, 8),
+          new THREE.MeshBasicMaterial({
+            color: 0xff6030,
+            transparent: true,
+            opacity: Math.max(0, 0.55 - i * 0.042),
+            depthWrite: false
+          })
+        );
+        dot.userData.index = i;
+        joyTrailMesh.add(dot);
+      }
+      joyTrailMesh.visible = true;
+      scene.add(joyTrailMesh);
+    } catch (err) {
+      console.error('[CAD GLB LOAD ERROR]', err);
     }
-  });
-
-  window.addEventListener('mousemove', (e) => {
-    if (!isDraggingKnob) return;
-    const rect = renderer.domElement.getBoundingClientRect();
-    joyX = Math.max(-1, Math.min(1, (((e.clientX - rect.left) / container.clientWidth) * 2 - 1) * 1.5));
-    joyY = Math.max(-1, Math.min(1, (-((e.clientY - rect.top) / container.clientHeight) * 2 + 1) * 1.5));
-  });
-
-  window.addEventListener('mouseup', () => {
-    if (isDraggingKnob) {
-      isDraggingKnob = false;
-      controls.enabled = true;
-    }
-  });
+  })();
 
   mainSceneObj = { scene, camera, renderer, controls, container };
 
-  // --- 2. SFI COMPARISON SUB-PLOTS ---
-  stdPlot = create3DFieldPlot('canvas3d-std-plot', 0xff3366);
-  mlxPlot = create3DFieldPlot('canvas3d-mlx-plot', 0x00ff88);
-
-  // --- 3. UNIFIED Z-UP 3D XYZ CHART ---
-  initXyzChart();
-
-  // --- 4. 4D CANVAS SETUP ---
-  init4DCanvas();
-
-  // --- 5. RADAR CANVASES ---
+  // Setup subplots and radars
+  stdPlot = create3DFieldPlot('canvas3d-std-plot', 0xef4444, 16.0);
+  mlxPlot = create3DFieldPlot('canvas3d-mlx-plot', 0x10b981, 2.5);
   initRadarCanvases();
+
+  let previousFrameTime = performance.now();
+  let telemetryVisualElapsed = 0;
 
   function animate() {
     requestAnimationFrame(animate);
+    const frameTime = performance.now();
+    const deltaSeconds = Math.min(0.05, Math.max(0, (frameTime - previousFrameTime) / 1000));
+    previousFrameTime = frameTime;
+    const smoothing = 1 - Math.exp(-14 * deltaSeconds);
 
     if (autoPattern && !isLiveHardwareConnected) {
-      animTime += 0.025;
+      animTime += deltaSeconds * 1.5;
       let cycle = (animTime % 24) / 24;
 
       if (cycle < 0.25) {
         let t = (cycle / 0.25) * Math.PI * 2;
-        joyX = Math.cos(t) * 0.85; joyY = Math.sin(t) * 0.85; joyZ = 0;
+        targetJoyX = Math.cos(t) * 0.85; targetJoyY = Math.sin(t) * 0.85; targetJoyZ = 0;
       } else if (cycle < 0.50) {
         let t = ((cycle - 0.25) / 0.25) * Math.PI * 4;
-        if (Math.sin(t) > 0) { joyX = Math.sin(t * 2) * 0.9; joyY = 0; }
-        else { joyX = 0; joyY = Math.cos(t * 2) * 0.9; }
-        joyZ = 0;
+        if (Math.sin(t) > 0) { targetJoyX = Math.sin(t * 2) * 0.9; targetJoyY = 0; }
+        else { targetJoyX = 0; targetJoyY = Math.cos(t * 2) * 0.9; }
+        targetJoyZ = 0;
       } else if (cycle < 0.75) {
-        joyX = Math.sin(animTime * 2) * 0.25; joyY = Math.cos(animTime * 2) * 0.25;
-        joyZ = Math.sin((cycle - 0.50) * Math.PI * 8) * 0.8;
+        targetJoyX = Math.sin(animTime * 2) * 0.25; targetJoyY = Math.cos(animTime * 2) * 0.25;
+        targetJoyZ = Math.sin((cycle - 0.50) * Math.PI * 8) * 0.8;
       } else {
-        joyX = Math.sin(animTime * 1.7) * 0.75 + Math.cos(animTime * 0.5) * 0.2;
-        joyY = Math.cos(animTime * 1.3) * 0.75 + Math.sin(animTime * 0.7) * 0.2;
-        joyZ = Math.sin(animTime * 2.5) * 0.4;
+        targetJoyX = Math.sin(animTime * 1.7) * 0.75 + Math.cos(animTime * 0.5) * 0.2;
+        targetJoyY = Math.cos(animTime * 1.3) * 0.75 + Math.sin(animTime * 0.7) * 0.2;
+        targetJoyZ = Math.sin(animTime * 2.5) * 0.4;
       }
-
-      stick4D.targetX = joyX * 90;
-      stick4D.targetY = joyY * 90;
-      stick4D.targetZ = Math.max(0, (joyZ + 1) * 35);
     }
 
-    // Kinematics along Dome
-    let tiltAngle = Math.sqrt(joyX * joyX + joyY * joyY) * 0.45;
+    joyX += (targetJoyX - joyX) * smoothing;
+    joyY += (targetJoyY - joyY) * smoothing;
+    joyZ += (targetJoyZ - joyZ) * smoothing;
+
+    const TILT_MAX_RAD = 0.19;
+    let tiltAngle = Math.sqrt(joyX * joyX + joyY * joyY) * TILT_MAX_RAD;
     let tiltDir = Math.atan2(joyY, joyX);
 
-    joyAssembly.position.set(
-      Math.sin(tiltAngle) * Math.cos(tiltDir) * domeRadius,
-      Math.cos(tiltAngle) * domeRadius + (joyZ * 0.3),
-      Math.sin(tiltAngle) * Math.sin(tiltDir) * domeRadius
-    );
-    joyAssembly.rotation.z = -joyX * 0.35;
-    joyAssembly.rotation.x = joyY * 0.35;
+    // Rotate the joystick assembly rigidly about the spherical joint where the
+    // stick passes through the dome opening. Every point of the assembly keeps
+    // its distance to the pivot, so the stick stays centered in the dome hole
+    // for all tilt angles and the hole never limits the stick's movement.
+    if (joyAssemblyRef) {
+      const q = new THREE.Quaternion();
+      if (tiltAngle > 0.0001) {
+        const axis = new THREE.Vector3(Math.sin(tiltDir), 0, -Math.cos(tiltDir));
+        q.setFromAxisAngle(axis, tiltAngle);
+      }
+      // Rebuild from the stored rest position each frame to avoid drift.
+      joyAssemblyRef.quaternion.copy(q);
+      joyAssemblyRef.position.copy(joyRestPosition).sub(joyPivotPoint).applyQuaternion(q).add(joyPivotPoint);
+      // Z press: the M3 rod (magnet holder) slides down its rotated shaft axis,
+      // pushing the magnet toward the sensor (smaller airgap -> stronger Bz).
+      joyAssemblyRef.position.add(new THREE.Vector3(0, -joyZ * 0.3, 0).applyQuaternion(q));
+    }
+
+    // Update the marker trail: record the marker's world position, keep a short
+    // history, and lay trail dots along it (fading and shrinking with age).
+    if (joyTipMarker && joyTrailMesh) {
+      joyTipMarker.getWorldPosition(tmpVec);
+      joyTrailHistory.unshift(tmpVec.clone());
+      if (joyTrailHistory.length > 32) joyTrailHistory.length = 32;
+      joyTrailMesh.children.forEach((dot) => {
+        const idx = dot.userData.index;
+        const histIdx = Math.min(joyTrailHistory.length - 1, idx + 1);
+        dot.position.copy(joyTrailHistory[histIdx] || tmpVec);
+      });
+    }
 
     const joyPosTxt = document.getElementById('joy-pos-text');
     if (joyPosTxt) {
       joyPosTxt.innerText = `Tilt X: ${(joyX * 22).toFixed(1)}° | Tilt Y: ${(joyY * 22).toFixed(1)}° | Press Z: ${(joyZ * 2.0).toFixed(1)} mm`;
     }
 
-    // Magnetic Math (Req 1 & 2)
+    // Nominal magnetic field components
     let trueBx = joyX * 18.0;
     let trueBy = joyY * 18.0;
     let trueBz = joyZ * 12.0;
@@ -341,31 +507,53 @@ scene.add(domeMesh);
     let stdBy = trueBy + noiseY;
     let stdBz = 22.0 + trueBz + noiseZ;
 
-    let mlxDBx = trueBx;
-    let mlxDBy = trueBy;
-    let mlxDBz = 22.0 + trueBz;
+    let mlxDBx = 6.5;
+    let mlxDBy = 6.5;
+    let mlxDBz = joyX * 2.5;
+    let mlxDBzY = joyY * 2.5;
 
-    // Use live hardware packet if available
     if (isLiveHardwareConnected && liveHardwarePacket && liveHardwarePacket.p0Raw) {
-      stdBx = liveHardwarePacket.p0Raw.x / 20 + noiseX;
-      stdBy = liveHardwarePacket.p0Raw.y / 20 + noiseY;
-      stdBz = liveHardwarePacket.p0Raw.z / 20 + noiseZ;
+      stdBx = liveHardwarePacket.p0Raw.x / SINGLE_PIXEL_LSB_PER_MT + noiseX;
+      stdBy = liveHardwarePacket.p0Raw.y / SINGLE_PIXEL_LSB_PER_MT + noiseY;
+      stdBz = (liveHardwarePacket.p0Raw.z / SINGLE_PIXEL_LSB_PER_MT + noiseZ);
 
-      mlxDBx = liveHardwarePacket.diffRaw.x / 20;
-      mlxDBy = liveHardwarePacket.diffRaw.y / 20;
-      mlxDBz = liveHardwarePacket.diffRaw.z / 20;
+      mlxDBx = liveHardwarePacket.diffRaw.x / DIFFERENTIAL_LSB_PER_MT_MM;
+      mlxDBy = liveHardwarePacket.diffRaw.y / DIFFERENTIAL_LSB_PER_MT_MM;
+      mlxDBz = (liveHardwarePacket.diffRaw.z || 0) / DIFFERENTIAL_LSB_PER_MT_MM;
+      mlxDBzY = (liveHardwarePacket.diffRaw.bzY || liveHardwarePacket.diffRaw.z || 0) / DIFFERENTIAL_LSB_PER_MT_MM;
     }
 
-    // Calculated Signal Strength Magnitude
-    let magStd = Math.sqrt(stdBx ** 2 + stdBy ** 2 + stdBz ** 2);
-    let magDiff = Math.sqrt(mlxDBx ** 2 + mlxDBy ** 2 + mlxDBz ** 2);
+    targetStdBx = stdBx;
+    targetStdBy = stdBy;
+    targetStdBz = stdBz;
+    targetMlxDBx = mlxDBx;
+    targetMlxDBy = mlxDBy;
+    targetMlxDBz = mlxDBz;
+    targetMlxDBzY = mlxDBzY;
 
-    updateSignalBarsUI(stdBx, stdBy, stdBz, mlxDBx, mlxDBy, mlxDBz, magStd, magDiff);
+    // Interpolate frame-rate display state toward raw telemetry targets
+    displayStdBx += (targetStdBx - displayStdBx) * smoothing;
+    displayStdBy += (targetStdBy - displayStdBy) * smoothing;
+    displayStdBz += (targetStdBz - displayStdBz) * smoothing;
+    displayMlxDBx += (targetMlxDBx - displayMlxDBx) * smoothing;
+    displayMlxDBy += (targetMlxDBy - displayMlxDBy) * smoothing;
+    displayMlxDBz += (targetMlxDBz - displayMlxDBz) * smoothing;
+    displayMlxDBzY += (targetMlxDBzY - displayMlxDBzY) * smoothing;
 
-    // Radar Angles
+    // Process SFI formulas from interpolated display values
+    const sfi1px = computeSfi1Px(displayStdBx, displayStdBy, displayStdBz, activeCalibrationParams);
+    const sfi2px = computeSfi2Px(displayMlxDBx, displayMlxDBz, displayMlxDBy, displayMlxDBzY, activeCalibrationParams);
+
+    updateSignalBarsUI(
+      displayStdBx, displayStdBy, displayStdBz,
+      displayMlxDBx, displayMlxDBy, displayMlxDBz, displayMlxDBzY,
+      sfi1px.signalStrength,
+      sfi2px.signalStrength
+    );
+
     let trueAngleDeg = (Math.atan2(joyY, joyX) * 180 / Math.PI + 360) % 360;
-    let stdAngleDeg = (Math.atan2(stdBy, stdBx) * 180 / Math.PI + 360) % 360;
-    let diffAngleDeg = (Math.atan2(mlxDBy, mlxDBx) * 180 / Math.PI + 360) % 360;
+    let stdAngleDeg = (Math.atan2(displayStdBy, displayStdBx) * 180 / Math.PI + 360) % 360;
+    let diffAngleDeg = (Math.atan2(displayMlxDBzY, displayMlxDBz) * 180 / Math.PI + 360) % 360;
 
     let stdError = Math.abs(stdAngleDeg - trueAngleDeg);
     if (stdError > 180) stdError = 360 - stdError;
@@ -373,79 +561,142 @@ scene.add(domeMesh);
     let diffError = Math.abs(diffAngleDeg - trueAngleDeg);
     if (diffError > 180) diffError = 360 - diffError;
 
+    // Top Summary (if unhidden)
+    const angleAlphaEl = document.getElementById('angle-alpha');
+    const angleBetaEl = document.getElementById('angle-beta');
+    const angleThetaEl = document.getElementById('angle-theta');
+    if (angleAlphaEl) angleAlphaEl.innerText = sfi2px.alphaDeg.toFixed(1) + '°';
+    if (angleBetaEl) angleBetaEl.innerText = sfi2px.betaDeg.toFixed(1) + '°';
+    if (angleThetaEl) angleThetaEl.innerText = diffAngleDeg.toFixed(1) + '°';
+
+    // Standard 3D Hall Radar Readouts
     const angleStdEl = document.getElementById('radar-angle-std');
     const errorStdEl = document.getElementById('radar-error-std');
-    const angleMlxEl = document.getElementById('radar-angle-mlx');
-    const errorMlxEl = document.getElementById('radar-error-mlx');
+    const alphaStdEl = document.getElementById('radar-alpha-std');
+    const betaStdEl = document.getElementById('radar-beta-std');
 
     if (angleStdEl) angleStdEl.innerText = stdAngleDeg.toFixed(1) + '°';
     if (errorStdEl) errorStdEl.innerText = stdError.toFixed(1) + '°';
+    if (alphaStdEl) alphaStdEl.innerText = sfi1px.alphaDeg.toFixed(1) + '°';
+    if (betaStdEl) betaStdEl.innerText = sfi1px.betaDeg.toFixed(1) + '°';
+
+    // MLX90396 Differential SFI Radar Readouts (Desmos Calibrated)
+    const angleMlxEl = document.getElementById('radar-angle-mlx');
+    const errorMlxEl = document.getElementById('radar-error-mlx');
+    const alphaMlxEl = document.getElementById('radar-alpha-mlx');
+    const betaMlxEl = document.getElementById('radar-beta-mlx');
+
     if (angleMlxEl) angleMlxEl.innerText = diffAngleDeg.toFixed(1) + '°';
     if (errorMlxEl) errorMlxEl.innerText = diffError.toFixed(1) + '°';
+    if (alphaMlxEl) alphaMlxEl.innerText = sfi2px.alphaDeg.toFixed(1) + '°';
+    if (betaMlxEl) betaMlxEl.innerText = sfi2px.betaDeg.toFixed(1) + '°';
 
-    stdTraceHistory.push({ x: stdBx, y: stdBy, z: stdBz });
-    mlxTraceHistory.push({ x: mlxDBx, y: mlxDBy, z: mlxDBz });
-
-    if (stdTraceHistory.length > 120) stdTraceHistory.shift();
-    if (mlxTraceHistory.length > 120) mlxTraceHistory.shift();
-
-   // --- ONLY PUSH HISTORY IF THE TABS THAT USE IT ARE ACTIVE ---
     const activeTab = document.querySelector('.tab-content.active')?.id;
 
-    if (activeTab === 'tab-battle' || activeTab === 'tab-xyz') {
-      stdTraceHistory.push({ x: stdBx, y: stdBy, z: stdBz });
-      mlxTraceHistory.push({ x: mlxDBx, y: mlxDBy, z: mlxDBz });
+    if (activeTab === 'tab-telemetry') {
+      telemetryVisualElapsed += deltaSeconds;
+      if (telemetryVisualElapsed >= 1 / 30) {
+        telemetryVisualElapsed %= 1 / 30;
 
-      if (stdTraceHistory.length > 120) stdTraceHistory.shift();
-      if (mlxTraceHistory.length > 120) mlxTraceHistory.shift();
-    }
+        const lastStd = stdTraceHistory[stdTraceHistory.length - 1];
+        const lastMlx = mlxTraceHistory[mlxTraceHistory.length - 1];
 
-// --- RENDER ONLY THE ACTIVE TAB ---
-    if (activeTab === 'tab-dome' && mainSceneObj) {
+        // Left Plot: Push z: 0 so the magnet head starts and pivots centered on the joint
+        if (!lastStd || Math.abs(lastStd.x - displayStdBx) > 0.05 || Math.abs(lastStd.y - displayStdBy) > 0.05) {
+          stdTraceHistory.push({ 
+            x: displayStdBx, 
+            y: displayStdBy, 
+            z: 0,
+            rawZ: displayStdBz 
+          });
+        }
+        
+        // Right Plot: Push tilt gradients (Z02, Z13) centered on the joint
+        if (!lastMlx || Math.abs(lastMlx.x - displayMlxDBz) > 0.05 || Math.abs(lastMlx.y - displayMlxDBzY) > 0.05) {
+          mlxTraceHistory.push({ 
+            x: displayMlxDBz, 
+            y: displayMlxDBzY, 
+            z: 0,
+            rawX: displayMlxDBx,
+            rawY: displayMlxDBy,
+            rawZx: displayMlxDBz,
+            rawZy: displayMlxDBzY
+          });
+        }
+
+        if (stdTraceHistory.length > TRACE_HISTORY_POINTS) stdTraceHistory.shift();
+        if (mlxTraceHistory.length > TRACE_HISTORY_POINTS) mlxTraceHistory.shift();
+
+        if (stdPlot) update3DPlot(stdPlot, stdTraceHistory, true);
+        if (mlxPlot) update3DPlot(mlxPlot, mlxTraceHistory, false);
+
+        // Render 2D Polar Radars with dedicated scales using smoothed display values
+        const radarTargetStd = isLiveHardwareConnected ? null : { x: trueBx, y: trueBy };
+        const radarTargetMlx = isLiveHardwareConnected ? null : { x: joyX * 2.5, y: joyY * 2.5 };
+
+        drawRadar(radarCtxStd, displayStdBx, displayStdBy, radarTargetStd, '#ef4444', 'LEGACY 3D HALL', 28.0);
+        drawRadar(radarCtxMlx, displayMlxDBz, displayMlxDBzY, radarTargetMlx, '#10b981', 'MLX90396 SFI', 3.5);
+      }
+    } else if (activeTab === 'tab-idle' && mainSceneObj) {
       controls.update();
       renderer.render(scene, camera);
-      // DRAW LEGACY RADAR HERE ON DOME TAB
-      drawRadar(radarCtxStd, stdBx, stdBy, trueBx, trueBy, '#00ff88', 'LEGACY 3D HALL');
-    } else if (activeTab === 'tab-battle') {
-      if (stdPlot) update3DPlot(stdPlot, stdTraceHistory, true);
-      if (mlxPlot) update3DPlot(mlxPlot, mlxTraceHistory, false);
-      // ONLY DIFFERENTIAL RADAR REMAINS ON BATTLE TAB
-      drawRadar(radarCtxMlx, mlxDBx, mlxDBy, trueBx, trueBy, '#00ff88', 'MLX90396 SFI');
-    } else if (activeTab === 'tab-xyz' && xyzChartObj) {
-      updateXyzChart(mlxTraceHistory, mlxDBx, mlxDBy, mlxDBz);
     }
   }
 
   animate();
 }
 
-// --- SIGNAL BARS & MAGNITUDE UI ---
-function updateSignalBarsUI(bx0, by0, bz0, dbx, dby, dbz, magStd, magDiff) {
-  const updateBar = (meterId, txtId, val, maxRange = 35) => {
+function updateSignalBarsUI(bx0, by0, bz0, dbx, dby, dbz_x, dbz_y, magStd, magDiff) {
+  const updateBar = (meterId, txtId, val, unit = 'mT', maxRange = 35) => {
     const meter = document.getElementById(meterId);
     const txt = document.getElementById(txtId);
     if (!meter || !txt) return;
 
-    txt.innerText = val.toFixed(1) + ' mT';
+    txt.innerText = val.toFixed(1) + ' ' + unit;
     const percent = Math.min(100, Math.max(0, ((val + maxRange) / (maxRange * 2)) * 100));
     meter.style.width = percent + '%';
   };
 
-  updateBar('meter-raw-bx', 'txt-raw-bx', bx0);
-  updateBar('meter-raw-by', 'txt-raw-by', by0);
-  updateBar('meter-raw-bz', 'txt-raw-bz', bz0);
+  updateBar('meter-raw-bx', 'txt-raw-bx', bx0, 'mT');
+  updateBar('meter-raw-by', 'txt-raw-by', by0, 'mT');
+  updateBar('meter-raw-bz', 'txt-raw-bz', bz0, 'mT');
 
-  updateBar('meter-diff-bx', 'txt-diff-bx', dbx);
-  updateBar('meter-diff-by', 'txt-diff-by', dby);
-  updateBar('meter-diff-bz', 'txt-diff-bz', dbz);
+  updateBar('meter-diff-bx', 'txt-diff-bx', dbx, 'mT/mm');
+  updateBar('meter-diff-by', 'txt-diff-by', dby, 'mT/mm');
+  updateBar('meter-diff-bz', 'txt-diff-bz', dbz_x, 'mT/mm');
+  updateBar('meter-diff-bz-y', 'txt-diff-bz-y', dbz_y, 'mT/mm');
 
   const elMagStd = document.getElementById('mag-val-std');
   const elMagDiff = document.getElementById('mag-val-diff');
   if (elMagStd) elMagStd.innerText = magStd.toFixed(1) + ' mT';
-  if (elMagDiff) elMagDiff.innerText = magDiff.toFixed(1) + ' mT';
+  if (elMagDiff) elMagDiff.innerText = magDiff.toFixed(1) + ' mT/mm';
+
+  updateSensorDiagnostics(bx0, by0, bz0, dbx, dby, dbz_x, dbz_y, magStd, magDiff);
 }
 
-// --- 360° POLAR RADAR MAP ENGINE ---
+function updateSensorDiagnostics(bx0, by0, bz0, dbx, dby, dbz_x, dbz_y, magStd, magDiff) {
+  const values = {
+    'diag-source': isLiveHardwareConnected ? 'Live hardware' : 'Simulation',
+    'diag-health': [bx0, by0, bz0, dbx, dby, dbz_x, dbz_y].some(value => Math.abs(value) >= 100)
+      ? 'Range watch: possible clipping'
+      : 'Range watch: no obvious clipping',
+    'diag-bx': `${bx0.toFixed(2)} mT`,
+    'diag-by': `${by0.toFixed(2)} mT`,
+    'diag-bz': `${bz0.toFixed(2)} mT`,
+    'diag-dbx': `${dbx.toFixed(2)} mT/mm`,
+    'diag-dby': `${dby.toFixed(2)} mT/mm`,
+    'diag-dbz-x': `${dbz_x.toFixed(2)} mT/mm`,
+    'diag-dbz-y': `${dbz_y.toFixed(2)} mT/mm`,
+    'diag-std-magnitude': `${magStd.toFixed(2)} mT`,
+    'diag-diff-magnitude': `${magDiff.toFixed(2)} mT/mm`
+  };
+
+  Object.entries(values).forEach(([id, value]) => {
+    const element = document.getElementById(id);
+    if (element) element.textContent = value;
+  });
+}
+
 function initRadarCanvases() {
   radarCanvasStd = document.getElementById('radarCanvasStd');
   radarCanvasMlx = document.getElementById('radarCanvasMlx');
@@ -462,7 +713,7 @@ function resizeRadarCanvases() {
   });
 }
 
-function drawRadar(ctx, curX, curY, targetX, targetY, themeColor, label) {
+function drawRadar(ctx, curX, curY, target, themeColor, label, maxScale = 28.0) {
   if (!ctx || !ctx.canvas) return;
   const w = ctx.canvas.width;
   const h = ctx.canvas.height;
@@ -472,6 +723,7 @@ function drawRadar(ctx, curX, curY, targetX, targetY, themeColor, label) {
 
   ctx.clearRect(0, 0, w, h);
 
+  // Background Reticle
   ctx.fillStyle = '#030816';
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -498,19 +750,29 @@ function drawRadar(ctx, curX, curY, targetX, targetY, themeColor, label) {
   ctx.fillText('180° (-X)', cx - radius + 22, cy - 6);
   ctx.fillText('270° (-Y)', cx, cy + radius - 8);
 
-  const maxScale = 22.0;
-  const targetPxX = cx + (targetX / maxScale) * radius;
-  const targetPxY = cy - (targetY / maxScale) * radius;
+  // Target reticle (simulation reference)
+  if (target) {
+    const targetDist = Math.hypot(target.x, target.y);
+    const clampedTargetDist = Math.min(targetDist, maxScale);
+    const targetScale = targetDist > 0 ? (clampedTargetDist / targetDist) : 1;
+    const targetPxX = cx + ((target.x * targetScale) / maxScale) * radius;
+    const targetPxY = cy - ((target.y * targetScale) / maxScale) * radius;
 
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-  ctx.setLineDash([3, 3]);
-  ctx.beginPath();
-  ctx.arc(targetPxX, targetPxY, 9, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.arc(targetPxX, targetPxY, 8, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
-  const measuredPxX = cx + (curX / maxScale) * radius;
-  const measuredPxY = cy - (curY / maxScale) * radius;
+  // Measured vector (Solid arrow) with boundary clamping
+  const measuredDist = Math.hypot(curX, curY);
+  const clampedMeasuredDist = Math.min(measuredDist, maxScale);
+  const measuredScale = measuredDist > 0 ? (clampedMeasuredDist / measuredDist) : 1;
+  const measuredPxX = cx + ((curX * measuredScale) / maxScale) * radius;
+  const measuredPxY = cy - ((curY * measuredScale) / maxScale) * radius;
 
   ctx.strokeStyle = themeColor;
   ctx.lineWidth = 2.5;
@@ -521,180 +783,14 @@ function drawRadar(ctx, curX, curY, targetX, targetY, themeColor, label) {
 
   ctx.fillStyle = themeColor;
   ctx.shadowColor = themeColor;
-  ctx.shadowBlur = 12;
+  ctx.shadowBlur = 10;
   ctx.beginPath();
-  ctx.arc(measuredPxX, measuredPxY, 6, 0, Math.PI * 2);
+  ctx.arc(measuredPxX, measuredPxY, 5.5, 0, Math.PI * 2);
   ctx.fill();
   ctx.shadowBlur = 0;
 }
 
-// --- CENTERED Z-UP 3D XYZ CHART ---
-function initXyzChart() {
-  const container = document.getElementById('canvas-xyz-main');
-  if (!container || !window.THREE) return;
-
-  const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x020612);
-
-  const w = container.clientWidth || 800;
-  const h = container.clientHeight || 560;
-  const camera = new THREE.PerspectiveCamera(38, w / h, 0.1, 100);
-
-  camera.up.set(0, 0, 1);
-  camera.position.set(13, -15, 11);
-
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setSize(w, h);
-  container.appendChild(renderer.domElement);
-
-  const controls = new THREE.OrbitControls(camera, renderer.domElement);
-  controls.target.set(0, 0, 0);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.05;
-
-  const gridFloor = new THREE.GridHelper(14, 14, 0x00d2ff, 0x1e293b);
-  gridFloor.rotation.x = Math.PI / 2;
-  gridFloor.position.set(0, 0, 0);
-  scene.add(gridFloor);
-
-  const originMarker = new THREE.Mesh(
-    new THREE.SphereGeometry(0.18, 16, 16),
-    new THREE.MeshBasicMaterial({ color: 0x94a3b8, opacity: 0.6, transparent: true })
-  );
-  originMarker.position.set(0, 0, 0);
-  scene.add(originMarker);
-
-  const origin = new THREE.Vector3(0, 0, 0);
-  const arrowLen = 5.5;
-  const arrowHeadLen = 0.9;
-  const arrowHeadWidth = 0.45;
-
-  const arrowX = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), origin, arrowLen, 0xff3366, arrowHeadLen, arrowHeadWidth);
-  const arrowY = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), origin, arrowLen, 0x00ff88, arrowHeadLen, arrowHeadWidth);
-  const arrowZ = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), origin, arrowLen, 0x00d2ff, arrowHeadLen, arrowHeadWidth);
-  scene.add(arrowX);
-  scene.add(arrowY);
-  scene.add(arrowZ);
-
-  const makeNegAxis = (dir, color) => {
-    const geo = new THREE.BufferGeometry().setFromPoints([origin, dir.clone().multiplyScalar(5.5)]);
-    const mat = new THREE.LineDashedMaterial({ color, dashSize: 0.3, gapSize: 0.2, opacity: 0.35, transparent: true });
-    const line = new THREE.Line(geo, mat);
-    line.computeLineDistances();
-    scene.add(line);
-  };
-  makeNegAxis(new THREE.Vector3(-1, 0, 0), 0xff3366);
-  makeNegAxis(new THREE.Vector3(0, -1, 0), 0x00ff88);
-  makeNegAxis(new THREE.Vector3(0, 0, -1), 0x00d2ff);
-
-  const stemGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, 0)]);
-  const stemMat = new THREE.LineBasicMaterial({ color: 0xffaa00, linewidth: 2, transparent: true, opacity: 0.8 });
-  const stemLine = new THREE.Line(stemGeo, stemMat);
-  scene.add(stemLine);
-
-  const maxPoints = 140;
-  const linePositions = new Float32Array(maxPoints * 3);
-  const lineGeo = new THREE.BufferGeometry();
-  lineGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
-  const lineMat = new THREE.LineBasicMaterial({ color: 0x00f3ff, linewidth: 2.8 });
-  const lineMesh = new THREE.Line(lineGeo, lineMat);
-  scene.add(lineMesh);
-
-  const headMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(0.36, 24, 24),
-    new THREE.MeshStandardMaterial({ color: 0xff5500, roughness: 0.2, metalness: 0.4 })
-  );
-  headMesh.position.set(0, 0, 0);
-  scene.add(headMesh);
-
-  const ballLight = new THREE.PointLight(0xffffff, 1.5, 30);
-  ballLight.position.set(5, 8, 10);
-  scene.add(ballLight);
-  scene.add(new THREE.AmbientLight(0xffffff, 0.8));
-
-  xyzChartObj = {
-    scene, camera, renderer, controls,
-    lineGeo, headMesh, stemLine, maxPoints, container
-  };
-
-  const viewButtons = document.querySelectorAll('.btn-xyz-view');
-  viewButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-      viewButtons.forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      setXyzCameraPreset(btn.dataset.view);
-    });
-  });
-}
-
-function setXyzCameraPreset(viewKey) {
-  if (!xyzChartObj) return;
-  const { camera, controls } = xyzChartObj;
-
-  controls.target.set(0, 0, 0);
-
-  if (viewKey === 'iso') {
-    camera.up.set(0, 0, 1);
-    camera.position.set(13, -15, 11);
-  } else if (viewKey === 'x') {
-    camera.up.set(0, 0, 1);
-    camera.position.set(18, 0, 0);
-  } else if (viewKey === 'y') {
-    camera.up.set(0, 0, 1);
-    camera.position.set(0, -18, 0);
-  } else if (viewKey === 'z') {
-    camera.up.set(0, 1, 0);
-    camera.position.set(0, 0, 18);
-  }
-
-  controls.update();
-}
-
-function updateXyzChart(history, curX, curY, curZ) {
-  if (!xyzChartObj) return;
-
-  const { scene, camera, renderer, controls, lineGeo, headMesh, stemLine, maxPoints } = xyzChartObj;
-  const len = history.length;
-
-  const lblX = document.getElementById('xyz-val-x');
-  const lblY = document.getElementById('xyz-val-y');
-  const lblZ = document.getElementById('xyz-val-z');
-  if (lblX) lblX.innerText = curX.toFixed(1);
-  if (lblY) lblY.innerText = curY.toFixed(1);
-  if (lblZ) lblZ.innerText = (curZ - 22.0).toFixed(1);
-
-  const SCALE = 0.22;
-
-  const positions = lineGeo.attributes.position.array;
-  for (let i = 0; i < maxPoints; i++) {
-    if (i < len) {
-      positions[i * 3 + 0] = history[i].x * SCALE;
-      positions[i * 3 + 1] = history[i].y * SCALE;
-      positions[i * 3 + 2] = (history[i].z - 22.0) * SCALE;
-    } else {
-      positions[i * 3 + 0] = 0;
-      positions[i * 3 + 1] = 0;
-      positions[i * 3 + 2] = 0;
-    }
-  }
-  lineGeo.attributes.position.needsUpdate = true;
-
-  const livePosX = curX * SCALE;
-  const livePosY = curY * SCALE;
-  const livePosZ = (curZ - 22.0) * SCALE;
-
-  headMesh.position.set(livePosX, livePosY, livePosZ);
-
-  const stemPos = stemLine.geometry.attributes.position.array;
-  stemPos[0] = 0; stemPos[1] = 0; stemPos[2] = 0;
-  stemPos[3] = livePosX; stemPos[4] = livePosY; stemPos[5] = livePosZ;
-  stemLine.geometry.attributes.position.needsUpdate = true;
-
-  controls.update();
-  renderer.render(scene, camera);
-}
-
-function create3DFieldPlot(elementId, ringColor) {
+function create3DFieldPlot(elementId, ringColor, fullScale = 28.0) {
   const el = document.getElementById(elementId);
   if (!el) return null;
 
@@ -704,273 +800,170 @@ function create3DFieldPlot(elementId, ringColor) {
   const w = el.clientWidth || 320;
   const h = el.clientHeight || 260;
   const plotCamera = new THREE.PerspectiveCamera(40, w / h, 0.1, 100);
-  plotCamera.position.set(9, 7, 10);
+  plotCamera.position.set(7, 4.5, 9);
 
   const plotRenderer = new THREE.WebGLRenderer({ antialias: true });
+  plotRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
   plotRenderer.setSize(w, h);
   el.appendChild(plotRenderer.domElement);
 
   const plotControls = new THREE.OrbitControls(plotCamera, plotRenderer.domElement);
+  plotControls.target.set(0, 0, 0);
   plotControls.enableDamping = true;
   plotControls.dampingFactor = 0.05;
+  plotControls.enablePan = false;
+  plotControls.enableRotate = false;
+  plotControls.minDistance = 10;
+  plotControls.maxDistance = 16;
 
+  plotScene.add(new THREE.AmbientLight(0xffffff, 1.2));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1.1);
+  dirLight.position.set(6, 12, 8);
+  plotScene.add(dirLight);
+
+  // World Y is the screen vertical axis, so the default X-Z grid is the floor.
   const gridHelper = new THREE.GridHelper(8, 8, 0x334155, 0x1e293b);
-  gridHelper.position.y = -3;
+  gridHelper.position.y = -2.2;
   plotScene.add(gridHelper);
 
-  plotScene.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, -3, 0), 4.2, 0xff3366));
-  plotScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, -3, 0), 4.2, 0x00ff88));
-  plotScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, -3, 0), 4.2, 0x00d2ff));
+  // Origin Axes
+  plotScene.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 0), 3.2, 0xef4444));
+  plotScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, 0), 3.2, 0x10b981));
+  plotScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0), 3.2, 0x00d2ff));
 
-  const maxPoints = 120;
+  const maxPoints = TRACE_HISTORY_POINTS;
   const linePositions = new Float32Array(maxPoints * 3);
   const lineGeo = new THREE.BufferGeometry();
   lineGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
-  const lineMat = new THREE.LineBasicMaterial({ color: ringColor, linewidth: 2 });
-  const lineMesh = new THREE.Line(lineGeo, lineMat);
-  plotScene.add(lineMesh);
+  const traceMaterial = new THREE.LineBasicMaterial({
+    color: ringColor,
+    linewidth: 1
+  });
+  const traceMesh = new THREE.Line(lineGeo, traceMaterial);
+  plotScene.add(traceMesh);
 
-  const headMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(0.3, 16, 16),
-    new THREE.MeshBasicMaterial({ color: ringColor })
+  // 6mm Cylindrical Magnet Assembly
+  const magnetGroup = new THREE.Group();
+
+  const northPole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.55, 0.55, 0.35, 24),
+    new THREE.MeshStandardMaterial({ color: 0xff1144, roughness: 0.25, metalness: 0.4 })
   );
-  plotScene.add(headMesh);
+  northPole.position.y = -0.175;
+  magnetGroup.add(northPole);
+
+  const southPole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.55, 0.55, 0.35, 24),
+    new THREE.MeshStandardMaterial({ color: 0x0088ff, roughness: 0.25, metalness: 0.4 })
+  );
+  southPole.position.y = 0.175;
+  magnetGroup.add(southPole);
+
+  const ringBand = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.56, 0.56, 0.05, 24),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.1, metalness: 0.9 })
+  );
+  magnetGroup.add(ringBand);
+
+  plotScene.add(magnetGroup);
 
   return {
-    scene: plotScene, camera: plotCamera, renderer: plotRenderer, controls: plotControls,
-    lineGeo, headMesh, maxPoints, el
+    scene: plotScene,
+    camera: plotCamera,
+    renderer: plotRenderer,
+    controls: plotControls,
+    lineGeo,
+    traceMaterial,
+    headMesh: magnetGroup,
+    maxPoints,
+    fullScale,
+    el
   };
 }
 
-function update3DPlot(plot, history, isCorrupted) {
+function update3DPlot(plot, history, isLegacy) {
   const positions = plot.lineGeo.attributes.position.array;
   const len = history.length;
+  const maxAbs = Math.max(1, ...history.map(pt => Math.max(
+    Math.abs(pt.x),
+    Math.abs(pt.y),
+    Math.abs(pt.z || 0)
+  )));
+  // Each plot scales its own channel range onto the grid, so the magnet head
+  // swings a similar distance for the legacy (mT) and the differential
+  // (mT/mm) signals. fullScale is the channel range that maps to ~2.4 world
+  // units; the maxAbs term keeps a small signal from over-zooming the head.
+  const refScale = plot.fullScale || 28.0;
+  const SCALE = Math.min(2.4 / refScale, 2.4 / maxAbs);
 
-  for (let i = 0; i < plot.maxPoints; i++) {
-    if (i < len) {
-      positions[i * 3] = history[i].x * 0.18;
-      positions[i * 3 + 1] = history[i].y * 0.18 - 3;
-      positions[i * 3 + 2] = (history[i].z - 22.0) * 0.18;
-    } else {
-      positions[i * 3] = 0; positions[i * 3 + 1] = -3; positions[i * 3 + 2] = 0;
-    }
+  for (let i = 0; i < len; i++) {
+    const pt = history[i];
+    const zOffset = pt.z || 0;
+    positions[i * 3 + 0] = pt.x * SCALE;
+    positions[i * 3 + 1] = zOffset * SCALE;
+    positions[i * 3 + 2] = pt.y * SCALE;
   }
+
+  // Draw range ensures uninitialized slots in the buffer do not stretch to the origin
+  plot.lineGeo.setDrawRange(0, len);
   plot.lineGeo.attributes.position.needsUpdate = true;
 
   if (len > 0) {
     const last = history[len - 1];
-    plot.headMesh.position.set(last.x * 0.18, last.y * 0.18 - 3, (last.z - 22.0) * 0.18);
-    plot.headMesh.material.color.setHex(isCorrupted && coilActive ? 0xff3366 : 0x00ff88);
+    const zOffset = last.z || 0;
+    const px = last.x * SCALE;
+    const py = zOffset * SCALE;
+    const pz = last.y * SCALE;
+    let velocity = 0;
+
+    if (len > 1) {
+      const previous = history[len - 2];
+      const previousZ = previous.z || 0;
+      velocity = Math.hypot(
+        (last.x - previous.x) * SCALE,
+        (last.y - previous.y) * SCALE,
+        (zOffset - previousZ) * SCALE
+      );
+      plot.traceMaterial.linewidth = Math.min(8, Math.max(1, 1 + velocity * 30));
+    }
+
+    const velocityEl = document.getElementById(isLegacy ? 'plot-std-velocity' : 'plot-mlx-velocity');
+    if (velocityEl) velocityEl.textContent = `v ${(velocity * 30).toFixed(1)} px/s`;
+
+    plot.headMesh.position.set(px, py, pz);
+    plot.headMesh.rotation.z = -px * 0.4;
+    plot.headMesh.rotation.x = pz * 0.4;
+
+if (isLegacy) {
+      setBoxVal('plot-std-bx', last.x);
+      setBoxVal('plot-std-by', last.y);
+      setBoxVal('plot-std-bz', last.rawZ ?? last.z ?? 0);
+    } else {
+      setBoxVal('plot-mlx-dbx', last.rawX ?? 0);
+      setBoxVal('plot-mlx-dby', last.rawY ?? 0);
+      setBoxVal('plot-mlx-dbzdx', last.rawZx ?? last.x);
+      setBoxVal('plot-mlx-dbzdy', last.rawZy ?? last.y);
+    }
   }
 
   plot.controls.update();
   plot.renderer.render(plot.scene, plot.camera);
 }
 
+function setBoxVal(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = Number.isFinite(value) ? value.toFixed(1) : '0.0';
+}
+
 export function resetPlotLines() {
   stdTraceHistory = [];
   mlxTraceHistory = [];
-  trail4D = []; // Clear 4D history as well
-  
+
   [stdPlot, mlxPlot].forEach(p => {
     if (!p) return;
-    const pos = p.lineGeo.attributes.position.array;
-    pos.fill(0);
+    p.lineGeo.setDrawRange(0, 0);
     p.lineGeo.attributes.position.needsUpdate = true;
   });
-
-  if (xyzChartObj) {
-    const pos = xyzChartObj.lineGeo.attributes.position.array;
-    pos.fill(0);
-    xyzChartObj.lineGeo.attributes.position.needsUpdate = true;
-    xyzChartObj.headMesh.position.set(0, 0, 0);
-  }
-}
-
-// --- 4D Canvas Engine (Requirement 5) ---
-function init4DCanvas() {
-  let controlMode = 'position';
-  let dronePos = { x: 0, y: 0 };
-  const ARENA_LIMIT = 85;
-
-  const btnPos = document.getElementById('btn-mode-pos');
-  const btnVel = document.getElementById('btn-mode-vel');
-  const modeDesc = document.getElementById('ctrl-mode-desc');
-
-  btnPos?.addEventListener('click', () => {
-    controlMode = 'position';
-    btnPos.className = 'ds-button ds-button--primary ds-button--sm';
-    btnVel.className = 'ds-button ds-button--secondary ds-button--sm';
-    if (modeDesc) modeDesc.innerText = 'Mode: Direct Stick-to-Position Mapping (Absolute)';
-  });
-
-  btnVel?.addEventListener('click', () => {
-    controlMode = 'velocity';
-    btnVel.className = 'ds-button ds-button--primary ds-button--sm';
-    btnPos.className = 'ds-button ds-button--secondary ds-button--sm';
-    if (modeDesc) modeDesc.innerText = 'Mode: Stick Tilt Controls Speed & Heading (Rate Control)';
-  });
-
-  canvas4D = document.getElementById('simCanvas');
-  if (!canvas4D) return;
-  ctx4D = canvas4D.getContext('2d');
-
-  resize4DCanvas();
-
-  function project3D(x, y, z) {
-    const centerX = width4D / 2;
-    const centerY = height4D / 2 + 50;
-    const isoX = (x - y) * Math.cos(Math.PI / 6);
-    const isoY = (x + y) * Math.sin(Math.PI / 6) - z * 1.2;
-    return { px: centerX + isoX * 2.2, py: centerY + isoY * 2.2 };
-  }
-
-  function get4DColor(velocity, alpha = 1) {
-    const ratio = Math.min(velocity / 35, 1);
-    const r = Math.floor(0 + ratio * 255);
-    const g = Math.floor(243 - ratio * 188);
-    const b = Math.floor(255 - ratio * 255);
-    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-  }
-
-  function update4DPhysicsAndRender() {
-    prevStick4D.x = stick4D.x;
-    prevStick4D.y = stick4D.y;
-    prevStick4D.z = stick4D.z;
-
-    stick4D.x += ((stick4D.targetX || 0) - stick4D.x) * 0.2;
-    stick4D.y += ((stick4D.targetY || 0) - stick4D.y) * 0.2;
-    stick4D.z += ((stick4D.targetZ || 0) - stick4D.z) * 0.2;
-
-    if (controlMode === 'position') {
-      dronePos.x = stick4D.x;
-      dronePos.y = stick4D.y;
-    } else {
-      const speedScale = 0.04;
-      dronePos.x += stick4D.x * speedScale;
-      dronePos.y += stick4D.y * speedScale;
-
-      dronePos.x = Math.max(-ARENA_LIMIT, Math.min(ARENA_LIMIT, dronePos.x));
-      dronePos.y = Math.max(-ARENA_LIMIT, Math.min(ARENA_LIMIT, dronePos.y));
-    }
-
-    const dx = stick4D.x - prevStick4D.x;
-    const dy = stick4D.y - prevStick4D.y;
-    const dz = stick4D.z - prevStick4D.z;
-
-// 1. Calculate Force & Velocity
-    stick4D.velocity = Math.sqrt(dx * dx + dy * dy + dz * dz) * 10;
-    stick4D.force = Math.min(100, Math.sqrt(stick4D.x ** 2 + stick4D.y ** 2) * 0.7 + stick4D.z * 0.8 + stick4D.velocity * 0.5);
-
-    // 2. STOP DRAWING/RECORDING IF HIDDEN
-    const is4DActive = document.getElementById('tab-4d')?.classList.contains('active');
-    if (!is4DActive) {
-      requestAnimationFrame(update4DPhysicsAndRender);
-      return; 
-    }
-
-    // 3. ONLY push to trail if we didn't return early
-    trail4D.push({
-      x: dronePos.x,
-      y: dronePos.y,
-      z: stick4D.z,
-      vel: stick4D.velocity
-    });
-    if (trail4D.length > 120) trail4D.shift();
-
-    const valX = document.getElementById('val-x');
-    const valY = document.getElementById('val-y');
-    const valZ = document.getElementById('val-z');
-    const valVel = document.getElementById('val-vel');
-    const valForce = document.getElementById('val-force');
-    const valFlux = document.getElementById('val-flux');
-
-    if (valX) valX.innerText = (dronePos.x / 4).toFixed(2);
-    if (valY) valY.innerText = (dronePos.y / 4).toFixed(2);
-    if (valZ) valZ.innerText = (stick4D.z / 35).toFixed(2);
-    if (valVel) valVel.innerText = stick4D.velocity.toFixed(1) + " px/s";
-    if (valForce) valForce.innerText = Math.round(stick4D.force) + "%";
-    if (valFlux) valFlux.innerText = (1 + (stick4D.z / 100) * 1.5).toFixed(2) + " mT";
-
-    ctx4D.clearRect(0, 0, width4D, height4D);
-
-    const gridBounds = 100;
-    ctx4D.lineWidth = 1;
-    ctx4D.strokeStyle = 'rgba(255, 255, 255, 0.08)';
-    for (let i = -gridBounds; i <= gridBounds; i += 20) {
-      let p1 = project3D(i, -gridBounds, 0);
-      let p2 = project3D(i, gridBounds, 0);
-      ctx4D.beginPath(); ctx4D.moveTo(p1.px, p1.py); ctx4D.lineTo(p2.px, p2.py); ctx4D.stroke();
-
-      let p3 = project3D(-gridBounds, i, 0);
-      let p4 = project3D(gridBounds, i, 0);
-      ctx4D.beginPath(); ctx4D.moveTo(p3.px, p3.py); ctx4D.lineTo(p4.px, p4.py); ctx4D.stroke();
-    }
-
-    const icPos = project3D(0, 0, -5);
-    ctx4D.fillStyle = '#1e293b';
-    ctx4D.strokeStyle = '#00f3ff';
-    ctx4D.lineWidth = 2;
-    ctx4D.beginPath();
-    ctx4D.arc(icPos.px, icPos.py, 16, 0, Math.PI * 2);
-    ctx4D.fill(); ctx4D.stroke();
-
-    ctx4D.strokeStyle = `rgba(0, 243, 255, ${0.1 + (stick4D.z / 200)})`;
-    ctx4D.lineWidth = 1;
-    for (let r = 25; r <= 80; r += 15) {
-      ctx4D.beginPath();
-      ctx4D.ellipse(icPos.px, icPos.py, r * 1.5, r * 0.8, 0, 0, Math.PI * 2);
-      ctx4D.stroke();
-    }
-
-    for (let i = 1; i < trail4D.length; i++) {
-      let pt1 = project3D(trail4D[i - 1].x, trail4D[i - 1].y, trail4D[i - 1].z);
-      let pt2 = project3D(trail4D[i].x, trail4D[i].y, trail4D[i].z);
-      const speed = trail4D[i].vel;
-
-      ctx4D.strokeStyle = get4DColor(speed, i / trail4D.length);
-      ctx4D.lineWidth = 1 + (speed * 0.2);
-      ctx4D.beginPath(); ctx4D.moveTo(pt1.px, pt1.py); ctx4D.lineTo(pt2.px, pt2.py); ctx4D.stroke();
-
-      if (speed > 20 && Math.random() > 0.5) {
-        ctx4D.fillStyle = get4DColor(speed, 0.8);
-        ctx4D.beginPath();
-        ctx4D.arc(pt2.px + (Math.random() - 0.5) * 10, pt2.py + (Math.random() - 0.5) * 10, Math.random() * 3, 0, Math.PI * 2);
-        ctx4D.fill();
-      }
-    }
-
-    const basePos = project3D(0, 0, 0);
-    const tipPos = project3D(dronePos.x, dronePos.y, stick4D.z);
-    const shadowPos = project3D(dronePos.x, dronePos.y, 0);
-
-    ctx4D.strokeStyle = 'rgba(255, 255, 255, 0.25)';
-    ctx4D.setLineDash([3, 3]);
-    ctx4D.beginPath(); ctx4D.moveTo(tipPos.px, tipPos.py); ctx4D.lineTo(shadowPos.px, shadowPos.py); ctx4D.stroke();
-    ctx4D.setLineDash([]);
-
-    ctx4D.strokeStyle = controlMode === 'velocity' ? '#00f3ff' : '#ffffff';
-    ctx4D.lineWidth = 4;
-    ctx4D.beginPath(); ctx4D.moveTo(basePos.px, basePos.py); ctx4D.lineTo(tipPos.px, tipPos.py); ctx4D.stroke();
-
-    const knobColor = get4DColor(stick4D.velocity);
-    ctx4D.fillStyle = knobColor;
-    ctx4D.shadowColor = knobColor;
-    ctx4D.shadowBlur = 15;
-    ctx4D.beginPath(); ctx4D.arc(tipPos.px, tipPos.py, 12, 0, Math.PI * 2); ctx4D.fill();
-    ctx4D.shadowBlur = 0;
-
-    requestAnimationFrame(update4DPhysicsAndRender);
-  }
-
-  requestAnimationFrame(update4DPhysicsAndRender);
-}
-
-function resize4DCanvas() {
-  const container = document.getElementById('canvas4d-container');
-  if (!container || !canvas4D) return;
-  width4D = canvas4D.width = container.clientWidth;
-  height4D = canvas4D.height = container.clientHeight;
 }
 
 export function resizeSfiCanvases() {
@@ -984,17 +977,6 @@ export function resizeSfiCanvases() {
     }
   }
 
-  if (xyzChartObj && xyzChartObj.container) {
-    const w = xyzChartObj.container.clientWidth;
-    const h = xyzChartObj.container.clientHeight;
-    if (w > 0 && h > 0) {
-      xyzChartObj.camera.aspect = w / h;
-      xyzChartObj.camera.updateProjectionMatrix();
-      xyzChartObj.renderer.setSize(w, h);
-    }
-  }
-
-  resize4DCanvas();
   resizeRadarCanvases();
 
   [stdPlot, mlxPlot].forEach(p => {

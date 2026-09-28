@@ -18,6 +18,9 @@ let stdPlot = null;
 let mlxPlot = null;
 let joyAssemblyRef = null;
 
+// Twist signal/strength math, GAINSEL config and the Desmos calibration
+// live in twist_api.js (single source of truth for the Twist panel).
+
 // Call this function whenever real sensor data arrives from app.js
 export function updateSfiDomeKinematics(x, y, z) {
   isLiveHardwareConnected = true;
@@ -231,6 +234,9 @@ export function initSfiDemo() {
 // In animate(), skip synthetic auto-pattern math when live hardware is providing real data
 function animate() {
   requestAnimationFrame(animate);
+
+  const sfiView = document.getElementById('demo-sfi');
+  if (!sfiView || !sfiView.classList.contains('active')) return;
 
   if (autoPattern && !isLiveHardwareConnected) {
     animTime += 0.025;

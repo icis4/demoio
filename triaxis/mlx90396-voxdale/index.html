@@ -271,7 +271,7 @@
     .hud-metric-label { color: var(--color-ink-muted); }
     .hud-metric-value { font-weight: 700; }
     .val-cyan { color: var(--color-accent); }
-    .val-orange { color: var(--color-warning); }
+    .val-orange { color: var(--color-success); }
     .val-green { color: var(--color-success); }
 
     /* SFI BATTLE MATRIX STYLING */
@@ -280,6 +280,38 @@
       grid-template-columns: 1fr 1fr;
       gap: var(--space-4);
       margin-bottom: var(--space-4);
+    }
+
+    .telemetry-hud-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-4);
+      margin-bottom: var(--space-4);
+    }
+
+    .telemetry-summary {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--space-2);
+    }
+
+    .telemetry-summary > div {
+      padding: var(--space-2);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: var(--color-surface-raised);
+    }
+
+    .telemetry-summary span {
+      display: block;
+      color: var(--color-ink-muted);
+      font-size: var(--font-size-xs);
+    }
+
+    .telemetry-summary b {
+      color: var(--color-accent);
+      font-family: var(--font-display);
+      font-size: var(--font-size-md);
     }
     @media (max-width: 900px) {
       .battle-matrix-grid { grid-template-columns: 1fr; }
@@ -295,7 +327,7 @@
       gap: var(--space-3);
       box-shadow: var(--shadow-sm);
     }
-    .battle-card.fail { border-color: var(--color-danger); }
+    .battle-card.fail { border-color: var(--color-success); }
     .battle-card.pass { border-color: var(--color-success); }
 
     .battle-card-header {
@@ -359,7 +391,7 @@
     /* Radar Section */
     .radar-matrix-row {
       display: grid;
-      grid-template-columns: 1fr;
+      grid-template-columns: 1fr 1fr;
       gap: var(--space-4);
       margin-bottom: var(--space-4);
     }
@@ -378,8 +410,8 @@
 
     .radar-canvas {
       width: 100%;
-      max-width: 320px;
-      height: 280px;
+      max-width: 340px;
+      height: 340px;
       display: block;
     }
 
@@ -401,8 +433,124 @@
       background: var(--color-code-bg);
       border: 1px solid var(--color-border);
       cursor: grab;
+      position: relative;
+    }
+    .plot-overlay {
+      position: absolute;
+      right: 8px;
+      bottom: 8px;
+      padding: 5px 8px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--color-code-bg) 88%, transparent);
+      color: var(--color-ink);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 10px;
+      line-height: 1.45;
+      pointer-events: none;
     }
     .plot3d-canvas:active { cursor: grabbing; }
+
+    .plot-overlay-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .plot-overlay-units {
+      opacity: 0.6;
+    }
+    .plot-overlay-boxes {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 4px;
+    }
+    .xyz-value-box {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-width: 120px;
+      padding: 2px 6px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--color-surface-raised) 72%, transparent);
+      line-height: 1.2;
+    }
+    .xyz-value-lbl {
+      font-size: 9px;
+      text-transform: uppercase;
+      opacity: 0.65;
+    }
+    .xyz-value-box b {
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .diagnostics-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: var(--space-4);
+    }
+
+    .diagnostics-card {
+      border: 1.5px solid var(--color-border);
+      border-radius: var(--radius-md);
+      background: var(--color-surface);
+      padding: var(--space-4);
+    }
+
+    .diagnostics-card h3 {
+      margin: 0 0 var(--space-2);
+      font-family: var(--font-display);
+      font-size: var(--font-size-sm);
+      color: var(--color-accent);
+    }
+
+    .diagnostics-card p {
+      margin: 0;
+      color: var(--color-ink-muted);
+      font-size: var(--font-size-xs);
+      line-height: 1.55;
+    }
+
+    .diagnostics-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: var(--font-size-xs);
+    }
+
+    .diagnostics-table th,
+    .diagnostics-table td {
+      padding: 8px 0;
+      border-bottom: 1px solid var(--color-border);
+      text-align: left;
+    }
+
+    .diagnostics-table th {
+      color: var(--color-ink-muted);
+      font-weight: 600;
+    }
+
+    .diagnostics-table td:last-child,
+    .diagnostics-table th:last-child {
+      text-align: right;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+
+    .diagnostics-state {
+      display: inline-flex;
+      margin-top: var(--space-2);
+      padding: 4px 8px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      color: var(--color-accent);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: var(--font-size-xs);
+    }
 
     /* Coil Controller Bar */
     .coil-controller-box {
@@ -434,8 +582,22 @@
     }
     .log-rx { color: var(--color-ink-muted); } 
     .log-okprompt { color: var(--color-success); } 
-    .log-badprompt { color: var(--color-danger); }
+    .log-badprompt { color: var(--color-success); }
     .hidden { display: none !important; }
+    /* Temporary graph-first layout: remove class="temporary-hidden" from any block to restore it. */
+    .temporary-hidden { display: none !important; }
+    .telemetry-graphs-expanded .plot3d-canvas { height: 560px; }
+    @media (max-width: 900px) {
+      .telemetry-hud-grid, .radar-matrix-row, .diagnostics-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+      body { padding: var(--space-2); }
+      .app-shell { padding: var(--space-3); }
+      .header-row { align-items: flex-start; gap: var(--space-2); }
+      #canvas3d-container { height: 420px; }
+      .telemetry-summary { grid-template-columns: 1fr; }
+      .telemetry-graphs-expanded .plot3d-canvas { height: 420px; }
+    }
   </style>
 </head>
 <body>
@@ -454,35 +616,40 @@
     </div>
 
     <!-- CONTROLS BAR -->
-    <div class="sfi-controls-bar">
-      <div style="display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: center;">
-        <button id="btn-start-demo" class="ds-button ds-button--primary ds-button--sm">Start Live Stream</button>
-        <button id="btn-stop-demo" class="ds-button ds-button--secondary ds-button--sm" disabled>Stop</button>
-        <button id="btn-pattern" class="ds-button ds-button--secondary ds-button--sm">Auto-Pattern</button>
-        <button id="btn-coil" class="ds-button ds-button--danger ds-button--sm">Stray Field Coil (5 mT)</button>
-        <button id="btn-reset-trace" class="ds-button ds-button--secondary ds-button--sm">Clear Trajectories</button>
-        <button id="btn-toggle-debug" class="ds-button ds-button--ghost ds-button--sm">Debug</button>
-      </div>
-      <span style="font-size: var(--font-size-xs); color: var(--color-ink-muted);" id="status-mode-txt">
-        Standby Mode (Connect USB or Start)
-      </span>
-    </div>
+<div class="sfi-controls-bar">
+  <div style="display: flex; gap: var(--space-2); flex-wrap: wrap; align-items: center;">
+    <button id="btn-start-demo" class="ds-button ds-button--primary ds-button--sm">Start Live Stream</button>
+    <button id="btn-stop-demo" class="ds-button ds-button--secondary ds-button--sm" disabled>Stop</button>
+    <button id="btn-pattern" class="ds-button ds-button--secondary ds-button--sm">Auto-Pattern</button>
+    <button id="btn-coil" class="ds-button ds-button--danger ds-button--sm">Stray Field Coil (5 mT)</button>
+    <button id="btn-gain-toggle" class="ds-button ds-button--secondary ds-button--sm">Gain 1px: 1x (72)</button>
+    <button id="btn-calib-toggle" class="ds-button ds-button--secondary ds-button--sm">Calibration Tuning</button>
+    <button id="btn-zero" class="ds-button ds-button--warning ds-button--sm">Zero / Tare</button>
+    <button id="btn-reset-trace" class="ds-button ds-button--secondary ds-button--sm">Clear Trajectories</button>
+    <button id="btn-toggle-debug" class="ds-button ds-button--ghost ds-button--sm">Debug</button>
+    <!-- Inside .sfi-controls-bar in index.html -->
 
-    <!-- MAIN TABS -->
+  </div>
+  <span style="font-size: var(--font-size-xs); color: var(--color-ink-muted);" id="status-mode-txt">
+    Standby Mode (Connect USB or Start)
+  </span>
+</div>
+
+    <!-- MAIN OPERATIONAL TABS -->
     <div class="view-tabs ds-tabs__list">
-      <button class="view-tab-btn ds-tabs__tab active" data-tab="tab-battle">SFI Battle Matrix (Req 1-4)</button>
-      <button class="view-tab-btn ds-tabs__tab" data-tab="tab-dome">3D Dome Model</button>
-      <button class="view-tab-btn ds-tabs__tab" data-tab="tab-xyz">3D XYZ Chart (Z-UP)</button>
-      <button class="view-tab-btn ds-tabs__tab" data-tab="tab-4d">4D Sensing & Velocity</button>
+      <button class="view-tab-btn ds-tabs__tab active" data-tab="tab-telemetry">Live Telemetry &amp; Battle Matrix</button>
+      <button class="view-tab-btn ds-tabs__tab" data-tab="tab-idle">Idle / Auto-Pattern &amp; Dome Kinematics</button>
+      <button class="view-tab-btn ds-tabs__tab" data-tab="tab-diagnostics">Sensor Diagnostics</button>
     </div>
 
-    <!-- TAB 1: SFI BATTLE MATRIX -->
-    <div id="tab-battle" class="tab-content active">
+    <!-- TAB 1: LIVE TELEMETRY & BATTLE MATRIX -->
+    <div id="tab-telemetry" class="tab-content active">
       
+      <!-- TEMPORARILY HIDDEN: remove temporary-hidden to restore the coil controls. -->
       <!-- REQUIREMENT 4: HARDWARE / SOFTWARE COIL CONTROLLER -->
-      <div class="coil-controller-box">
+      <div class="coil-controller-box temporary-hidden">
         <div>
-          <span style="font-family: var(--font-display); font-size: var(--font-size-xs); font-weight: 700; color: var(--color-warning); text-transform: uppercase;">
+          <span style="font-family: var(--font-display); font-size: var(--font-size-xs); font-weight: 700; color: var(--color-success); text-transform: uppercase;">
             Requirement 4: Stray Field Disturbance Coil (SW + HW GPIO)
           </span>
           <p style="margin: 2px 0 0 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);" id="coil-sub-desc">
@@ -498,51 +665,103 @@
           </button>
         </div>
       </div>
+<!-- TEMPORARILY HIDDEN: remove temporary-hidden to restore the calibration panel. -->
+<div id="panel-calibration" class="ds-card ds-card--pad-md hidden" style="margin-bottom: var(--space-4);border: 1.5px solid var(--color-accent);background: var(--color-surface-raised);width: 100%;display: flow;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3); border-bottom: 1px solid var(--color-border); padding-bottom: var(--space-2);">
+    <div>
+      <span style="font-family: var(--font-display); font-size: var(--font-size-sm); font-weight: 700; color: var(--color-accent);">
+        Desmos Calibration Engine (K-Factors &amp; Orthogonality)
+      </span>
+      <p style="margin: 2px 0 0 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+        Live compensation for cross-axis coupling and Z-feedthrough angles.
+      </p>
+    </div>
+    <div style="display: flex; gap: var(--space-2);">
+      <button id="btn-calib-reset" class="ds-button ds-button--secondary ds-button--sm">Reset Defaults</button>
+    </div>
+  </div>
 
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4);">
+    <!-- Alpha Parameters -->
+    <div style="display: flex; flex-direction: column; gap: var(--space-2);">
+      <span style="font-family: var(--font-display); font-size: var(--font-size-xs); font-weight: 700; color: var(--color-success);">
+        Alpha (&alpha;) Calibration: a<sub>1</sub>
+      </span>
+      <div style="display: grid; grid-template-columns: 100px 1fr; align-items: center; gap: 8px; font-size: var(--font-size-xs);">
+        <label for="cal-k1">k1 (K-Factor):</label>
+        <input type="number" id="cal-k1" step="0.01" value="1.00" class="ds-field__input" style="padding: 4px 8px; height: 28px;">
+        <label for="cal-o11">o11 (Upper):</label>
+        <input type="number" id="cal-o11" step="0.005" value="0.000" class="ds-field__input" style="padding: 4px 8px; height: 28px;">
+        <label for="cal-o12">o12 (Lower):</label>
+        <input type="number" id="cal-o12" step="0.005" value="0.000" class="ds-field__input" style="padding: 4px 8px; height: 28px;">
+      </div>
+    </div>
+
+    <!-- Beta Parameters -->
+    <div style="display: flex; flex-direction: column; gap: var(--space-2);">
+      <span style="font-family: var(--font-display); font-size: var(--font-size-xs); font-weight: 700; color: var(--color-accent);">
+        Beta (&beta;) Calibration: b<sub>1</sub>
+      </span>
+      <div style="display: grid; grid-template-columns: 100px 1fr; align-items: center; gap: 8px; font-size: var(--font-size-xs);">
+        <label for="cal-k2">k2 (K-Factor):</label>
+        <input type="number" id="cal-k2" step="0.01" value="1.00" class="ds-field__input" style="padding: 4px 8px; height: 28px;">
+        <label for="cal-o21">o21 (Upper):</label>
+        <input type="number" id="cal-o21" step="0.005" value="0.000" class="ds-field__input" style="padding: 4px 8px; height: 28px;">
+        <label for="cal-o22">o22 (Lower):</label>
+        <input type="number" id="cal-o22" step="0.005" value="0.000" class="ds-field__input" style="padding: 4px 8px; height: 28px;">
+      </div>
+    </div>
+  </div>
+</div>
+      <!-- TEMPORARILY HIDDEN: remove temporary-hidden to restore the angle summary. -->
+      <div class="telemetry-summary temporary-hidden" style="margin-bottom: var(--space-4);">
+        <div><span>Alpha tilt</span><b id="angle-alpha">0.0°</b></div>
+        <div><span>Beta tilt</span><b id="angle-beta">0.0°</b></div>
+        <div><span>Heading theta</span><b id="angle-theta">0.0°</b></div>
+      </div>
+
+      <!-- TEMPORARILY HIDDEN: remove temporary-hidden to restore the raw signal cards. -->
       <!-- REQUIREMENT 1 & 2: RAW SIGNALS & CALCULATED SIGNAL STRENGTH -->
-      <div class="battle-matrix-grid">
+      <div class="telemetry-hud-grid temporary-hidden">
         
         <!-- LEFT: LEGACY 3D HALL (SINGLE PIXEL PX0) -->
         <div class="battle-card fail">
           <div class="battle-card-header">
-            <span style="font-family: var(--font-display); font-size: var(--font-size-sm); font-weight: 700; color: var(--color-danger);">
+            <span style="font-family: var(--font-display); font-size: var(--font-size-sm); font-weight: 700; color: var(--color-success);">
               LEGACY STANDARD 3D HALL (PX0 VULNERABLE)
             </span>
-            <span class="ds-badge ds-badge--danger ds-badge--sm">UNCOMPENSATED</span>
+            <span class="ds-badge ds-badge--success ds-badge--sm">UNCOMPENSATED</span>
           </div>
 
           <!-- Req 1: Raw Signals Bars -->
           <div class="raw-signals-list">
             <div class="signal-bar-row">
-              <span style="color: var(--color-danger);">Raw Bx0:</span>
-              <div class="signal-meter-bg"><div id="meter-raw-bx" class="signal-meter-fill" style="background: var(--color-danger);"></div></div>
-              <span id="txt-raw-bx" style="color: var(--color-danger); text-align:right;">0.0 mT</span>
+              <span style="color: var(--color-success);">Raw Bx0:</span>
+              <div class="signal-meter-bg"><div id="meter-raw-bx" class="signal-meter-fill" style="background: var(--color-success);"></div></div>
+              <span id="txt-raw-bx" style="color: var(--color-success); text-align:right;">0.0 mT</span>
             </div>
             <div class="signal-bar-row">
-              <span style="color: var(--color-danger);">Raw By0:</span>
-              <div class="signal-meter-bg"><div id="meter-raw-by" class="signal-meter-fill" style="background: var(--color-danger);"></div></div>
-              <span id="txt-raw-by" style="color: var(--color-danger); text-align:right;">0.0 mT</span>
+              <span style="color: var(--color-success);">Raw By0:</span>
+              <div class="signal-meter-bg"><div id="meter-raw-by" class="signal-meter-fill" style="background: var(--color-success);"></div></div>
+              <span id="txt-raw-by" style="color: var(--color-success); text-align:right;">0.0 mT</span>
             </div>
             <div class="signal-bar-row">
-              <span style="color: var(--color-danger);">Raw Bz0:</span>
-              <div class="signal-meter-bg"><div id="meter-raw-bz" class="signal-meter-fill" style="background: var(--color-danger);"></div></div>
-              <span id="txt-raw-bz" style="color: var(--color-danger); text-align:right;">0.0 mT</span>
+              <span style="color: var(--color-success);">Raw Bz0:</span>
+              <div class="signal-meter-bg"><div id="meter-raw-bz" class="signal-meter-fill" style="background: var(--color-success);"></div></div>
+              <span id="txt-raw-bz" style="color: var(--color-success); text-align:right;">0.0 mT</span>
             </div>
           </div>
 
           <!-- Req 2: Calculated Signal Strength Magnitude -->
-          <div class="magnitude-gauge-box" style="border-left: 3px solid var(--color-danger);">
+          <div class="magnitude-gauge-box" style="border-left: 3px solid var(--color-success);">
             <div>
               <div style="font-family: var(--font-display); font-size: var(--font-size-xs); color: var(--color-ink-muted); text-transform: uppercase;">
                 Req 2: Signal Strength |B_std|
               </div>
-              <span style="font-size: var(--font-size-xs); color: var(--color-danger);">√(Bx² + By² + Bz²)</span>
+              <span style="font-size: var(--font-size-xs); color: var(--color-success);">√(Bx² + By² + Bz²)</span>
             </div>
-            <span id="mag-val-std" class="mag-val-large" style="color: var(--color-danger);">0.0 mT</span>
+            <span id="mag-val-std" class="mag-val-large" style="color: var(--color-success);">0.0 mT</span>
           </div>
-
-          <!-- 3D Vector Plot -->
-          <div class="plot3d-canvas" id="canvas3d-std-plot"></div>
         </div>
 
         <!-- RIGHT: MLX90396 DIFFERENTIAL SFI (PX02) -->
@@ -557,19 +776,24 @@
           <!-- Req 1: Differential Signals Bars -->
           <div class="raw-signals-list">
             <div class="signal-bar-row">
-              <span style="color: var(--color-success);">Diff ΔBx:</span>
+              <span style="color: var(--color-success);">ΔBx/Δx:</span>
               <div class="signal-meter-bg"><div id="meter-diff-bx" class="signal-meter-fill" style="background: var(--color-success);"></div></div>
-              <span id="txt-diff-bx" style="color: var(--color-success); text-align:right;">0.0 mT</span>
+              <span id="txt-diff-bx" style="color: var(--color-success); text-align:right;">0.0 mT/mm</span>
             </div>
             <div class="signal-bar-row">
-              <span style="color: var(--color-success);">Diff ΔBy:</span>
+              <span style="color: var(--color-success);">ΔBy/Δy:</span>
               <div class="signal-meter-bg"><div id="meter-diff-by" class="signal-meter-fill" style="background: var(--color-success);"></div></div>
-              <span id="txt-diff-by" style="color: var(--color-success); text-align:right;">0.0 mT</span>
+              <span id="txt-diff-by" style="color: var(--color-success); text-align:right;">0.0 mT/mm</span>
             </div>
             <div class="signal-bar-row">
-              <span style="color: var(--color-success);">Diff ΔBz:</span>
+              <span style="color: var(--color-success);">ΔBz/Δx:</span>
               <div class="signal-meter-bg"><div id="meter-diff-bz" class="signal-meter-fill" style="background: var(--color-success);"></div></div>
-              <span id="txt-diff-bz" style="color: var(--color-success); text-align:right;">0.0 mT</span>
+              <span id="txt-diff-bz" style="color: var(--color-success); text-align:right;">0.0 mT/mm</span>
+            </div>
+            <div class="signal-bar-row">
+              <span style="color: var(--color-success);">ΔBz/Δy:</span>
+              <div class="signal-meter-bg"><div id="meter-diff-bz-y" class="signal-meter-fill" style="background: var(--color-success);"></div></div>
+              <span id="txt-diff-bz-y" style="color: var(--color-success); text-align:right;">0.0 mT/mm</span>
             </div>
           </div>
 
@@ -579,152 +803,132 @@
               <div style="font-family: var(--font-display); font-size: var(--font-size-xs); color: var(--color-ink-muted); text-transform: uppercase;">
                 Req 2: Signal Strength |B_diff|
               </div>
-              <span style="font-size: var(--font-size-xs); color: var(--color-success);">√(ΔBx² + ΔBy² + ΔBz²)</span>
+              <span style="font-size: var(--font-size-xs); color: var(--color-success);">√((ΔBx/Δx)² + (ΔBy/Δy)² + (ΔBz/Δx)² + (ΔBz/Δy)²)</span>
             </div>
             <span id="mag-val-diff" class="mag-val-large" style="color: var(--color-success);">0.0 mT</span>
           </div>
 
-          <!-- 3D Vector Plot -->
-          <div class="plot3d-canvas" id="canvas3d-mlx-plot"></div>
         </div>
-
       </div>
 
-      <!-- REQUIREMENT 3: DIFFERENTIAL RADAR -->
-      <div class="radar-matrix-row">
+      <!-- MIDDLE: 3D MAGNET FIELD PLOTS -->
+      <div class="battle-matrix-grid telemetry-graphs-expanded">
+        <div class="battle-card fail">
+          <div class="battle-card-header"><span>Legacy field and 6 mm magnet model</span><span class="ds-badge ds-badge--success">STRAY-SENSITIVE</span></div>
+          <div class="plot3d-canvas" id="canvas3d-std-plot"><div id="plot-overlay-std" class="plot-overlay" style="font-size: 13px;"><div class="plot-overlay-row"><span id="plot-std-velocity">v 0.0 px/s</span><span class="plot-overlay-units">mT</span></div><div class="plot-overlay-boxes"><span class="xyz-value-box"><span class="xyz-value-lbl">Bx</span><b id="plot-std-bx">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">By</span><b id="plot-std-by">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">Bz</span><b id="plot-std-bz">0.0</b></span></div></div></div>
+        </div>
+        <div class="battle-card pass">
+          <div class="battle-card-header"><span>MLX90396 differential field and 6 mm magnet model</span><span class="ds-badge ds-badge--success">SFI COMPENSATED</span></div>
+          <div class="plot3d-canvas" id="canvas3d-mlx-plot"><div id="plot-overlay-mlx" class="plot-overlay" style="font-size: 12px;"><div class="plot-overlay-row"><span id="plot-mlx-velocity">v 0.0 px/s</span><span class="plot-overlay-units">mT/mm</span></div><div class="plot-overlay-boxes"><span class="xyz-value-box"><span class="xyz-value-lbl">ΔBx/Δx</span><b id="plot-mlx-dbx">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">ΔBy/Δy</span><b id="plot-mlx-dby">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">ΔBz/Δx</span><b id="plot-mlx-dbzdx">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">ΔBz/Δy</span><b id="plot-mlx-dbzdy">0.0</b></span></div></div></div>
+        </div>
+      </div>
+
+      <!-- BOTTOM: DUAL 2D POLAR RADARS -->
+<div class="radar-matrix-row">
         <div class="radar-card" style="border-top: 3px solid var(--color-success);">
           <span class="radar-badge ds-badge ds-badge--success">
-            Req 3: SFI Differential Radar
+            Legacy Standard 3D Hall Radar
+          </span>
+          <canvas id="radarCanvasStd" class="radar-canvas"></canvas>
+          <div style="margin-top: var(--space-2);font-size: var(--font-size-large);color: var(--color-success);font-weight: 600;text-align: center;width: 100%;position: relative;left: 182px;bottom: 350px;">
+            <div>
+              θ_std: <b id="radar-angle-std">0.0°</b> | Error: <b id="radar-error-std">0.0°</b>
+            </div>
+            <div  style="margin-top: 4px;font-size: 11px;opacity: 0.9;color: var(--color-ink-muted);font-size: 15px;">
+              α_std: <b id="radar-alpha-std" style="color: var(--color-accent);">0.0°</b> | β_std: <b id="radar-beta-std" style="color: var(--color-accent);">0.0°</b>
+            </div>
+          </div>
+        </div>
+
+        <div class="radar-card" style="border-top: 3px solid var(--color-success);">
+          <span class="radar-badge ds-badge ds-badge--success">
+            MLX90396 Differential SFI Radar
           </span>
           <canvas id="radarCanvasMlx" class="radar-canvas"></canvas>
-          <div style="margin-top: var(--space-2); font-size: var(--font-size-xs); color: var(--color-success); font-weight: 600;">
-            Angle θ_diff: <b id="radar-angle-mlx">0.0°</b> | Error: <b id="radar-error-mlx">0.0°</b>
+          <div style="margin-top: var(--space-2);font-size: var(--font-size-large);color: var(--color-success);font-weight: 600;text-align: center;width: 100%;position: relative;left: 188px;top: -350px;">
+            <div>
+              θ_diff: <b id="radar-angle-mlx">0.0°</b> | Error: <b id="radar-error-mlx">0.0°</b>
+            </div>
+            <div style="margin-top: 4px;font-size: 11px;opacity: 0.9;color: var(--color-ink-muted);font-size: 15px;">
+              α_diff: <b id="radar-alpha-mlx" style="color: var(--color-accent);">0.0°</b> | β_diff: <b id="radar-beta-mlx" style="color: var(--color-accent);">0.0°</b>
+            </div>
           </div>
         </div>
       </div>
 
-    </div>
-
-    <!-- TAB 2: 3D DOME MODEL -->
-    <div id="tab-dome" class="tab-content">
+      </div>
+    <!-- TAB 2: IDLE / AUTO-PATTERN & DOME KINEMATICS -->
+    <div id="tab-idle" class="tab-content">
       <div class="ds-card ds-card--pad-md" style="width: 100%; display: flex; flex-direction: column; gap: var(--space-4);">
         <div>
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
             <span style="font-family: var(--font-display); font-size: var(--font-size-xs); font-weight: 700; text-transform: uppercase; color: var(--color-ink-muted);">
-              Dome Kinematics (Left Click to Rotate / Orbit)
+              Dome Kinematics: auto-pattern transitions to live hardware telemetry
             </span>
             <span style="font-size: var(--font-size-xs); font-weight: 700; color: var(--color-accent);" id="joy-pos-text">
               Tilt X: 0.0° | Tilt Y: 0.0° | Press Z: 0.0 mm
             </span>
           </div>
           <div id="canvas3d-container">
-            <div class="hint-overlay">Left Click + Drag: Orbit Camera | Scroll: Zoom</div>
+            <div class="hint-overlay">Fixed XYZ view | Scroll: Zoom</div>
           </div>
         </div>
 
-        <!-- MOVED: Legacy Angle Radar below 3D Dome Viewport -->
-        <div class="radar-card" style="border-top: 3px solid var(--color-success); align-self: center; width: 100%;">
-          <span class="radar-badge ds-badge ds-badge--successs">
-            Req 3: Legacy Angle Radar
-          </span>
-          <canvas id="radarCanvasStd" class="radar-canvas"></canvas>
-          <div style="margin-top: var(--space-2); font-size: var(--font-size-xs); color: var(--color-success); font-weight: 600;">
-            Angle θ_std: <b id="radar-angle-std">0.0°</b> | Error: <b id="radar-error-std">0.0°</b>
-          </div>
-        </div>
       </div>
     </div>
 
-    <!-- TAB 3: 3D XYZ CHART -->
-    <div id="tab-xyz" class="tab-content">
-      <div class="ds-card ds-card--pad-md" style="width: 100%;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
-          <span style="font-family: var(--font-display); font-size: var(--font-size-xs); font-weight: 700; text-transform: uppercase; color: var(--color-success);">
-            3D Field Vector Space (Live Stream + Continuous Free 3D Orbit)
-          </span>
-          <span style="font-size: var(--font-size-xs); color: var(--color-ink-muted);">MLX90396 SFI Differential Signal</span>
-        </div>
+    <div id="tab-diagnostics" class="tab-content">
+      <div class="diagnostics-grid">
+        <section class="diagnostics-card">
+          <h3>What The Two Signals Mean</h3>
+          <p>
+            The legacy signal is the absolute field measured at one pixel. It includes the magnet's steady field and any stray field, so its direction can move when the environment changes.
+          </p>
+          <p style="margin-top: var(--space-3);">
+            The differential signal compares neighboring pixels. Uniform external fields tend to cancel, while the local field gradient from the magnet remains. It is useful for position and direction, but it is not the same unit or scale as the legacy field.
+          </p>
+          <span id="diag-source" class="diagnostics-state">Simulation</span>
+          <span id="diag-health" class="diagnostics-state">Range watch: no obvious clipping</span>
+        </section>
 
-        <div class="xyz-chart-wrapper">
-          <div class="xyz-toolbar">
-            <button class="btn-xyz-view active" data-view="iso">Isometric (3D)</button>
-            <button class="btn-xyz-view" data-view="x">X View (Side Y-Z)</button>
-            <button class="btn-xyz-view" data-view="y">Y View (Front X-Z)</button>
-            <button class="btn-xyz-view" data-view="z">Z View (Top X-Y)</button>
-          </div>
+        <section class="diagnostics-card">
+          <h3>Decoded Sensor Values</h3>
+          <table class="diagnostics-table">
+            <thead><tr><th>Channel</th><th>Current value</th></tr></thead>
+            <tbody>
+              <tr><td>Standard Bx0</td><td id="diag-bx">0.00 mT</td></tr>
+              <tr><td>Standard By0</td><td id="diag-by">0.00 mT</td></tr>
+              <tr><td>Standard Bz0</td><td id="diag-bz">0.00 mT</td></tr>
+              <tr><td>Differential Bx</td><td id="diag-dbx">0.00 mT/mm</td></tr>
+              <tr><td>Differential By</td><td id="diag-dby">0.00 mT/mm</td></tr>
+              <tr><td>Differential Bz / X</td><td id="diag-dbz-x">0.00 mT/mm</td></tr>
+              <tr><td>Differential Bz / Y</td><td id="diag-dbz-y">0.00 mT/mm</td></tr>
+            </tbody>
+          </table>
+        </section>
 
-          <div class="xyz-legend">
-            <span><span class="axis-dot" style="background: var(--color-danger);"></span>+X: <b id="xyz-val-x" style="color: var(--color-danger);">0.0</b> mT</span>
-            <span><span class="axis-dot" style="background: var(--color-success);"></span>+Y: <b id="xyz-val-y" style="color: var(--color-success);">0.0</b> mT</span>
-            <span><span class="axis-dot" style="background: var(--color-info);"></span>+Z: <b id="xyz-val-z" style="color: var(--color-info);">0.0</b> mT</span>
-          </div>
+        <section class="diagnostics-card">
+          <h3>Derived Magnitudes</h3>
+          <table class="diagnostics-table">
+            <tbody>
+              <tr><th>Legacy full vector</th><td id="diag-std-magnitude">0.00 mT</td></tr>
+              <tr><th>Differential full vector</th><td id="diag-diff-magnitude">0.00 mT/mm</td></tr>
+            </tbody>
+          </table>
+          <p style="margin-top: var(--space-3);">
+            Large absolute values do not automatically mean a fault. Check stability, sign changes, saturation, and whether the differential vector follows movement while the legacy vector changes under a stray field.
+          </p>
+        </section>
 
-          <div id="canvas-xyz-main"></div>
-
-          <div class="hint-overlay">
-            Left Click + Drag: Rotate Angle Freely | Scroll: Zoom | +Z Points Vertical UP
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- TAB 4: 4D SENSING & VELOCITY -->
-    <div id="tab-4d" class="tab-content">
-      <div class="ds-card ds-card--pad-md" style="width: 100%;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
-          <span style="font-family: var(--font-display); font-size: var(--font-size-xs); font-weight: 700; text-transform: uppercase; color: var(--color-accent);">
-            4D Movement Telemetry & Particle Stream (From Example 2)
-          </span>
-          <span style="font-size: var(--font-size-xs); color: var(--color-warning);">Dynamic Magnetic Flux</span>
-        </div>
-        
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
-          <div style="display: flex; gap: var(--space-2);">
-            <button id="btn-mode-pos" class="ds-button ds-button--primary ds-button--sm">Position Control</button>
-            <button id="btn-mode-vel" class="ds-button ds-button--secondary ds-button--sm">Velocity Control</button>
-          </div>
-          <span id="ctrl-mode-desc" style="font-size: var(--font-size-xs); font-weight: 600; color: var(--color-accent);">
-            Mode: Direct Stick-to-Position Mapping
-          </span>
-        </div>
-
-        <div id="canvas4d-container">
-          <canvas id="simCanvas"></canvas>
-          
-          <div class="hud-overlay">
-            <div class="hud-title">4D Movement Telemetry</div>
-            <div class="hud-metric">
-              <span class="hud-metric-label">X Axis (Tilt L/R):</span>
-              <span class="hud-metric-value val-cyan" id="val-x">0.00</span>
-            </div>
-            <div class="hud-metric">
-              <span class="hud-metric-label">Y Axis (Tilt F/B):</span>
-              <span class="hud-metric-value val-cyan" id="val-y">0.00</span>
-            </div>
-            <div class="hud-metric">
-              <span class="hud-metric-label">Z Axis (Depth Press):</span>
-              <span class="hud-metric-value val-cyan" id="val-z">0.00</span>
-            </div>
-            <div class="hud-metric">
-              <span class="hud-metric-label">Velocity (Speed):</span>
-              <span class="hud-metric-value val-orange" id="val-vel">0.0 px/s</span>
-            </div>
-            <div class="hud-metric">
-              <span class="hud-metric-label">Force / Pressure:</span>
-              <span class="hud-metric-value val-orange" id="val-force">0%</span>
-            </div>
-            
-            <div class="hud-title" style="margin-top: 10px;">Single IC Sensor State</div>
-            <div class="hud-metric">
-              <span class="hud-metric-label">Field Sensing Mode:</span>
-              <span class="hud-metric-value val-green">3D Hall SFI</span>
-            </div>
-            <div class="hud-metric">
-              <span class="hud-metric-label">Magnetic Vector:</span>
-              <span class="hud-metric-value val-cyan" id="val-flux">0.0 mT</span>
-            </div>
-          </div>
-        </div>
+        <section class="diagnostics-card">
+          <h3>Why The Radar Target Can Disappear</h3>
+          <p>
+            In simulation, the radar has a known mechanical target. With live hardware, this page has sensor measurements but no independent position reference, so it hides the simulated target instead of pretending the comparison is calibrated.
+          </p>
+          <p style="margin-top: var(--space-3);">
+            This keeps the measured vector contained in the radar and makes the diagnostic view honest. A future calibration step can add a real target from a known fixture or motion reference.
+          </p>
+        </section>
       </div>
     </div>
 
@@ -744,7 +948,7 @@
             <label class="ds-field__label" for="sel-driver-type">Target Device Driver</label>
             <select id="sel-driver-type" class="ds-field__input">
               <option value="scpi" selected>SCPI Bridge (MLX90396 SPI API)</option>
-              <option value="arduino">Direct Arduino Telemetry (CSV Stream)</option>
+              <option value="arduino">Direct Arduino Telemetry (Pipe or CSV Stream)</option>
             </select>
           </div>
 
