@@ -1,6 +1,6 @@
 /**
  * mlx_api.js
- * Complete MLX90396 API - SCPI Tunneling Version
+ * Complete MLX90396 API - SCPI Tunneling Version with BAA Gain Controls
  */
 export class MLX90396_API {
     
@@ -196,7 +196,6 @@ export class MLX90396_API {
       return !this._verify_crc(miso.slice(0, 1), miso[1]);
   }
 
-  // Universal dynamic read
   async rm(temp, data_mask) {
       if (this._checkMaskLimit(data_mask)) return { error: true, msg: "Limit Exceeded (Max 6 axes)" };
       
@@ -238,8 +237,40 @@ export class MLX90396_API {
       return result;
   }
 
-  // Alias wrapper for legacy calls
   async rm_joystick_xyz(temp, data_mask) {
       return this.rm(temp, data_mask);
   }
+
+  /**
+   * Updates NV_GAINSEL_1PX (reg 0x00 bits [5:0]) using the required unlock sequence
+   * @param {number} gainValue - 9 (gain ~72) or 37 (gain ~219)
+   * @param {boolean} persist - If true, issues HS to store permanently into NVRAM
+   */
+  async setGain1Px(gainValue = 37, persist = false) {
+      // 1. Send unlock sequence (Datasheet 15.4.3)
+      await this.wr(0x43, 0x9952);
+      await this.wr(0x44, 0x84DE);
+
+      // 2. Read register 0x00 to preserve NV_GAINSEL_2PX (bits [11:6])
+      const readRes = await this.rr(0x00);
+      const currentVal = readRes.error ? 0 : readRes.data;
+
+      // 3. Clear bits [5:0] and apply new 6-bit gain
+      const updatedVal = (currentVal & ~0x003F) | (gainValue & 0x003F);
+      const writeErr = await this.wr(0x00, updatedVal);
+      if (writeErr) return false;
+
+      // Confirm the volatile register contains the requested 1PX gain bits.
+      const verifyRes = await this.rr(0x00);
+      const verified = !verifyRes.error && ((verifyRes.data & 0x003F) === (gainValue & 0x003F));
+      if (!verified) return false;
+
+      // 4. Optionally commit to non-volatile memory
+      if (persist) {
+          await this.hs();
+      }
+      return true;
+  }
 }
+
+export default MLX90396_API;

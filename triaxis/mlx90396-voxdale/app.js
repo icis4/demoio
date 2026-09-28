@@ -1,7 +1,16 @@
 import { MLX90396_API } from './mlx_api.js';
 import { Arduino_API } from './arduino_api.js';
-import { initSfiDemo, resizeSfiCanvases, updateSfiDomeKinematics, setHardwareCoilCallback, resetPlotLines } from './sfi_demo.js';
-
+import { 
+  initSfiDemo, 
+  resizeSfiCanvases, 
+  updateSfiDomeKinematics, 
+  setHardwareCoilCallback, 
+  resetPlotLines,
+  setSfiHardwareTracking,
+  setCalibrationParams,
+  resetCalibrationParams,
+  getCalibrationParams
+} from './sfi_demo.js';
 // DOM Elements
 const btnConnect = document.getElementById('btn-connect');
 const btnStartDemo = document.getElementById('btn-start-demo');
@@ -59,7 +68,6 @@ function initTabNavigation() {
         targetContent.classList.add('active');
       }
 
-      resetPlotLines(); // <--- Clears all trajectories instantly on tab switch
       setTimeout(resizeSfiCanvases, 40);
     });
   });
@@ -94,7 +102,16 @@ function processRx(text) {
       if (rxBuffer.trim() !== '') {
         const line = rxBuffer.trim();
         if (currentDriverType === 'arduino' && activeDevice) {
-          activeDevice.processLine(line);
+          const sample = activeDevice.processLine(line);
+          if (!sample.error) {
+            setSfiHardwareTracking(true);
+            updateSfiDomeKinematics(
+              sample.posX_mm / 2,
+              sample.posY_mm / 2,
+              sample.rawZ / 1000,
+              { p0Raw: { x: sample.rawX, y: sample.rawY, z: sample.rawZ }, diffRaw: { x: sample.rawX, y: sample.rawY, z: sample.rawZ } }
+            );
+          }
         } else {
           handlePrompt(line);
         }
@@ -259,6 +276,7 @@ async function disconnectSerial() {
   if (port) await port.close();
 
   port = null; reader = null; writer = null; activeDevice = null;
+  setSfiHardwareTracking(false);
   setUIConnected(false);
   btnStartDemo.disabled = false;
   btnStopDemo.disabled = true;
@@ -302,25 +320,34 @@ async function runJoystickDemo() {
           let rawX = 0, rawY = 0, rawZ = 0;
           let p0Raw = { x: 0, y: 0, z: 0 };
           let diffRaw = { x: 0, y: 0, z: 0 };
+          let hasLiveSample = false;
 
           if (currentDriverType === 'scpi') {
             await activeDevice.sm(0xFC000); 
-            await new Promise(r => setTimeout(r, 15)); 
+            await new Promise(r => setTimeout(r, 2)); 
             const res01 = await activeDevice.rm(false, 0xFC000); 
             
             await activeDevice.sm(0x03F00); 
-            await new Promise(r => setTimeout(r, 15)); 
+            await new Promise(r => setTimeout(r, 2)); 
             const res23 = await activeDevice.rm(false, 0x03F00); 
 
-            if (!res01.error && !res23.error) {
+            // Request the dedicated 2px channels: X02, Z02, Y13 and Z13.
+            await activeDevice.sm(0x000AC);
+            await new Promise(r => setTimeout(r, 2));
+            const resDiff = await activeDevice.rm(false, 0x000AC);
+
+            if (!res01.error && !res23.error && !resDiff.error) {
+              hasLiveSample = true;
               const avgX = (res01.x0 + res01.x1 + res23.x2 + res23.x3) / 4;
               const avgY = (res01.y0 + res01.y1 + res23.y2 + res23.y3) / 4;
               const avgZ = (res01.z0 + res01.z1 + res23.z2 + res23.z3) / 4;
 
               angleDeg = Math.atan2(-avgY, avgX) * (180 / Math.PI);
 
-              const rawGradX = ((res01.x1 + res23.x2) - (res01.x0 + res23.x3)) / 2;
-              const rawGradY = ((res01.y0 + res01.y1) - (res23.y3 + res23.y2)) / 2;
+              const rawGradX = resDiff.x02;
+              const rawGradY = resDiff.y13;
+              const rawGradZx = resDiff.z02;
+              const rawGradZy = resDiff.z13;
 
               const cleanGradX = rawGradX - (avgX * K_ROT_X);
               const cleanGradY = rawGradY - (avgY * K_ROT_Y);
@@ -334,11 +361,12 @@ async function runJoystickDemo() {
 
               // Extract actual individual pixel values for Requirement 1-3 Battle Matrix
               p0Raw = { x: res01.x0, y: res01.y0, z: res01.z0 };
-              diffRaw = { x: cleanGradX, y: cleanGradY, z: avgZ };
+              diffRaw = { x: rawGradX, y: rawGradY, z: rawGradZx, bzY: rawGradZy };
             }
           } else {
             const sample = await activeDevice.getSample();
             if (!sample.error) {
+              hasLiveSample = true;
               latestRawMagnet.x = sample.posX_mm;
               latestRawMagnet.y = sample.posY_mm;
               posX_mm = latestRawMagnet.x - magnetOffsets.x;
@@ -346,14 +374,17 @@ async function runJoystickDemo() {
               angleDeg = sample.angleDeg;
               rawX = sample.rawX; rawY = sample.rawY; rawZ = sample.rawZ;
               p0Raw = { x: rawX, y: rawY, z: rawZ };
-              diffRaw = { x: rawX, y: rawY, z: rawZ };
+              diffRaw = { x: rawX, y: rawY, z: rawZ, bzY: rawZ };
             }
           }
 
-          // Exact original live telemetry fed to the Dome Kinematics
-          updateSfiDomeKinematics(rawX / 1000, rawY / 1000, rawZ / 1000, { p0Raw, diffRaw });
+          // A valid sample takes the dome seamlessly from its idle pattern to hardware tracking.
+          if (hasLiveSample) {
+            setSfiHardwareTracking(true);
+            updateSfiDomeKinematics(rawX / 1000, rawY / 1000, rawZ / 1000, { p0Raw, diffRaw });
+          }
 
-          await new Promise(r => setTimeout(r, currentDriverType === 'scpi' ? 50 : 25));
+          await new Promise(r => setTimeout(r, currentDriverType === 'scpi' ? 10 : 25));
         } catch (loopErr) {
           console.warn('[DEMO LOOP WARNING]', loopErr);
           await new Promise(r => setTimeout(r, 150));
@@ -402,6 +433,7 @@ btnModalConnect?.addEventListener('click', async () => {
 btnStartDemo?.addEventListener('click', runJoystickDemo);
 btnStopDemo?.addEventListener('click', () => {
   isDemoRunning = false;
+  if (!isConnected) setSfiHardwareTracking(false);
   btnStartDemo.disabled = false;
   btnStopDemo.disabled = true;
   appendLog('[SYSTEM] Demo stopped.\n', 'log-badprompt');
@@ -409,4 +441,94 @@ btnStopDemo?.addEventListener('click', () => {
 
 btnToggleDebug?.addEventListener('click', () => {
   miniLogWindow?.classList.toggle('hidden');
+});
+
+// Append this function to app.js
+export async function apply1PxGainBoost(targetGain = 37, persist = false) {
+  if (!activeDevice || currentDriverType !== 'scpi') {
+    appendLog('[GAIN ERROR] Active device must be connected in SCPI mode.\n', 'log-badprompt');
+    return false;
+  }
+  try {
+    const expectedGain = targetGain === 37 ? '~219' : '~72';
+    appendLog(`[BAA GAIN] Writing GAINSEL_1PX = ${targetGain} (target gain ${expectedGain})...\n`, 'log-okprompt');
+    const success = await activeDevice.setGain1Px(targetGain, persist);
+    if (success) {
+      appendLog(`[BAA GAIN] Successfully applied gain setting ${targetGain}!\n`, 'log-okprompt');
+    } else {
+      appendLog(`[BAA GAIN] Gain command sent with verification warning.\n`, 'log-badprompt');
+    }
+    return success;
+  } catch (err) {
+    appendLog(`[BAA GAIN ERROR] ${err.message}\n`, 'log-badprompt');
+    return false;
+  }
+}
+
+// Global hook for developer console or button triggers
+window.apply1PxGainBoost = apply1PxGainBoost;
+
+// --- 1. BAA ELECTRICAL GAIN TOGGLE (9 <-> 37) ---
+const btnGainToggle = document.getElementById('btn-gain-toggle');
+let isHighGain = false;
+
+btnGainToggle?.addEventListener('click', async () => {
+  if (!isConnected || currentDriverType !== 'scpi') {
+    appendLog('[GAIN ERROR] Connect hardware via SCPI first to configure registers.\n', 'log-badprompt');
+    return;
+  }
+
+  btnGainToggle.disabled = true;
+  const targetGain = isHighGain ? 9 : 37;
+
+  appendLog(`[BAA GAIN] Sending unlock sequence & writing GAINSEL_1PX = ${targetGain}...\n`, 'log-okprompt');
+  const success = await apply1PxGainBoost(targetGain, false);
+
+  if (success) {
+    isHighGain = !isHighGain;
+    btnGainToggle.textContent = isHighGain ? 'Gain 1px: 3x (219)' : 'Gain 1px: 1x (72)';
+    btnGainToggle.className = isHighGain 
+      ? 'ds-button ds-button--warning ds-button--sm' 
+      : 'ds-button ds-button--secondary ds-button--sm';
+  }
+  btnGainToggle.disabled = false;
+});
+
+// --- 2. CALIBRATION PANEL & LIVE TUNING ---
+const btnCalibToggle = document.getElementById('btn-calib-toggle');
+const panelCalibration = document.getElementById('panel-calibration');
+const btnCalibReset = document.getElementById('btn-calib-reset');
+
+const calInputs = {
+  k1: document.getElementById('cal-k1'),
+  o11: document.getElementById('cal-o11'),
+  o12: document.getElementById('cal-o12'),
+  k2: document.getElementById('cal-k2'),
+  o21: document.getElementById('cal-o21'),
+  o22: document.getElementById('cal-o22')
+};
+
+// Toggle drawer visibility
+btnCalibToggle?.addEventListener('click', () => {
+  panelCalibration?.classList.toggle('hidden');
+  btnCalibToggle.classList.toggle('active');
+});
+
+// Sync input changes directly to sfi_demo live calculation
+Object.entries(calInputs).forEach(([key, inputEl]) => {
+  inputEl?.addEventListener('input', () => {
+    const val = parseFloat(inputEl.value);
+    if (!isNaN(val)) {
+      setCalibrationParams({ [key]: val });
+    }
+  });
+});
+
+// Reset calibration inputs to default values
+btnCalibReset?.addEventListener('click', () => {
+  const defs = resetCalibrationParams();
+  Object.entries(defs).forEach(([k, val]) => {
+    if (calInputs[k]) calInputs[k].value = val.toFixed(k.startsWith('k') ? 2 : 3);
+  });
+  appendLog('[CALIBRATION] Reset parameters to default (K=1.0, Ortho=0.0).\n', 'log-okprompt');
 });

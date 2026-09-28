@@ -17,8 +17,10 @@ export class Arduino_API {
       return null;
     }
 
+    // Arduino sketches commonly emit a human-readable pipe-delimited stream;
+    // retain CSV support for existing firmware.
     const values = line
-      .split(',')
+      .split(line.includes('|') ? '|' : ',')
       .map((segment) => Number(String(segment).trim()));
 
     if (values.length < 6 || values.some((value) => Number.isNaN(value))) {

@@ -1,80 +1,266 @@
-# MLX90396 Web UI
+# MLX90396 Multi-Demo Platform — Application Note (Web GUI)
 
-An industrial-grade, dark-themed WebSerial GUI and diagnostic toolkit for the **Melexis MLX90396 3D Hall-effect magnetic sensor**. 
+A browser-based dashboard and diagnostic toolkit for the **Melexis MLX90396** 3D Hall-effect
+magnetic sensor. Everything runs client-side in a Chromium browser (Chrome / Edge) over the
+**Web Serial API** — no backend server, no native driver install. The GUI visualizes the
+magnetic field live on three views (Joystick, Twist, 3D Plot), exposes the Twist-mode signal
+math and calibration, and drives a third.js SFI dome visual.
 
-This application runs directly in Chromium-based browsers without requiring backend servers, native drivers, or software installation. It communicates with an intermediate bridge microcontroller over WebSerial using an asynchronous **SCPI command tunneling protocol** to execute low-level SPI transfers, manage chip registers, perform 3D joystick calibration, and render real-time vector graphics.
-
----
-
-## Key Features
-
-### 1. 3D Joystick Visualizer & Emulation
-* **3D Perspective Rendering:** Uses dynamic CSS variables (`--tx`, `--ty`) to translate 3D magnetic position data into a smooth, spring-loaded 3D joystick animation.
-* **28-LED Radial Ring:** Features a 360° perimeter ring with 28 virtual LEDs that highlight the current vector angle and magnitude in real-time.
-* **Emulation Mode:** Includes a trigonometric wave simulator for UI testing without physical hardware attached.
-* **Toggleable Debug Terminal:** Integrated collapsible debug output window on the main joystick view.
-
-### 2. NVRAM / Register Map Editor (0x00 – 0x3F)
-* **Full Register Scan (0x00 – 0x3F):** Read or write individual 16-bit words or perform a full 64-register memory dump.
-* **Interactive Data Table:** Synchronized view showing register addresses, raw hexadecimal values, decimal values, and transfer statuses.
-* **Hardware EEPROM Operations:** Dedicated controls for **Memory Store (`HS`)** (RAM $\rightarrow$ EEPROM) and **Memory Recall (`HR`)** (EEPROM $\rightarrow$ RAM).
-
-### 3. SCPI Terminal & Serial Engine
-* **Command Queue (Mutex):** Prevents packet collisions and stream desynchronization by wrapping requests in individual 1.5-second timeout promises.
-* **Tokenizer Stream Parser:** Parses token responses like `(OK)>`, `(ERR)>`, `(E2BIG)>`, and `(ERANGE)>` in real-time[cite: 1].
-* **Dual Console Logging:** High-performance log buffer with `requestAnimationFrame` DOM batching and automatic memory truncation to prevent browser slowdowns.
-* **Interactive Shell:** SCPI command history with Up/Down arrow navigation, customizable EOL line endings (`LF`, `CR`, `CRLF`), local echo toggles, and one-click macro buttons (`*IDN?`, `:SYST:INFO`, `*RST`)
+> **Browser requirement:** Web Serial is implemented by **Chrome and Edge (desktop)** only.
+> Firefox and Safari do not provide `navigator.serial` — the GUI detects this, disables the
+> "Open Serial Port" button, and shows a clear message. The page must also run in a secure
+> context (`https://` or `http://localhost`).
 
 ---
 
-## Architecture & Hardware Communication
+## 1. System Architecture & Data Paths
 
-The application uses a 3-tier hardware abstraction architecture:
-
-+-----------------------------------------------------------------------+
-|                       Web Frontend (Browser)                          |
-|   HTML5 Dashboard  |  3D Joystick Canvas  |  NVRAM Table / Wizard     |
-+-----------------------------------------------------------------------+
-|
-WebSerial API (115200 Baud)
-+-----------------------------------------------------------------------+
-|                 Bridge Microcontroller (CDC-ACM)                       |
-|   Executes SCPI commands (e.g., :SPI:WriteReaD, :SPI:CS0)    |
-+-----------------------------------------------------------------------+
-|
-4-Wire SPI Bus + CS0
-|
-+-----------------------------------------------------------------------+
-|                    MLX90396 3D Hall Sensor                            |
-|   Measures Bx, By, Bz magnetic field & die temperature     |
-+-----------------------------------------------------------------------+
-
-### SCPI Commands Used by Bridge Firmware
-* `:SPI:Init 0` — Initialize primary SPI peripheral.
-* `:CON:CS1:GPIO:INIT:OUT 0` — Configure Chip Select pin as GPIO output.
-* `:SPI:BUFfer 1,1,1,1,0` — Configure buffer parameters.
-* `:VDD:3V3` / `:VDD:OFF` — Power rail control.
-* `:SPI:CS0 0` / `:SPI:CS0 1` — Manual CS line assertion and de-assertion.
-* `:SPI:WriteReaD <bytes>` — Full-duplex SPI transfer of comma-separated decimal bytes.
-
----
-
-## File Structure
-
-```text
-MLX90396-WebUI/
-├── index.html        # Main HTML structure, styles, SVG assets, and view tabs
-├── app.js            # Main application controller, UI event bindings, WebSerial manager
-├── mlx_api.js        # MLX90396 device class, command builder, and CRC-8 calculator
-└── resources/
-    └── background.jpg# UI background image asset
 ```
-Getting Started
-Prerequisites
+        Browser (this GUI)
+   ┌─────────────────────────────────────────────┐
+   │  Joystick view · Twist view · 3D Plot view   │
+   └──────────────────────┬──────────────────────┘
+                          │ Web Serial API
+        ┌─────────────────┴──────────────────┐
+        │  (a) SCPI Bridge  (b) Arduino API   │
+        └─────────────────┬──────────────────┘
+                          │
+           Bridge MCU → SPI → MLX90396  (SCPI path)
+           Arduino MCU → frame stream  (Arduino path)
+           —————————————  Emulation      (no hardware)
+```
 
-  A Chromium-based browser supporting the WebSerial API:
-  Google Chrome (v89+)
-  Microsoft Edge (v89+)
-  Opera (v75+)
-  A connected USB-to-Serial bridge device programmed with SCPI firmware.
-  Note: The WebSerial API requires a secure context. The site must be served over https:// or hosted locally at http://localhost.
+Three interchangeable data sources feed the same UI pipeline (`app.js`):
+
+| Path | Driver in modal | Data origin | Latency in live loop |
+|---|---|---|---|
+| **SCPI Bridge** (`scpi`) | `mlx_api.js` (`MLX90396_API`) | Raw 4-pixel register reads over SCPI-tunneled SPI | 50 ms sample (20 Hz) |
+| **Direct Arduino** (`arduino`) | `arduino_api.js` (`Arduino_API`) | Firmware telemetry frame stream (angle from on-MCU TFLite model) | 25 ms sample (40 Hz) |
+| **Emulation** (no connection) | n/a | Synthetic Lissajous signal | ~33 ms (30 Hz) |
+
+**Emulation mode** activates automatically when **Start** is pressed while no serial device is
+connected, so the full UI can be exercised without hardware.
+
+---
+
+## 2. Main Toolbar
+
+| Control | Behaviour |
+|---|---|
+| **Start** | Begins the live demo loop. Enabled out of the box (this is how you reach the built-in emulator without hardware); after a connect/disconnect cycle it is disabled until a device is connected again. |
+| **Stop** | Halts the loop, recentres joystick/magnet disk, demo status → Idle. |
+| **Status badge** | `Idle` / `Running` / `Error`. |
+| **Connect USB** | Toggles **Disconnect** when connected; otherwise opens the connection modal. |
+
+---
+
+## 3. Connection Modal
+
+Opened by **Connect USB**. Chooses the driver, serial settings, and SPI bus *before* the
+Chrome port picker appears.
+
+- **Target Device Driver**
+  - `SCPI Bridge (MLX90396 SPI API)` — full register/NVRAM + raw pixel control through the
+    bridge firmware's SCPI tunnel (`:SPI:WriteReaD`, `:SPI:CS0`, `:SPI:Init`, `:VDD:3V3`, …).
+  - `Direct Arduino Telemetry (Frame Stream)` — passive consumer of the Arduino's
+    pipe-delimited frame telemetry (no SCPI / NVRAM controls; those stay disabled).
+- **Serial Baud Rate** — 115200 (default), 230400, 500000, 9600.
+- **SPI Bus Type** (SCPI only)
+  - `:SPI` — **Cable Connection**; initializes `:CON:CS1:GPIO:INIT:OUT 0` and
+    `:SPI:BUFfer 1,1,1,1,0`.
+  - `:SPI2` — **Header Connection**; initializes `:SPI2:Init 0`, `:SPI2:SET:CS0 0`,
+    and `:A3:GPIO:INIT:OUT 0`.
+- **Browser-Authorized Ports** — shows previously-permitted ports as
+  `Serial Port · VID 0xXXXX · PID 0xXXXX` (generic — no hardcoded VID→name table).
+- **Open Serial Port** — calls `navigator.serial.requestPort()` with **no device filters**:
+  the Chrome picker lists every serial device Windows detects.
+
+**Error handling:** failures keep the modal open and display a visible `#connect-error`
+message. "Failed to open serial port" maps to an actionable hint (another program holds the
+port — close Arduino IDE Serial Monitor / vendor tools, replug). Unsupported browsers get an
+explicit message instead of a silent failure. All diagnostics are also mirrored to the
+browser DevTools console (there is no on-screen terminal window).
+
+---
+
+## 4. View 1 — Joystick
+
+`view-joystick` (active sub-tab by default).
+
+- **3D stick** — CSS-variable driven (`--tx`, `--ty`): translational offset plus
+  `rotateX/rotateY` tilt. Fed by `rawX/20, rawY/20`; stick radius is clamped to a max of
+  50 units.
+- **28-LED radial ring** — 360°/28 ≈ 12.86° per LED. The LED nearest the vector **angle**
+  lights `led-active` with a ±2-LED falloff (`led-low-1`, `led-low-2`). Active only when the
+  deviation from center is > 5 units.
+- **Radar Scope** (canvas) — polar blips plot the vector trail (last 40 points), plus a
+  gradient vector line from center, a live dot (with glow) when off-center, concentric
+  range rings, and compass labels. Readout: `Azimuth · Range`, where
+  `Azimuth = atan2(-y, x)` (0° at +X, increasing counter-clockwise per the canvas
+  y-down convention) and range is reported as % of 50.
+
+---
+
+## 5. View 2 — Twist
+
+`view-magnet` — the diametrical twist demo. A half-blue/half-red magnet disk
+(blue = N, red = S) rides a 1 mm grid printed on a stylized sensor overlay over a **PCB**
+schematic.
+
+**Rendering**
+- Grid is **fixed at ±2.5 mm** — it never auto-ranges. Earlier builds rescaled the map from
+  live peak tracking, which made the disk appear to "jump" during a pure rotation; that was
+  removed. `gridHalfPx()` reads the sensor element's live `clientWidth/2`, so
+  `pxPerMm = halfPx / 2.5` adapts to window size without changing the physical meaning.
+- XY position becomes `translate3d(transX, transY, 0)`, clamped to the grid edges.
+- Twist angle becomes `rotate(-angle)` — the sign is deliberately inverted so a **rightward
+  (CW) physical rotation renders as clockwise on screen** (CSS counts + as CW, but the raw
+  device angle grows the other way).
+- Both XY and angle pass through an **EMA filter** (`ALPHA = 0.4`) so tremor and model
+  fuzz glide instead of snapping; the same filter runs on all modes.
+
+**Controls**
+- **Zero Position** — captures the current raw position as the offset
+  (`magnetOffsets.x/y`); the disk recentres. Reported over console.
+- **Lock XY (twist only)** — freezes `transX/transY` at center while the angle keeps
+  rotating. Use this to demonstrate a pure twist around the magnet axis, isolating rotation
+  from position. The internal EMA keeps tracking, so unchecking never snaps.
+- **Signal & Calibration** — toggles the `#twist-panel` with live readouts and calibration
+  inputs (below).
+
+### Twist panel — live signal
+
+Six readouts (updating only while the Twist tab is active and the panel is open):
+
+1. **Alpha (calibrated)** — Desmos-calibrated twist angle about the X axis, degrees.
+2. **Beta (calibrated)** — Desmos-calibrated twist angle about the Y axis, degrees.
+3. **Alpha (raw)** — raw `atan2` angle, degrees.
+4. **Beta (raw)** — raw `atan2` angle, degrees.
+5. **Alpha Strength** — `sqrt(Z² + X²)` (1px) or `sqrt(Z02² + X02²)` (2px), in the mode's unit.
+6. **Beta Strength** — `sqrt(Z² + Y²)` (1px) or `sqrt(Z13² + Y13²)` (2px), in the mode's unit.
+
+### Twist panel — mode selector
+
+- **1px mode (single pixel · mT)** — uses pixel **0**: `X0, Y0, Z0`.
+  `Alpha = atan2(Z0, X0)`, `Beta = atan2(Z0, Y0)`.
+- **2px mode (differential · mT/mm)** — uses the differences between pixel pairs:
+  `X02 = (x2 − x0)/2`, `Z02 = (z2 − z0)/2`, `Y13 = (y3 − y1)/2`, `Z13 = (z3 − z1)/2`.
+  `Alpha = atan2(Z02, X02)`, `Beta = atan2(Z13, Y13)`. Cross-terms in the calibration
+  consume the *other* axis' differential pair (alpha sees `Y13`, beta sees `X02`).
+
+### Twist panel — gain & calibration config
+
+- **GAINSEL (electrical gain)** — 0–63 register value, applied per mode through
+  `twist_api.js` `setGainSel`. Defaults: `1px = 37 (0b100101)` (boosted gain ≈ 219),
+  `2px = 9 (0b001001)` (kept stock until hardware trim). The hint text shows the current
+  value and its 6-bit pattern live.
+- **Calibration constants** `k1, k2, o11, o12, o21, o22` — edited live; every change
+  re-renders the readouts immediately. They feed the Desmos cross-axis model:
+
+  ```
+  a1 = atan2( sqrt(z1² + (k1·(y1 − o11·z1))²), (x1 − o12·z1) )
+  b1 = atan2( sqrt(z1² + (k2·(x1 − o21·z1))²), (y1 − o22·z1) )
+  ```
+
+  **Default = identity no-op.** With `k1 = k2 = 1, o11…o22 = 0` the calibrated readout is
+  *exactly* the raw `atan2` — no tangential cross-axis mixing — so "clean" vanilla readings
+  are shown until you actually enter offsets/gains.
+
+---
+
+## 6. View 3 — 3D Plot
+
+`view-3dplot` — live Plotly `scatter3d` of the field vector components
+`(Bx, By, Bz)` on axes fixed at ±1000 with 250-unit ticks.
+
+- **Live ball** — current sample.
+- **Trail** — last 60 samples as a connected line.
+- **Reset Trail** — clears the history (data keeps streaming).
+- The plot only redraws while this tab is the active view (performance); data continues to
+  accumulate in the history buffer regardless.
+
+---
+
+## 7. How Each Data Source Feeds the GUI
+
+### SCPI path (`scpi`)
+Per loop iteration (~50 ms):
+1. `sm(0xFC000)` + 15 ms settle → `rm(false, 0xFC000)` reads pixels **0–1**
+   (`x0,y0,z0,x1,y1,z1`).
+2. `sm(0x03F00)` + 15 ms settle → `rm(false, 0x03F00)` reads pixels **2–3**
+   (`x2,y2,z2,x3,y3,z3`).
+3. Averages of the four pixels become `avgX, avgY, avgZ`.
+4. `angleDeg = atan2(-avgY, avgX)` (sign convention tuned for the demo orientation).
+5. Position is derived from **gradients** with crosstalk removal:
+   `rawGradX = ((x1+x2) − (x0+x3))/2`, `rawGradY = ((y0+y1) − (y3+y2))/2`,
+   `cleanGradX = rawGradX − avgX·K_ROT_X`, `cleanGradY = rawGradY − avgY·K_ROT_Y`
+   (`K_ROT = 0.10`), finishing with `mm = cleanGrad · SCALE` (`SCALE = 0.02`).
+6. All four pixels are passed to `updateTwistUI` for the Twist panel.
+
+### Arduino path (`arduino`)
+The 15-field frame is parsed by `Arduino_API.parseLine`:
+
+```
+x0|y0|z0|x1|y1|z1|x2|y2|z2|x3|y3|z3|X_mm|Y_mm|angle
+```
+
+`X_mm / Y_mm` are the firmware's position estimate (mm) and `angle` is degrees **as computed
+on the MCU** (TFLite model — fuzzy by nature). `rawX/Y/Z` here are the simple mean of the
+four pixels. A legacy 6-field frame (`posX,posY,angle,rawX,rawY,rawZ`) is also accepted.
+Position/angle are then offset by "Zero Position" and rendered identically to the other paths.
+
+### Emulation path
+Generates a Lissajous: `emulatedX = sin(a·0.7)·1.8`, `emulatedY = cos(a·0.9)·1.8`,
+`emulatedAngle = a`. Feed the same UI functions; the Twist panel receives a synthetic rotating
+4-pixel field (two sine-driven in-plane components + constant Z bias).
+
+---
+
+## 8. Data / Signal-Path Notes
+
+- **Only the active view animates.** Every render function starts with
+  `isViewActive(...)`, so off-screen widgets do no DOM/Plotly work.
+- **Grid is static** (±2.5 mm fixed range, ±1 mm grid, corner labels ±2.5 mm highlighted).
+  No auto-ranging.
+- **Rotation sign:** GUI renders `rotate(-angle)` so physical CW twist → on-screen CW.
+  If the MCU convention changes, flip the sign at that single render line.
+- **Jitter handling:** EMA smoothing (`ALPHA 0.4`) is the only damping; the wobble you still
+  see under a pure twist is real data — TFLite model output fuzz, mechanical play in the
+  printed rig, and hand tremor over a ±2.5 mm travel — not a mapping bug.
+
+---
+
+## 9. Inactive/Unreachable Views (present in markup, no tab exposes them)
+
+- **`view-calib` — Joystick Calibration Wizard** (steps: capture zero, boundary sweep,
+  deadband filter, apply) with a Bx-vs-By motion trace canvas and telemetry offsets/span.
+  Its zero/sweep/save buttons are HTML-enabled only via an **SFI demo tab** that is not
+  wired into the current toolbar.
+- **`view-memory` — NVRAM register editor** (read/write 16-bit words, full 0x00–0x3F dump,
+  Store/Recall). Controls enable only in **SCPI** mode. Reachable only from a legacy SFI UI.
+
+Both remain functional if a future tab navigator is added; they are simply not routed today.
+
+---
+
+## 10. Supporting Files
+
+| File | Role |
+|---|---|
+| `index.html` | Structure, inline app CSS, SVG grid assets, modal, sub-views. |
+| `app.js` | Controller: serial manager, SCPI wait/route, demo loop, all three views' renderers, tab routing, modal logic. |
+| `twist_api.js` | Single source of truth for Twist math: 1px/2px `atan2`, Desmos calibration, GAINSEL table. |
+| `mlx_api.js` | `MLX90396_API`: SPI command builder, CRC-8 (poly 0x2F) verify, register read/write, measurement mask handling. |
+| `arduino_api.js` | `Arduino_API`: 15-/6-field frame parser, latest-sample store. |
+| `sfi_demo.js` | Standalone SFI dome visual + `updateSfiDomeKinematics` (fed raw X/Y/Z, normalized to ±1). |
+| `webdesign.css` | Shared design-token stylesheet ("ds-" classes). |
+| `resources/background.jpg` | Page background. |
+
+## 11. Quick Start
+
+1. Serve locally (`python -m http.server` or VSCode Live Server) or push to GitHub Pages —
+   any secure context.
+2. Open in **Chrome/Edge**, click **Connect USB**, choose driver (SCPI Bridge or Arduino
+   Telemetry + baud), click **Open Serial Port**, pick your COM device.
+3. Click **Start**. Switch sub-tabs to watch the joystick, twist, and 3D plot.
+4. No hardware? Click **Start** anyway — emulation mode drives everything.

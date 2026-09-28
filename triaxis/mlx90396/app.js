@@ -2,21 +2,26 @@ import { MLX90396_API } from './mlx_api.js';
 import { Arduino_API } from './arduino_api.js';
 // import { initSfiDemo, resizeSfiCanvases } from './sfi_demo.js';
 import { initSfiDemo, resizeSfiCanvases, updateSfiDomeKinematics } from './sfi_demo.js';
+import {
+  computeTwistSignals,
+  deriveTwistInputsFromPoints,
+  TWIST_CAL,
+  getGainSel,
+  setGainSel,
+} from './twist_api.js';
 
 // --- DOM Elements (Declared first to avoid TDZ ReferenceErrors) ---
 const btnConnect = document.getElementById('btn-connect');
-const btnClear = document.getElementById('btn-clear');
-const btnSend = document.getElementById('btn-send');
-const txInput = document.getElementById('tx-input');
-const logWindow = document.getElementById('log-window');
-const miniLogWindow = document.getElementById('mini-log-window'); 
-const selEol = document.getElementById('sel-eol');
-const chkEcho = document.getElementById('chk-echo');
-const chkAutoScroll = document.getElementById('chk-autoscroll');
 
 const btnStartDemo = document.getElementById('btn-start-demo');
 const btnStopDemo = document.getElementById('btn-stop-demo');
-const historyList = document.getElementById('history-list');
+const demoStatus = document.getElementById('demo-status');
+
+function setDemoStatus(text, isActive) {
+  if (!demoStatus) return;
+  demoStatus.textContent = text;
+  demoStatus.classList.toggle('active', !!isActive);
+}
 
 // Modal Elements
 const selDriverType = document.getElementById('sel-driver-type');
@@ -26,30 +31,74 @@ const selBaudRate = document.getElementById('sel-baud-rate');
 const connectModal = document.getElementById('connect-modal');
 const btnModalConnect = document.getElementById('btn-modal-connect');
 const btnCloseModal = document.getElementById('btn-close-modal');
+const portGuideEl = document.getElementById('port-guide');
+const connectErrorEl = document.getElementById('connect-error');
+
+async function refreshPortGuide() {
+  if (!portGuideEl || !navigator.serial || !navigator.serial.getPorts) return;
+  try {
+    const ports = await navigator.serial.getPorts();
+    if (!ports.length) {
+      portGuideEl.textContent = 'None yet \u2014 pick your device in the Open Serial Port dialog below.';
+      return;
+    }
+    portGuideEl.innerHTML = '';
+    ports.forEach((p) => {
+      const info = typeof p.getInfo === 'function' ? p.getInfo() : {};
+      const vid = info.usbVendorId;
+      const pid = info.usbProductId;
+      const row = document.createElement('div');
+      row.textContent = `Serial Port  \u00b7  VID ${vid != null ? '0x' + vid.toString(16).toUpperCase().padStart(4, '0') : 'n/a'}  \u00b7  PID ${pid != null ? '0x' + pid.toString(16).toUpperCase().padStart(4, '0') : 'n/a'}`;
+      portGuideEl.appendChild(row);
+    });
+  } catch (err) {
+    portGuideEl.textContent = 'Unable to read authorized ports.';
+  }
+}
+
+function showConnectError(msg) {
+  if (connectErrorEl) {
+    connectErrorEl.textContent = msg || 'Unknown error.';
+    connectErrorEl.classList.remove('hidden');
+  }
+}
+
+function clearConnectError() {
+  if (connectErrorEl) {
+    connectErrorEl.classList.add('hidden');
+    connectErrorEl.textContent = '';
+  }
+}
+
+function hintForSerialError(raw) {
+  const s = String(raw);
+  if (s.includes('Failed to open serial port')) {
+    return 'Failed to open serial port. The port is almost certainly held open by another program \u2014 close the Arduino IDE Serial Monitor / vendor tools / other browser tabs, unplug & replug the device, then retry.';
+  }
+  if (s.includes('device not found') || s.includes('No such device')) {
+    return 'Device not found. Unplug & replug it, verify its driver is installed, and retry.';
+  }
+  return raw;
+}
 
 // 2D Magnet & UI Elements
 const magnetDisk = document.getElementById('magnet-disk');
 const btnZeroMagnet = document.getElementById('btn-zero-magnet');
+const chkMagnetLockPos = document.getElementById('chk-magnet-lock-pos');
 const joystickBase = document.getElementById('joystick-base');
 const joystickStick = document.getElementById('joystick-stick');
-
-if (selEol) selEol.value = '\\n';
 
 // --- State Variables ---
 let port = null, reader = null, writer = null;
 let isConnected = false, isReading = false, isDemoRunning = false;
 let textDecoder, textEncoder;
-let readableStreamClosed, writableStreamClosed; 
+let readableStreamClosed, writableStreamClosed;
 
 let activeDevice = null;
-let currentDriverType = 'scpi'; 
+let currentDriverType = 'scpi';
 
 let scpiLock = Promise.resolve();
-let scpiWaiter = null; 
-
-const history = [];
-let historyIndex = -1;
-let draftBeforeNav = '';
+let scpiWaiter = null;
 
 const magnetOffsets = { x: 0, y: 0 };
 const latestRawMagnet = { x: 0, y: 0 };
@@ -58,13 +107,20 @@ const leds = [];
 const TOTAL_LEDS = 28;
 const ANGLE_STEP = 360 / TOTAL_LEDS;
 
+function isViewActive(id) {
+  const el = document.getElementById(id);
+  return !!el && el.classList.contains('active');
+}
+
 // --- Initialize on Startup ---
 window.addEventListener('DOMContentLoaded', () => {
   initSfiDemo();
   initJoystickLEDs();
-  initDeviceCommandButtons();
+  startRadarLoop();
   initNvramControls();
   initGridReordering();
+  initTwistControls();
+  refreshPortGuide();
 });
 
 // --- Drag & Drop Reordering logic ---
@@ -166,63 +222,158 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
   });
 });
 
-// --- Dynamic Device Command Buttons ---
-function initDeviceCommandButtons() {
-  const container = document.getElementById('api-test-buttons');
-  if (!container) return;
+// --- 2D Magnet Position & UI ---
+const magnetSensorEl = document.querySelector('.magnet-sensor');
+function gridHalfPx() {
+  const w = magnetSensorEl ? magnetSensorEl.clientWidth : 340;
+  return w / 2;
+}
+const magnetState = { emaX: 0, emaY: 0, emaAngle: 0, inited: false };
 
-  const commands = [
-    { label: 'RT (Reset)', action: async () => { const res = await activeDevice.rt(); appendLog(`[API RT] Result: ${res ? 'OK' : 'FAIL'}\n`, res ? 'log-okprompt' : 'log-badprompt'); } },
-    { label: 'HS (Store NVRAM)', action: async () => { const res = await activeDevice.hs(); appendLog(`[API HS] Result: ${res ? 'OK' : 'FAIL'}\n`, res ? 'log-okprompt' : 'log-badprompt'); } },
-    { label: 'HR (Recall NVRAM)', action: async () => { const res = await activeDevice.hr(); appendLog(`[API HR] Result: ${res ? 'OK' : 'FAIL'}\n`, res ? 'log-okprompt' : 'log-badprompt'); } },
-    { label: 'SM (Start Meas)', action: async () => { const res = await activeDevice.sm(0xFC000); appendLog(`[API SM] Mask 0xFC000 Result: ${res ? 'OK' : 'FAIL'}\n`, res ? 'log-okprompt' : 'log-badprompt'); } },
-    { label: 'RM (Read P0-1)', action: async () => { const res = await activeDevice.rm(false, 0xFC000); appendLog(`[API RM P0-1] ${JSON.stringify(res)}\n`, res.error ? 'log-badprompt' : 'log-okprompt'); } },
-    { label: 'RM (Read P2-3)', action: async () => { const res = await activeDevice.rm(false, 0x03F00); appendLog(`[API RM P2-3] ${JSON.stringify(res)}\n`, res.error ? 'log-badprompt' : 'log-okprompt'); } },
-    { label: 'EX (Exit Mode)', action: async () => { const res = await activeDevice.ex(0); appendLog(`[API EX] Result: ${res ? 'OK' : 'FAIL'}\n`, res ? 'log-okprompt' : 'log-badprompt'); } },
-    { label: 'RR Reg 0x00', action: async () => { const res = await activeDevice.rr(0x00); appendLog(`[API RR 0x00] Data: 0x${res.data?.toString(16).padStart(4, '0')}\n`, res.error ? 'log-badprompt' : 'log-okprompt'); } },
-    { label: 'RR Reg 0x02', action: async () => { const res = await activeDevice.rr(0x02); appendLog(`[API RR 0x02] Data: 0x${res.data?.toString(16).padStart(4, '0')}\n`, res.error ? 'log-badprompt' : 'log-okprompt'); } }
-  ];
+function resetMagnetTracking() {
+  magnetState.inited = false;
+  updateMagnetScaleLabels(2.5);
+}
 
-  container.innerHTML = '';
-  commands.forEach(cmd => {
-    const btn = document.createElement('button');
-    btn.className = 'ds-button ds-button--secondary ds-button--sm api-btn';
-    btn.textContent = cmd.label;
-    btn.disabled = !isConnected || currentDriverType === 'arduino';
-    btn.addEventListener('click', async () => {
-      if (!activeDevice || currentDriverType !== 'scpi') return;
-      try {
-        console.log(`[API EXEC] Running command: ${cmd.label}`);
-        await cmd.action();
-      } catch (err) {
-        console.error(`[API ERROR] ${cmd.label}:`, err);
-        appendLog(`[API ERROR]: ${err.message}\n`, 'log-badprompt');
-      }
-    });
-    container.appendChild(btn);
+function updateMagnetScaleLabels(mmRange) {
+  const half = Math.round(gridHalfPx());
+  const travelLbl = document.getElementById('magnet-travel-lbl');
+  if (travelLbl) {
+    travelLbl.innerHTML = `Sensing Grid: &plusmn;${mmRange.toFixed(1)} mm (&plusmn;${half} px). Disk positions on the grid and rotates with the twist angle.`;
+  }
+  const factor = mmRange / 2.5;
+  document.querySelectorAll('.grid-tick').forEach(el => {
+    const base = parseFloat(el.dataset.mm || '0');
+    const v = base * factor;
+    const sign = base > 0 ? '+' : '';
+    const str = v === Math.round(v) ? v.toFixed(0) : v.toFixed(1);
+    el.textContent = sign + str;
   });
 }
 
-// --- 2D Magnet Position & UI ---
 btnZeroMagnet?.addEventListener('click', () => {
   magnetOffsets.x = latestRawMagnet.x;
   magnetOffsets.y = latestRawMagnet.y;
+  resetMagnetTracking();
   appendLog(`[MAGNET] Zero Captured: Offset X=${magnetOffsets.x.toFixed(2)} mm, Y=${magnetOffsets.y.toFixed(2)} mm\n`, 'log-okprompt');
 });
 
+document.getElementById('btn-toggle-twist')?.addEventListener('click', () => {
+  const panel = document.getElementById('twist-panel');
+  const btn = document.getElementById('btn-toggle-twist');
+  if (panel) {
+    panel.classList.toggle('hidden');
+    if (btn) btn.classList.toggle('active', !panel.classList.contains('hidden'));
+    updateTwistUI(latestTwistPoints);
+  }
+});
+
 function updateMagnetUI(posX_mm, posY_mm, angleDeg) {
-  if (!magnetDisk) return;
+  if (!magnetDisk || !isViewActive('view-magnet')) return;
   const safeX = typeof posX_mm === 'number' && !isNaN(posX_mm) ? posX_mm : 0;
   const safeY = typeof posY_mm === 'number' && !isNaN(posY_mm) ? posY_mm : 0;
-  const safeAngle = typeof angleDeg === 'number' && !isNaN(angleDeg) ? angleDeg : 0;
+  let safeAngle = typeof angleDeg === 'number' && !isNaN(angleDeg) ? angleDeg : 0;
 
-  const PIXELS_PER_MM = 30; 
-  const maxSquareExtent = 75; // +-2.5 mm travel limit
+  const ALPHA = 0.4;
+  if (!magnetState.inited) {
+    magnetState.emaX = safeX;
+    magnetState.emaY = safeY;
+    magnetState.emaAngle = safeAngle;
+    magnetState.inited = true;
+  } else {
+    magnetState.emaX += (safeX - magnetState.emaX) * ALPHA;
+    magnetState.emaY += (safeY - magnetState.emaY) * ALPHA;
+    const dA = ((safeAngle - magnetState.emaAngle + 540) % 360) - 180;
+    magnetState.emaAngle = ((magnetState.emaAngle + dA * ALPHA) % 360 + 360) % 360;
+  }
 
-  let transX = Math.max(-maxSquareExtent, Math.min(maxSquareExtent, safeX * PIXELS_PER_MM));
-  let transY = Math.max(-maxSquareExtent, Math.min(maxSquareExtent, -safeY * PIXELS_PER_MM));
+  // Static grid: fixed +/-2.5 mm span. The scale never re-ranges, so a pure
+  // rotation can't rescale the map and make the disk jump. Position motion is
+  // EMA-smoothed and clamped at the grid edges; angle spins around the axis.
+  // "Lock XY" freezes position (angle-only spin) for twist demos.
+  const locked = chkMagnetLockPos ? chkMagnetLockPos.checked : false;
+  const mmRange = 2.5;
+  const half = gridHalfPx();
+  const pxPerMm = half / mmRange;
 
-  magnetDisk.style.transform = `translate3d(${transX}px, ${transY}px, 0px) rotate(${safeAngle}deg)`;
+  const transX = locked ? 0 : Math.max(-half, Math.min(half, magnetState.emaX * pxPerMm));
+  const transY = locked ? 0 : Math.max(-half, Math.min(half, -magnetState.emaY * pxPerMm));
+
+  // Sign inverted so a right/CW physical rotation renders as clockwise on
+  // screen (CSS rotate counts + as CW, but the raw angle from the device
+  // increases for the opposite direction).
+  magnetDisk.style.transform = `translate3d(${transX}px, ${transY}px, 0px) rotate(${-magnetState.emaAngle}deg)`;
+
+  updateMagnetScaleLabels(2.5);
+}
+
+// --- Twist Signal & Calibration UI ---
+let twistMode = '1px';
+
+function initTwistControls() {
+  const modeSel = document.getElementById('sel-twist-mode');
+  const gainInput = document.getElementById('in-twist-gain');
+  const unitLbl = document.getElementById('twist-unit-lbl');
+  const calKeys = ['k1', 'k2', 'o11', 'o12', 'o21', 'o22'];
+
+  modeSel?.addEventListener('change', () => {
+    twistMode = modeSel.value;
+    if (unitLbl) unitLbl.textContent = `Units: ${twistMode === '2px' ? 'mT/mm' : 'mT'}`;
+    syncTwistGainField(gainInput);
+    updateTwistUI(latestTwistPoints);
+  });
+
+  gainInput?.addEventListener('change', () => {
+    const v = parseInt(gainInput.value, 10);
+    if (!isNaN(v)) setGainSel(twistMode, v);
+    syncTwistGainField(gainInput);
+  });
+
+  calKeys.forEach(key => {
+    const el = document.getElementById(`cal-${key}`);
+    el?.addEventListener('input', () => {
+      const v = parseFloat(el.value);
+      if (!isNaN(v)) TWIST_CAL[key] = v;
+    });
+  });
+
+  syncTwistGainField(gainInput);
+}
+
+function syncTwistGainField(gainInput) {
+  if (!gainInput) return;
+  const g = getGainSel(twistMode);
+  gainInput.value = g;
+  const hint = document.getElementById('twist-gain-hint');
+  if (hint) {
+    hint.textContent = `${twistMode} gain = ${g} (0b${g.toString(2).padStart(6, '0')})`;
+  }
+}
+
+const latestTwistPoints = [];
+
+function updateTwistUI(points) {
+  const twistPanel = document.getElementById('twist-panel');
+  if (!isViewActive('view-magnet') || !twistPanel || twistPanel.classList.contains('hidden')) return;
+  if (!Array.isArray(points) || points.length < 4) return;
+
+  latestTwistPoints.splice(0, latestTwistPoints.length, ...points);
+
+  const input = deriveTwistInputsFromPoints(points);
+  const res = computeTwistSignals(twistMode, input);
+  const unit = res.unit;
+
+  const setTxt = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+
+  setTxt('twist-alpha', `${res.alphaCalDeg.toFixed(1)}\u00B0`);
+  setTxt('twist-beta', `${res.betaCalDeg.toFixed(1)}\u00B0`);
+  setTxt('twist-alpha-raw', `${res.alphaDeg.toFixed(1)}\u00B0`);
+  setTxt('twist-beta-raw', `${res.betaDeg.toFixed(1)}\u00B0`);
+  setTxt('twist-alpha-str', `${res.strengthAlpha.toFixed(2)} ${unit}`);
+  setTxt('twist-beta-str', `${res.strengthBeta.toFixed(2)} ${unit}`);
 }
 
 // --- 3D Joystick UI ---
@@ -238,7 +389,7 @@ function initJoystickLEDs() {
 }
 
 function updateJoystickUI(x, y) {
-  if (!joystickStick) return;
+  if (!joystickStick || !isViewActive('view-joystick')) return;
   const safeX = typeof x === 'number' && !isNaN(x) ? x : 0;
   const safeY = typeof y === 'number' && !isNaN(y) ? y : 0;
   
@@ -256,6 +407,8 @@ function updateJoystickUI(x, y) {
   joystickStick.style.setProperty('--ty', renderY);
   leds.forEach(led => led.className = 'joystick__led');
 
+  pushRadarPoint(renderX, renderY);
+
   if (radius > 5) { 
     let angleDeg = Math.atan2(safeY, safeX) * (180 / Math.PI);
     if (angleDeg < 0) angleDeg += 360;
@@ -272,78 +425,120 @@ function updateJoystickUI(x, y) {
   }
 }
 
-// --- Console & Terminal Logging ---
-const LOG_MAX_CHARS = 100000;
-const LOG_TRIM_TO = 80000;
-let logTotalChars = 0;
-let logQueue = [];
-let logFlushScheduled = false;
+// --- 2D Radar Scope (shared Joystick data) ---
+const radarCanvas = document.getElementById('radar-canvas');
+const radarCtx = radarCanvas ? radarCanvas.getContext('2d') : null;
+const radarReadout = document.getElementById('radar-readout');
+const radarState = { x: 0, y: 0, trail: [] };
 
-function scheduleLogFlush() {
-  if (!logFlushScheduled) {
-    logFlushScheduled = true;
-    requestAnimationFrame(flushLog);
+function pushRadarPoint(x, y) {
+  if (Math.hypot(x, y) < 0.1) {
+    radarState.x = 0;
+    radarState.y = 0;
+    radarState.trail.length = 0;
+    return;
+  }
+  radarState.trail.push({ x, y });
+  if (radarState.trail.length > 40) radarState.trail.shift();
+  radarState.x = x;
+  radarState.y = y;
+}
+
+function drawRadar() {
+  if (!radarCtx || !isViewActive('view-joystick')) return;
+
+  const { canvas } = radarCtx;
+  const size = canvas.width;
+  const cx = size / 2, cy = size / 2;
+  const R = size / 2 - 26;
+  const ctx = radarCtx;
+
+  ctx.clearRect(0, 0, size, size);
+
+  ctx.fillStyle = '#02050f';
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
+
+  [0.25, 0.5, 0.75, 1].forEach(f => {
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * f, 0, Math.PI * 2);
+    ctx.strokeStyle = f === 1 ? 'rgba(101,187,169,0.5)' : 'rgba(101,187,169,0.18)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  });
+
+  ctx.strokeStyle = 'rgba(101,187,169,0.15)';
+  ctx.beginPath();
+  ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+  ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(169,184,201,0.65)';
+  ctx.font = '10px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('0°', cx + R + 14, cy);
+  ctx.fillText('90°', cx, cy - R - 13);
+  ctx.fillText('180°', cx - R - 14, cy);
+  ctx.fillText('270°', cx, cy + R + 13);
+
+  radarState.trail.forEach((p, i) => {
+    const px = cx + (p.x / 50) * R;
+    const py = cy + (p.y / 50) * R;
+    ctx.fillStyle = `rgba(101,187,169,${0.15 + (i / radarState.trail.length) * 0.45})`;
+    ctx.beginPath(); ctx.arc(px, py, 1.6, 0, Math.PI * 2); ctx.fill();
+  });
+
+  const bx = cx + (radarState.x / 50) * R;
+  const by = cy + (radarState.y / 50) * R;
+  const range = Math.min(50, Math.hypot(radarState.x, radarState.y));
+
+  const gradVec = ctx.createLinearGradient(cx, cy, bx, by);
+  gradVec.addColorStop(0, 'rgba(181,235,220,0.15)');
+  gradVec.addColorStop(1, 'rgba(101,187,169,0.95)');
+  ctx.strokeStyle = gradVec;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(bx, by);
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(169,184,201,0.85)';
+  ctx.font = '11px monospace';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(`${((range / 50) * 100).toFixed(0)}%`, bx + 10, by - 6);
+
+  if (range > 1) {
+    ctx.save();
+    ctx.shadowColor = '#65BBA9';
+    ctx.shadowBlur = 14;
+    ctx.fillStyle = '#65BBA9';
+    ctx.beginPath(); ctx.arc(bx, by, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(101,187,169,0.5)';
+    ctx.beginPath(); ctx.arc(bx, by, 9, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  if (radarReadout) {
+    const azRaw = Math.atan2(-radarState.y, radarState.x) * (180 / Math.PI);
+    const az = azRaw < 0 ? azRaw + 360 : azRaw;
+    radarReadout.textContent = `Azimuth: ${az.toFixed(1)}° | Range: ${((range / 50) * 100).toFixed(0)}%`;
   }
 }
 
-function flushLog() {
-  logFlushScheduled = false;
-  if (!logQueue.length) return;
-
-  const frag = document.createDocumentFragment();
-  let prevCls = null;
-  let buf = '';
-
-  const commit = () => {
-    if (!buf) return;
-    const span = document.createElement('span');
-    if (prevCls) span.className = prevCls;
-    span.textContent = buf;
-    span.dataset.len = String(buf.length);
-    frag.appendChild(span);
-    logTotalChars += buf.length;
-    buf = '';
+function startRadarLoop() {
+  if (!radarCtx) return;
+  const step = () => {
+    drawRadar();
+    requestAnimationFrame(step);
   };
-
-  for (const item of logQueue) {
-    const cls = item.cls || '';
-    if (cls === prevCls) {
-      buf += item.text;
-    } else {
-      commit();
-      prevCls = cls;
-      buf = item.text;
-    }
-  }
-  commit();
-  logQueue.length = 0;
-
-  if (miniLogWindow) miniLogWindow.appendChild(frag.cloneNode(true));
-  if (logWindow) logWindow.appendChild(frag);
-
-  if (logTotalChars > LOG_MAX_CHARS) {
-    while (logTotalChars > LOG_TRIM_TO && logWindow && logWindow.firstChild) {
-      const n = logWindow.firstChild;
-      let len = parseInt(n.dataset?.len || 0, 10) || n.textContent?.length || 0;
-      logTotalChars -= len;
-      logWindow.removeChild(n);
-    }
-    while (miniLogWindow && miniLogWindow.childNodes.length > (logWindow?.childNodes.length || 0)) {
-      miniLogWindow.removeChild(miniLogWindow.firstChild);
-    }
-  }
-
-  if (chkAutoScroll && chkAutoScroll.checked) {
-    if (logWindow) logWindow.scrollTop = logWindow.scrollHeight;
-    if (miniLogWindow) miniLogWindow.scrollTop = miniLogWindow.scrollHeight;
-  }
+  requestAnimationFrame(step);
 }
 
+// --- Diagnostics Logging (console only; no visible terminal) ---
 function appendLog(text, cls) {
   if (!text) return;
-  console.log(`%c[SERIAL ${cls || 'INFO'}] ${text.trim()}`, 'color: #38bdf8');
-  logQueue.push({ text, cls });
-  scheduleLogFlush();
+  console.log(cls ? `[${cls}] ${text.replace(/\n$/, '')}` : text.replace(/\n$/, ''));
 }
 
 // --- Serial RX Router ---
@@ -416,37 +611,17 @@ function handlePrompt(line) {
 
 // --- SCPI Queries ---
 function getEol() {
-  if (!selEol) return '\n';
-  const v = selEol.value;
-  if (v === '\\n') return '\n';
-  if (v === '\\r') return '\r';
-  if (v === '\\r\\n') return '\r\n';
   return '\n';
 }
 
-async function sendCommand(cmd, echo = true, recordHistory = true) {
+async function sendCommand(cmd) {
   if (!writer) return;
-  const raw = cmd.trim();
+  const raw = String(cmd ?? '').trim();
   if (!raw) return;
-
-  const text = raw + getEol();
   try {
-    console.log('[TX SEND]', raw);
-    await writer.write(text);
-    if (echo && chkEcho && chkEcho.checked) appendLog(text, 'log-echo');
-    
-    if (recordHistory && history[0] !== raw) {
-      history.unshift(raw);
-      if (history.length > 50) history.pop();
-      updateHistoryUI();
-    }
-    
-    if (txInput) txInput.value = '';
-    historyIndex = -1;
-    draftBeforeNav = '';
+    await writer.write(raw + getEol());
   } catch (err) {
     console.error('[TX ERROR]', err);
-    appendLog(`[TX ERROR]: ${err.message}\n`, 'log-badprompt');
   }
 }
 
@@ -472,33 +647,14 @@ async function scpiQuery(cmd) {
   });
 }
 
-function updateHistoryUI() {
-  if (!historyList) return;
-  historyList.innerHTML = '';
-  history.forEach(item => {
-    const btn = document.createElement('button');
-    btn.className = 'ds-button ds-button--secondary ds-button--sm';
-    btn.textContent = item;
-    btn.style.textAlign = 'left';
-    btn.addEventListener('click', () => {
-      if (txInput) txInput.value = item;
-    });
-    historyList.appendChild(btn);
-  });
-}
-
 // --- Connection Manager ---
 function setUIConnected(connected) {
   isConnected = connected;
   btnConnect.textContent = connected ? 'Disconnect' : 'Connect USB';
   if (connected) btnConnect.classList.add('btn-danger');
   else btnConnect.classList.remove('btn-danger');
-  
-  if (txInput) txInput.disabled = !connected || currentDriverType === 'arduino';
-  if (btnSend) btnSend.disabled = !connected || currentDriverType === 'arduino';
+
   if (btnStartDemo) btnStartDemo.disabled = !connected;
-  
-  initDeviceCommandButtons();
 
   const isScpi = connected && currentDriverType === 'scpi';
   ['nvram-addr', 'nvram-val', 'btn-nvram-read', 'btn-nvram-write', 'btn-nvram-dump', 'btn-nvram-hs', 'btn-nvram-hr'].forEach(id => {
@@ -509,6 +665,11 @@ function setUIConnected(connected) {
 
 async function connectSerial() {
   try {
+    if (!navigator.serial) {
+      connectModal?.classList.remove('hidden');
+      showConnectError('This browser does not support the Web Serial API. Use Google Chrome or Microsoft Edge (desktop) \u2014 Firefox and Safari do not implement it.');
+      return;
+    }
     currentDriverType = selDriverType ? selDriverType.value : 'scpi';
     const baudRate = selBaudRate ? parseInt(selBaudRate.value, 10) : 115200;
 
@@ -549,7 +710,15 @@ async function connectSerial() {
     })();
 
   } catch (err) {
-    appendLog(`[CONN ERROR]: ${err.message}\n`, 'log-badprompt');
+    const raw = err && err.message ? err.message : String(err);
+    if (port) {
+      const failedPort = port;
+      port = null;
+      try { await failedPort.close(); } catch (_) { /* best effort */ }
+    }
+    appendLog(`[CONN ERROR]: ${raw}\n`, 'log-badprompt');
+    connectModal?.classList.remove('hidden');
+    showConnectError(`Could not connect: ${hintForSerialError(raw)}`);
   }
 }
 
@@ -564,6 +733,7 @@ async function disconnectSerial() {
   
   port = null; reader = null; writer = null; activeDevice = null;
   setUIConnected(false);
+  setDemoStatus('Idle', false);
   updateJoystickUI(0, 0);
   updateMagnetUI(0, 0);
   appendLog('[SYSTEM] Port closed.\n', 'log-badprompt');
@@ -574,6 +744,7 @@ async function runJoystickDemo() {
   btnStartDemo.disabled = true;
   btnStopDemo.disabled = false;
   isDemoRunning = true;
+  setDemoStatus('Running', true);
 
   if (isConnected && activeDevice) {
     try {
@@ -633,6 +804,13 @@ async function runJoystickDemo() {
               posX_mm = latestRawMagnet.x - magnetOffsets.x;
               posY_mm = latestRawMagnet.y - magnetOffsets.y;
               rawX = avgX; rawY = avgY; rawZ = avgZ;
+
+              updateTwistUI([
+                { x: res01.x0, y: res01.y0, z: res01.z0 },
+                { x: res01.x1, y: res01.y1, z: res01.z1 },
+                { x: res23.x2, y: res23.y2, z: res23.z2 },
+                { x: res23.x3, y: res23.y3, z: res23.z3 },
+              ]);
             }
           } else {
             const sample = await activeDevice.getSample();
@@ -643,6 +821,10 @@ async function runJoystickDemo() {
               posY_mm = latestRawMagnet.y - magnetOffsets.y;
               angleDeg = sample.angleDeg;
               rawX = sample.rawX; rawY = sample.rawY; rawZ = sample.rawZ;
+
+              if (sample.points && sample.points.length === 4) {
+                updateTwistUI(sample.points);
+              }
             }
           }
 
@@ -663,6 +845,7 @@ async function runJoystickDemo() {
     } catch (err) {
       appendLog(`[DEMO ERROR]: ${err.message}\n`, 'log-badprompt');
       isDemoRunning = false;
+      setDemoStatus('Error', false);
       btnStartDemo.disabled = false;
       btnStopDemo.disabled = true;
     }
@@ -678,6 +861,17 @@ async function runJoystickDemo() {
       updateMagnetUI(emulatedX, emulatedY, emulatedAngle);
       updateJoystickUI(emulatedX * 20, emulatedY * 20);
       update3DVectorPlot(Math.cos(angle) * 500, Math.sin(angle) * 500, 200);
+
+      // Synthetic 4-pixel twist field (rotating around Z, constant bias on Z)
+      const twistV = Math.sin(angle) * 6;
+      const twistW = Math.cos(angle) * 6;
+      const bias = 18;
+      updateTwistUI([
+        { x: twistV, y: twistW, z: bias },
+        { x: twistV - 3, y: twistW, z: bias },
+        { x: twistV + 3, y: twistW, z: bias },
+        { x: twistV, y: twistW - 3, z: bias },
+      ]);
 
       // Drive SFI Dome in emulation mode as well
       updateSfiDomeKinematics(emulatedX / 2, emulatedY / 2, 0);
@@ -756,21 +950,27 @@ selDriverType?.addEventListener('change', (e) => {
 
 btnConnect?.addEventListener('click', () => {
   if (isConnected) disconnectSerial();
-  else connectModal?.classList.remove('hidden');
+  else {
+    clearConnectError();
+    connectModal?.classList.remove('hidden');
+    if (!navigator.serial) {
+      if (btnModalConnect) btnModalConnect.disabled = true;
+      showConnectError('This browser does not support the Web Serial API. Use Google Chrome or Microsoft Edge (desktop).');
+    } else {
+      if (btnModalConnect) btnModalConnect.disabled = false;
+    }
+    refreshPortGuide();
+  }
 });
 
-btnCloseModal?.addEventListener('click', () => connectModal?.classList.add('hidden'));
+btnCloseModal?.addEventListener('click', () => {
+  clearConnectError();
+  connectModal?.classList.add('hidden');
+});
 
 btnModalConnect?.addEventListener('click', async () => {
   connectModal?.classList.add('hidden');
   await connectSerial();
-});
-
-btnSend?.addEventListener('click', () => sendCommand(txInput.value));
-btnClear?.addEventListener('click', () => { 
-  if (logWindow) logWindow.textContent = ''; 
-  if (miniLogWindow) miniLogWindow.textContent = ''; 
-  logTotalChars = 0; logQueue.length = 0; 
 });
 
 btnStartDemo?.addEventListener('click', runJoystickDemo);
@@ -778,16 +978,9 @@ btnStopDemo?.addEventListener('click', () => {
   isDemoRunning = false;
   btnStartDemo.disabled = false;
   btnStopDemo.disabled = true;
+  setDemoStatus('Idle', false);
   updateJoystickUI(0, 0); updateMagnetUI(0, 0);
   appendLog('[SYSTEM] Demo stopped.\n', 'log-badprompt');
-});
-
-txInput?.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); sendCommand(txInput.value); }
-});
-
-document.querySelectorAll('.quick-cmd').forEach(btn => {
-  btn.addEventListener('click', () => sendCommand(btn.dataset.cmd));
 });
 
 // --- 3D Vector Plot Setup ---
@@ -799,9 +992,9 @@ const layout3D = {
   paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
   scene: {
     aspectmode: 'cube',
-    xaxis: { title: 'Bx', range: [-1000, 1000], color: '#A9B8C9', gridcolor: '#1F3A62', zerolinecolor: '#DB4140' },
-    yaxis: { title: 'By', range: [-1000, 1000], color: '#A9B8C9', gridcolor: '#1F3A62', zerolinecolor: '#DB4140' },
-    zaxis: { title: 'Bz', range: [-1000, 1000], color: '#A9B8C9', gridcolor: '#1F3A62', zerolinecolor: '#DB4140' },
+    xaxis: { title: 'Bx', range: [-1000, 1000], color: '#A9B8C9', gridcolor: '#33588C', gridwidth: 1, showbackground: true, backgroundcolor: 'rgba(10,20,40,0.35)', zerolinecolor: '#DB4140', zerolinewidth: 2, dtick: 250 },
+    yaxis: { title: 'By', range: [-1000, 1000], color: '#A9B8C9', gridcolor: '#33588C', gridwidth: 1, showbackground: true, backgroundcolor: 'rgba(10,20,40,0.35)', zerolinecolor: '#DB4140', zerolinewidth: 2, dtick: 250 },
+    zaxis: { title: 'Bz', range: [-1000, 1000], color: '#A9B8C9', gridcolor: '#33588C', gridwidth: 1, showbackground: true, backgroundcolor: 'rgba(10,20,40,0.35)', zerolinecolor: '#DB4140', zerolinewidth: 2, dtick: 250 },
     bgcolor: 'rgba(0,0,0,0)'
   }
 };
@@ -825,6 +1018,8 @@ export function update3DVectorPlot(rx, ry, rz) {
     history3D.x.shift(); history3D.y.shift(); history3D.z.shift();
   }
 
+  if (!document.getElementById('plot-3d-container') || !isViewActive('view-3dplot')) return;
+
   Plotly.react('plot-3d-container', [
     traceOrigin,
     { ...traceTrail, x: history3D.x, y: history3D.y, z: history3D.z },
@@ -837,8 +1032,4 @@ document.getElementById('btn-reset-3d-trail')?.addEventListener('click', () => {
   if (window.Plotly) {
     Plotly.react('plot-3d-container', [traceOrigin, { ...traceTrail, x: [], y: [], z: [] }, { ...traceLiveBall, x: [0], y: [0], z: [0] }], layout3D);
   }
-});
-
-document.getElementById('btn-toggle-debug')?.addEventListener('click', () => {
-  miniLogWindow?.classList.toggle('hidden');
 });
