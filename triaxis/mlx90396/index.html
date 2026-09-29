@@ -71,6 +71,55 @@
     }
     .demo-status.active { color: var(--color-accent); }
 
+    /* --- HELP MODAL --- */
+    /* `minmax(0, 1fr)` on the body row plus `min-height: 0` are both required:
+       a grid item defaults to `min-height: auto`, so without them the body
+       refuses to shrink below its content height and the modal clips it. */
+    .ds-modal--wide {
+      width: min(100%, 56rem);
+      max-height: min(88vh, 60rem);
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+    .ds-modal--wide .ds-modal__body {
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding-right: 6px;
+    }
+    .help-body { font-size: var(--font-size-sm); }
+    .help-body h1 {
+      font-family: var(--font-display); font-size: var(--font-size-lg);
+      margin: 0 0 var(--space-3) 0; color: var(--color-ink);
+    }
+    .help-body h2 {
+      font-family: var(--font-display); font-size: var(--font-size-md);
+      margin: var(--space-4) 0 var(--space-2) 0; color: var(--color-accent);
+      padding-bottom: 4px; border-bottom: 1px solid var(--color-border);
+    }
+    .help-body h3 { font-size: var(--font-size-sm); margin: var(--space-3) 0 6px 0; color: var(--color-ink); }
+    .help-body p { margin: 0 0 var(--space-2) 0; }
+    .help-body ul, .help-body ol { margin: 0 0 var(--space-2) 0; padding-left: 1.35em; }
+    .help-body li { margin-bottom: 4px; }
+    .help-body strong { color: var(--color-ink); }
+    .help-body code {
+      font-family: ui-monospace, Consolas, monospace; font-size: 0.92em;
+      background: var(--color-code-bg); color: var(--color-accent);
+      padding: 1px 4px; border-radius: 3px;
+    }
+    .help-body hr { border: 0; border-top: 1px solid var(--color-border); margin: var(--space-4) 0; }
+    .help-body a { color: var(--color-accent); }
+    .help-body em { color: var(--color-ink-muted); }
+    .help-loading, .help-error {
+      padding: var(--space-3); border-radius: var(--radius-sm);
+      border: 1px solid var(--color-border); background: var(--color-surface);
+      font-size: var(--font-size-sm);
+    }
+    .help-error { border-color: var(--color-danger); color: var(--color-danger); }
+    .help-error code {
+      display: block; margin-top: 8px; color: var(--color-ink-muted);
+      background: none; padding: 0; word-break: break-all;
+    }
+
     /* Top-Level Demo & Sub-Tab View Switching */
     .demo-view { display: none; }
     .demo-view.active { display: block; }
@@ -204,7 +253,7 @@
       overflow: hidden;
     }
     .magnet-sensor {
-      width: min(88%, 700px); aspect-ratio: 1 / 1; max-height: 100%;
+      width: min(88%, 700px); aspect-ratio: 1 / 1; max-height: 100%; max-width: 100%;
       background: #0B2C40; border-radius: 6px;
       position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
       box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4); overflow: hidden;
@@ -256,7 +305,10 @@
         <button id="btn-stop-demo" class="ds-button ds-button--secondary ds-button--md" disabled>Stop</button>
         <span id="demo-status" class="demo-status">Idle</span>
       </div>
-      <button id="btn-connect" class="ds-button ds-button--primary ds-button--md">Connect USB</button>
+      <div style="display: flex; gap: 12px; align-items: center;">
+        <button id="btn-connect" class="ds-button ds-button--primary ds-button--md">Connect USB</button>
+        <button id="btn-open-help" class="ds-button ds-button--secondary ds-button--md">Help</button>
+      </div>
     </div>
 
     <div id="demo-jwt" class="demo-view active">
@@ -290,12 +342,11 @@
             <div class="magnet-arrow" style="left: 12px; flex-direction: row;"><svg class="arrow-icon" viewBox="0 0 24 24" style="transform: rotate(-90deg); margin-right: 4px;"><path d="M12 2L4 10h5v12h6V10h5z"/></svg><span>-X</span></div>
             <div class="magnet-arrow" style="right: 12px; flex-direction: row;"><span>+X</span><svg class="arrow-icon" viewBox="0 0 24 24" style="transform: rotate(90deg); margin-left: 4px;"><path d="M12 2L4 10h5v12h6V10h5z"/></svg></div>
 
-            <span style="position: absolute; bottom: 12px; left: 16px; font-weight: bold; font-size: 1.2rem; color: #0B2C40; opacity: 0.8;">PCB</span>
             <div class="magnet-sensor">
               <svg class="sensor-grid" viewBox="-75 -75 150 150">
                 <defs>
-                  <pattern id="grid-1mm" width="20" height="20" patternUnits="userSpaceOnUse" x="-75" y="-75">
-                    <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(255, 255, 255, 0.09)" stroke-width="1" />
+                  <pattern id="grid-1mm" width="30" height="30" patternUnits="userSpaceOnUse" x="0" y="0">
+                    <path d="M 30 0 L 0 0 0 30" fill="none" stroke="rgba(255, 255, 255, 0.09)" stroke-width="1" />
                   </pattern>
                 </defs>
                 <rect x="-75" y="-75" width="150" height="150" fill="url(#grid-1mm)" />
@@ -319,16 +370,16 @@
                 <text class="grid-tick" data-mm="1" x="30" y="13" fill="rgba(255, 255, 255, 0.65)" font-size="8" text-anchor="middle" font-family="monospace">+1</text>
                 <text class="grid-tick" data-mm="1.5" x="45" y="13" fill="rgba(255, 255, 255, 0.45)" font-size="7" text-anchor="middle" font-family="monospace">+1.5</text>
                 <text class="grid-tick" data-mm="2" x="60" y="13" fill="rgba(255, 255, 255, 0.65)" font-size="8" text-anchor="middle" font-family="monospace">+2</text>
-                <text class="grid-tick" data-mm="2" x="6" y="-58" fill="rgba(255, 255, 255, 0.65)" font-size="8" alignment-baseline="middle" font-family="monospace">+2</text>
-                <text class="grid-tick" data-mm="1.5" x="6" y="-43" fill="rgba(255, 255, 255, 0.45)" font-size="7" alignment-baseline="middle" font-family="monospace">+1.5</text>
-                <text class="grid-tick" data-mm="1" x="6" y="-28" fill="rgba(255, 255, 255, 0.65)" font-size="8" alignment-baseline="middle" font-family="monospace">+1</text>
-                <text class="grid-tick" data-mm="-1" x="6" y="32" fill="rgba(255, 255, 255, 0.65)" font-size="8" alignment-baseline="middle" font-family="monospace">-1</text>
-                <text class="grid-tick" data-mm="-1.5" x="6" y="47" fill="rgba(255, 255, 255, 0.45)" font-size="7" alignment-baseline="middle" font-family="monospace">-1.5</text>
-                <text class="grid-tick" data-mm="-2" x="6" y="62" fill="rgba(255, 255, 255, 0.65)" font-size="8" alignment-baseline="middle" font-family="monospace">-2</text>
-                <text class="grid-tick" data-mm="-2.5" x="-71" y="-64" fill="#59FFB0" font-size="7.5" font-weight="bold" font-family="monospace">-2.5</text>
-                <text class="grid-tick" data-mm="2.5" x="47" y="-64" fill="#59FFB0" font-size="7.5" font-weight="bold" font-family="monospace">+2.5</text>
-                <text class="grid-tick" data-mm="-2.5" x="-71" y="71" fill="#59FFB0" font-size="7.5" font-weight="bold" font-family="monospace">-2.5</text>
-                <text class="grid-tick" data-mm="2.5" x="47" y="71" fill="#59FFB0" font-size="7.5" font-weight="bold" font-family="monospace">+2.5</text>
+                <text class="grid-tick" data-mm="2" x="6" y="-60" fill="rgba(255, 255, 255, 0.65)" font-size="8" dominant-baseline="middle" font-family="monospace">+2</text>
+                <text class="grid-tick" data-mm="1.5" x="6" y="-45" fill="rgba(255, 255, 255, 0.45)" font-size="7" dominant-baseline="middle" font-family="monospace">+1.5</text>
+                <text class="grid-tick" data-mm="1" x="6" y="-30" fill="rgba(255, 255, 255, 0.65)" font-size="8" dominant-baseline="middle" font-family="monospace">+1</text>
+                <text class="grid-tick" data-mm="-1" x="6" y="30" fill="rgba(255, 255, 255, 0.65)" font-size="8" dominant-baseline="middle" font-family="monospace">-1</text>
+                <text class="grid-tick" data-mm="-1.5" x="6" y="45" fill="rgba(255, 255, 255, 0.45)" font-size="7" dominant-baseline="middle" font-family="monospace">-1.5</text>
+                <text class="grid-tick" data-mm="-2" x="6" y="60" fill="rgba(255, 255, 255, 0.65)" font-size="8" dominant-baseline="middle" font-family="monospace">-2</text>
+                <text class="grid-tick" data-mm="-2.5" x="-70" y="-66" fill="#59FFB0" font-size="7.5" font-weight="bold" text-anchor="start" dominant-baseline="hanging" font-family="monospace">-2.5</text>
+                <text class="grid-tick" data-mm="2.5" x="70" y="-66" fill="#59FFB0" font-size="7.5" font-weight="bold" text-anchor="end" dominant-baseline="hanging" font-family="monospace">+2.5</text>
+                <text class="grid-tick" data-mm="-2.5" x="-70" y="66" fill="#59FFB0" font-size="7.5" font-weight="bold" text-anchor="start" dominant-baseline="hanging" font-family="monospace">-2.5</text>
+                <text class="grid-tick" data-mm="2.5" x="70" y="66" fill="#59FFB0" font-size="7.5" font-weight="bold" text-anchor="end" dominant-baseline="hanging" font-family="monospace">+2.5</text>
               </svg>
             </div>
             
@@ -500,6 +551,27 @@
       </div>
 
 
+    <!-- HELP MODAL -->
+    <div id="help-modal" class="ds-modal-root hidden">
+      <div class="ds-modal__backdrop" id="help-backdrop"></div>
+      <div class="ds-modal ds-modal--wide" role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
+        <div class="ds-modal__header">
+          <h3 class="ds-modal__title" id="help-modal-title">Help</h3>
+          <button id="btn-close-help" class="ds-modal__close" aria-label="Close help">&#10005;</button>
+        </div>
+        <div class="ds-modal__body">
+          <div id="help-body" class="help-body">
+            <div class="help-loading">Loading joystick_help_readme.md&hellip;</div>
+          </div>
+        </div>
+        <div class="ds-modal__footer">
+          <span style="font-size: var(--font-size-xs); color: var(--color-ink-muted); align-self: center;">
+            Source: joystick_help_readme.md
+          </span>
+        </div>
+      </div>
+    </div>
+
     <!-- POLYMORPHIC HARDWARE CONNECT MODAL -->
     <div id="connect-modal" class="ds-modal-root hidden">
       <div class="ds-modal__backdrop"></div>
@@ -554,6 +626,7 @@
 
   </main>
   
+  <script type="module" src="help.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>
