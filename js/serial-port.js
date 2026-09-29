@@ -120,6 +120,16 @@
    * MIPTerminal learned that the expensive way (mip/mip.py) and drops RTS
    * first; a browser drops both at close in an order of its own, so the pages
    * settle it themselves beforehand.
+   *
+   * What a browser cannot do is open with the lines already down, which is how
+   * MIPTerminal opens an ESP32 (CubeProgrammer/worker.py) so that the open
+   * itself does not reset the board. Measured here on an ESP32-S3, a C3 and a
+   * C6 — all of them 303a:1001, which is why the vendor alone identifies them —
+   * and an ordinary open leaves every one running: the USB device number does
+   * not change, because the reset needs a sequence on those lines rather than a
+   * raised level. A devkit with a bridge and auto-reset
+   * transistors is the case where an open does reset the part, and there a
+   * page has no lever at all.
    */
   async function lowerSignals(port) {
     if (!port || typeof port.setSignals !== "function") return;
@@ -139,13 +149,23 @@
   const KNOWN = {
     "03e9:0041": "Melexis IO",
     "0483:374e": "ST-Link virtual port",
+    "10c4:ea60": "ESP32 devkit (CP210x bridge)",
+    "1a86:7523": "ESP32 devkit (CH340 bridge)",
+    "1a86:55d4": "ESP32 devkit (CH343 bridge)",
   };
+
+  /* Espressif's own USB Serial/JTAG answers for any product id under 0x303a,
+     which is how MIPTerminal recognises it too (gui/AppUpdateDialog.py). */
+  const ESPRESSIF_VENDOR = "303a";
 
   function describe(port) {
     const info = port && typeof port.getInfo === "function" ? port.getInfo() : {};
     if (!Number.isInteger(info.usbVendorId)) return "serial device";
-    const id = `${info.usbVendorId.toString(16).padStart(4, "0")}:${(info.usbProductId ?? 0).toString(16).padStart(4, "0")}`;
-    return KNOWN[id] ? `${KNOWN[id]} (${id})` : id;
+    const vendor = info.usbVendorId.toString(16).padStart(4, "0");
+    const id = `${vendor}:${(info.usbProductId ?? 0).toString(16).padStart(4, "0")}`;
+    if (KNOWN[id]) return `${KNOWN[id]} (${id})`;
+    if (vendor === ESPRESSIF_VENDOR) return `ESP32 USB Serial/JTAG (${id})`;
+    return id;
   }
 
   /* ---- How to open the port ----
