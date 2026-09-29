@@ -350,6 +350,36 @@
       button, .home-link, input { transition: none; }
       button:hover:enabled { transform: none; }
     }
+
+    /* A refusal is the one thing here that must not be missed, and a line in a
+       log of twenty others is missed. */
+    .alert {
+      max-width: min(46ch, calc(100vw - 32px));
+      padding: 20px 22px;
+      border: 1px solid var(--clr-border);
+      border-left: 3px solid var(--clr-danger);
+      border-radius: var(--radius-lg);
+      background: var(--clr-surface);
+      color: var(--clr-text);
+      box-shadow: var(--shadow-lg);
+    }
+
+    .alert::backdrop {
+      background: rgba(0, 12, 18, .6);
+      backdrop-filter: blur(2px);
+    }
+
+    .alert h2 {
+      margin: 0 0 10px;
+      font-size: 1rem;
+    }
+
+    .alert p {
+      margin: 0 0 18px;
+      color: var(--clr-text-muted);
+      font-size: 0.875rem;
+      line-height: 1.6;
+    }
   </style></head>
 <body>
   <div class="bg-grid"></div>
@@ -435,6 +465,14 @@
 
     <section id="statusLog" class="status" aria-live="polite"></section>
   </main>
+
+  <dialog id="alertDialog" class="alert">
+    <h2 id="alertTitle">Cannot flash this image</h2>
+    <p id="alertMessage"></p>
+    <div class="actions">
+      <button id="alertClose" type="button">Close</button>
+    </div>
+  </dialog>
   <script src="../js/serial-port.js"></script>
   <script type="module">
     /* The writing itself is esptool-js, Espressif's own: it carries the reset
@@ -456,9 +494,14 @@
       connect: els("connectButton"), flash: els("flashButton"),
       reset: els("resetButton"), disconnect: els("disconnectButton"),
       log: els("statusLog"),
+      dialog: els("alertDialog"), dialogTitle: els("alertTitle"),
+      dialogMessage: els("alertMessage"), dialogClose: els("alertClose"),
     };
 
-    const state = { port: null, transport: null, loader: null, image: null, name: "", busy: false };
+    const state = {
+      port: null, transport: null, loader: null,
+      image: null, name: "", imageChip: null, chip: "", busy: false,
+    };
 
     function log(message, kind = "") {
       const line = document.createElement("div");
@@ -467,6 +510,17 @@
       ui.log.append(line);
       ui.log.scrollTop = ui.log.scrollHeight;
     }
+
+    /* Everything that stops the job says so twice: in the log, which keeps it,
+       and in the dialog, which cannot be scrolled past. */
+    function fail(title, message) {
+      log(message, "danger");
+      ui.dialogTitle.textContent = title;
+      ui.dialogMessage.textContent = message;
+      if (typeof ui.dialog.showModal === "function" && !ui.dialog.open) ui.dialog.showModal();
+    }
+
+    ui.dialogClose.addEventListener("click", () => ui.dialog.close());
 
     const setProgress = (fraction, text) => {
       ui.progress.value = Math.round(fraction * 100);
@@ -529,15 +583,42 @@
       ? Uint8Array.from(data, (ch) => ch.charCodeAt(0) & 0xFF)
       : new Uint8Array(data));
 
+    /* An image says which part it was built for, and nothing else here would
+       notice if it were the wrong one: the library writes what it is given, and
+       the MD5 check compares the flash against the file, not against the chip.
+       A mismatched image writes cleanly and then fails to boot, which looks like
+       a broken board rather than the wrong file.
+
+       The header is esp_image_header_t: magic 0xE9, then the chip id two bytes
+       at offset 12. On a C3, C6 or S3 the bootloader starts the image; on an
+       ESP32 or S2 it sits at 0x1000, with padding before it. */
+    const IMAGE_MAGIC = 0xE9;
+    const HEADER_OFFSETS = [0x0, 0x1000];
+    const CHIP_IDS = new Map([
+      [0x0000, "ESP32"], [0x0002, "ESP32-S2"], [0x0005, "ESP32-C3"], [0x0009, "ESP32-S3"],
+      [0x000C, "ESP32-C2"], [0x000D, "ESP32-C6"], [0x0010, "ESP32-H2"], [0x0012, "ESP32-P4"],
+    ]);
+
+    function imageChip(bytes) {
+      for (const offset of HEADER_OFFSETS) {
+        if (bytes[offset] !== IMAGE_MAGIC || bytes.length < offset + 14) continue;
+        const id = bytes[offset + 12] | (bytes[offset + 13] << 8);
+        return CHIP_IDS.get(id) ?? `chip id 0x${id.toString(16).padStart(4, "0")}`;
+      }
+      return null;                                  // not an ESP-IDF image, or one this cannot read
+    }
+
     // ---- the image ----
     function useImage(name, bytes) {
       state.image = bytes;
       state.name = name;
+      state.imageChip = bytes ? imageChip(bytes) : null;
       ui.firmware.textContent = bytes
-        ? `${name} — ${bytes.length.toLocaleString()} bytes, MD5 ${md5(bytes)}`
+        ? `${name} — ${bytes.length.toLocaleString()} bytes, ${state.imageChip ?? "unrecognised header"}, `
+          + `MD5 ${md5(bytes)}`
         : "No image loaded.";
       ui.flash.disabled = !bytes || !state.loader;
-      if (bytes) log(`Loaded ${name}.`);
+      if (bytes) log(`Loaded ${name}${state.imageChip ? `, built for ${state.imageChip}` : ""}.`);
     }
 
     ui.browse.addEventListener("click", () => ui.file.click());
@@ -579,6 +660,7 @@
            resetting into download mode along the way — including the sequence a
            board with native USB needs. */
         const chip = await state.loader.main();
+        state.chip = chip;
         ui.device.textContent = chip;
         log(`Connected: ${chip}`, "ok");
         setProgress(0, "Ready to flash.");
@@ -588,7 +670,7 @@
         ui.flash.disabled = !state.image;
       } catch (error) {
         if (error?.name === "NotFoundError") { log("Port selection cancelled."); return; }
-        log(String(error?.message ?? error), "danger");
+        fail("Could not talk to the board", String(error?.message ?? error));
         ui.device.textContent = "Not answering.";
         await disconnect();
       }
@@ -646,7 +728,20 @@
       if (state.busy || !state.image || !state.loader) return;
       const text = ui.offset.value.trim();
       const offset = Number.parseInt(text, text.toLowerCase().startsWith("0x") ? 16 : 10);
-      if (!Number.isInteger(offset) || offset < 0) { log("The flash offset is not a number.", "danger"); return; }
+      if (!Number.isInteger(offset) || offset < 0) {
+        fail("The flash offset is not a number", `"${text}" is not an address. Use 0x0 for a merged image.`);
+        return;
+      }
+
+      /* "ESP32-C6 (revision 1)" against "ESP32-C6": the connected part has to be
+         named by the image, and an image whose header could not be read is left
+         to the reader rather than guessed at. */
+      if (state.imageChip && !state.chip.startsWith(state.imageChip)) {
+        fail("Wrong image for this board",
+          `${state.name} is built for ${state.imageChip}, and this board is ${state.chip}. `
+          + "It would write cleanly and then not boot, so it is not being written.");
+        return;
+      }
 
       state.busy = true;
       ui.flash.disabled = ui.reset.disabled = ui.disconnect.disabled = true;
@@ -668,7 +763,7 @@
         await resetBoard();                       // esptool runs the new firmware too, by default
       } catch (error) {
         setProgress(0, "Failed.");
-        log(String(error?.message ?? error), "danger");
+        fail("Writing failed", String(error?.message ?? error));
       } finally {
         state.busy = false;
         ui.flash.disabled = !state.loader;
