@@ -9,6 +9,7 @@
   // ---- State ----
   const state = {
     port: null,
+    link: null,                    // how to write and how to hang up, per transport
     reader: null,
     readLoop: null,
     isConnected: false,
@@ -46,6 +47,7 @@
   const els = {
     // Connection
     btnConnect:          $('btnConnect'),
+    btnConnectBle:       $('btnConnectBle'),
     baudRate:            $('baudRate'),
     dataBits:            $('dataBits'),
     stopBits:            $('stopBits'),
@@ -111,6 +113,10 @@
   // ---- Event Binding ----
   function bindEvents() {
     els.btnConnect.addEventListener('click', toggleConnection);
+    els.btnConnectBle.addEventListener('click', async () => {
+      if (state.isConnected) await disconnect();
+      else await connectBluetooth();
+    });
     els.btnSend.addEventListener('click', sendMessage);
     els.btnClear.addEventListener('click', clearTerminal);
     els.btnExport.addEventListener('click', exportLog);
@@ -215,6 +221,14 @@
       await state.port.open(options);
       rememberPort(state.port);
 
+      state.link = {
+        kind: 'serial',
+        async write(bytes) {
+          const writer = state.port.writable.getWriter();
+          try { await writer.write(bytes); } finally { writer.releaseLock(); }
+        },
+      };
+
       claims.announce(await window.melexisSerial?.indexOfPort(state.port));
       setSidebarOpen(false);
       setConnectionState('connected');
@@ -248,10 +262,99 @@
     }
   }
 
+  /* The firmware answers the same SCPI over Bluetooth, on the Nordic UART
+     Service, so the terminal above this does not change — only how bytes get in
+     and out. Taken from the console in the firmware repository (html/terminal.html),
+     which is where this was first made to work.
+
+     The service UUID travels in the scan response rather than the advertisement,
+     because a 128-bit UUID and a name together do not fit in 31 bytes; so the
+     filter is on the name and the service is asked for separately. */
+  const NUS_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+  const NUS_RX      = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+  const NUS_TX      = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+  const BLE_NAME_PREFIX = 'melexis-';
+  const BLE_CHUNK = 20;          // what the ATT default of 23 leaves for payload
+
+  async function connectBluetooth() {
+    if (!('bluetooth' in navigator)) {
+      logError('Web Bluetooth is unavailable. Use Chrome or Edge over https:// or http://localhost.');
+      return;
+    }
+
+    try {
+      clearCommandCatalog();
+      setConnectionState('connecting');
+
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: BLE_NAME_PREFIX }],
+        optionalServices: [NUS_SERVICE],
+      });
+
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(NUS_SERVICE);
+      const rx = await service.getCharacteristic(NUS_RX);
+      const tx = await service.getCharacteristic(NUS_TX);
+
+      tx.addEventListener('characteristicvaluechanged', (event) => {
+        receive(new Uint8Array(event.target.value.buffer));
+      });
+      await tx.startNotifications();
+
+      device.addEventListener('gattserverdisconnected', () => {
+        if (state.link?.kind === 'ble') handleDisconnect('The board went out of range or switched off.');
+      });
+
+      state.link = {
+        kind: 'ble',
+        async write(bytes) {
+          /* A write cannot exceed the negotiated MTU, which Web Bluetooth does
+             not expose, and the firmware reassembles — so a long command is cut
+             up rather than refused. */
+          for (let at = 0; at < bytes.length; at += BLE_CHUNK) {
+            await rx.writeValueWithoutResponse(bytes.slice(at, at + BLE_CHUNK));
+          }
+        },
+        close() { device.gatt.disconnect(); },
+      };
+
+      setSidebarOpen(false);
+      setConnectionState('connected');
+      logSystem(`Connected to ${device.name} over Bluetooth.`);
+      requestCommandCatalog();
+    } catch (err) {
+      setConnectionState('disconnected');
+      state.link = null;
+      if (err.name === 'NotFoundError') {
+        logSystem('No device selected.');
+        return;
+      }
+      logError(`Bluetooth connection failed: ${err.message}`);
+      if (/discover|disconnect|GATT/i.test(err.message)) {
+        logSystem('A pairing made before the firmware was reflashed does this. '
+          + 'Remove the device in the operating system and connect again.');
+      }
+    }
+  }
+
   async function disconnect() {
     state.isReading = false;
     resetActiveProbe();
     clearCommandCatalog();
+
+    // A Bluetooth link has no port to close and no reader to wake.
+    if (state.link?.kind === 'ble') {
+      /* Dropped first: closing the link fires gattserverdisconnected, and the
+         handler would otherwise report a deliberate disconnect as the board
+         going out of range. */
+      const link = state.link;
+      state.link = null;
+      try { link.close(); } catch { /* already gone */ }
+      resetRenderedLines();
+      setConnectionState('disconnected');
+      logSystem('Disconnected.');
+      return;
+    }
 
     const port = state.port;
 
@@ -285,6 +388,7 @@
 
     state.port = null;
     state.reader = null;
+    state.link = null;
     claims.release();
     resetRenderedLines();
     setConnectionState('disconnected');
@@ -296,6 +400,7 @@
     state.reader = null;
     state.readLoop = null;
     state.port = null;
+    state.link = null;
     claims.release();
     resetActiveProbe();
     clearCommandCatalog();
@@ -308,6 +413,8 @@
     const indicator = els.connectionIndicator;
     const label = els.connectionLabel;
     const btn = els.btnConnect;
+    // One board at a time, whichever way it is reached.
+    if (els.btnConnectBle) els.btnConnectBle.disabled = newState !== 'disconnected';
 
     // Remove old classes
     indicator.className = 'status-dot';
@@ -368,6 +475,15 @@
   //  READ / WRITE
   // ============================================================
 
+  /* Bytes arrive from a serial read loop or from a BLE notification, and from
+     there on nothing cares which. */
+  function receive(bytes) {
+    state.rxBytes += bytes.length;
+    updateStats();
+    if (processProbeChunk(bytes)) return;
+    displayData(bytes, 'rx');
+  }
+
   async function startReading() {
     if (!state.port || !state.port.readable) return;
     state.isReading = true;
@@ -379,16 +495,7 @@
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
-          if (value && value.length > 0) {
-            state.rxBytes += value.length;
-            updateStats();
-
-            if (processProbeChunk(value)) {
-              continue;
-            }
-
-            displayData(value, 'rx');
-          }
+          if (value && value.length > 0) receive(value);
         }
       } catch (err) {
         if (state.isReading) {
@@ -410,7 +517,7 @@
   }
 
   async function sendMessage() {
-    if (!state.isConnected || !state.port || !state.port.writable) return;
+    if (!state.isConnected || !state.link) return;
 
     const text = els.messageInput.value;
 
@@ -621,8 +728,8 @@
   }
 
   async function sendRawText(text, options = {}) {
-    if (!state.isConnected || !state.port || !state.port.writable) {
-      throw new Error('Serial port is not writable.');
+    if (!state.isConnected || !state.link) {
+      throw new Error('Nothing is connected.');
     }
 
     const {
@@ -646,13 +753,7 @@
       addLogEntry('tx', data);
     }
 
-    const writer = state.port.writable.getWriter();
-
-    try {
-      await writer.write(data);
-    } finally {
-      writer.releaseLock();
-    }
+    await state.link.write(data);
 
     state.txBytes += data.length;
     updateStats();
