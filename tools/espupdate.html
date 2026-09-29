@@ -708,6 +708,7 @@
         await hold(200);
         await state.transport.setRTS(false);
         await hold(200);
+        // Measured: this starts the application on a C6, a C3 and an S3 alike.
         log("Reset — the application is running. The board enumerates again, so this port is gone.", "ok");
       } catch (error) {
         const gone = /device has been lost|network ?error|closed|disconnected/i.test(error?.message ?? "");
