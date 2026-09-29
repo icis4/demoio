@@ -781,7 +781,7 @@
         const line = lineSettings(state.port);
         const needed = window.melexisSerial.lineFor(state.port);
         window.melexisSerial.rememberLine(
-          `${line.baudRate},${line.dataBits},${line.parity},${line.stopBits}`);
+          `${line.baudRate},${line.dataBits},${line.parity},${line.stopBits}`, state.port);
         await state.port.open(line);
         state.writer = state.port.writable.getWriter();
         state.link = { kind: "serial", write: (bytes) => state.writer.write(bytes) };

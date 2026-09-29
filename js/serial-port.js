@@ -152,6 +152,15 @@
    */
   async function lowerSignals(port) {
     if (!port || typeof port.setSignals !== "function") return;
+
+    /* Not on an ESP32 with native USB. Its USB Serial/JTAG peripheral drives the
+       chip's reset logic from these two lines — the register the firmware reads
+       DTR from is called chip_rst, and esptool enters the downloader by toggling
+       them — so touching them restarts the board, the USB device enumerates
+       again and the page is left holding a port that reports the device as lost.
+       The console needs neither line. Found in the firmware's own web console,
+       which leaves them alone for exactly this reason. */
+    if (deviceId(port)?.startsWith(ESPRESSIF_VENDOR)) return;
     try {
       await port.setSignals({ requestToSend: false });
       await port.setSignals({ dataTerminalReady: false });
@@ -195,6 +204,12 @@
    * ST-Link path, where the settings reach a real UART — but that is exactly
    * the path where a page opening 115200 8N1 of its own accord hears nothing.
    */
+  function deviceId(port) {
+    const info = port && typeof port.getInfo === "function" ? port.getInfo() : {};
+    if (!Number.isInteger(info.usbVendorId)) return null;
+    return `${info.usbVendorId.toString(16).padStart(4, "0")}:${(info.usbProductId ?? 0).toString(16).padStart(4, "0")}`;
+  }
+
   const LINE_KEY = "melexisio.line";
   /* 115200 8N1 suits everything this suite meets — an ESP32 wants exactly that,
      and the board's CDC ignores line coding altogether — with one exception:
@@ -220,15 +235,15 @@
     return sane ? options : null;
   }
 
-  function rememberLine(value) {
-    try { localStorage.setItem(LINE_KEY, value); } catch { /* storage unavailable */ }
+  /* Remembered per device. One key for all of them meant a session with an
+     ST-Link left 7O2 behind, and the next board — which wants 8N1 and says so
+     through its vid:pid — was opened with it. */
+  const lineKeyFor = (port) => `${LINE_KEY}.${deviceId(port) ?? "unknown"}`;
+
+  function rememberLine(value, port) {
+    try { localStorage.setItem(lineKeyFor(port), value); } catch { /* storage unavailable */ }
   }
 
-  function deviceId(port) {
-    const info = port && typeof port.getInfo === "function" ? port.getInfo() : {};
-    if (!Number.isInteger(info.usbVendorId)) return null;
-    return `${info.usbVendorId.toString(16).padStart(4, "0")}:${(info.usbProductId ?? 0).toString(16).padStart(4, "0")}`;
-  }
 
   // What this device needs, when it needs anything in particular.
   const lineFor = (port) => LINE_BY_DEVICE[deviceId(port)] ?? null;
@@ -238,7 +253,7 @@
   function lineOptions(port) {
     const handedOver = new URLSearchParams(location.hash.replace(/^#/, "")).get("line");
     let remembered = null;
-    try { remembered = localStorage.getItem(LINE_KEY); } catch { /* storage unavailable */ }
+    try { remembered = localStorage.getItem(lineKeyFor(port)); } catch { /* storage unavailable */ }
     return parseLine(handedOver)
       ?? parseLine(lineFor(port)?.line)
       ?? parseLine(remembered)
