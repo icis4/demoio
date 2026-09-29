@@ -814,19 +814,37 @@
         const info = port.getInfo();
         return info.usbVendorId === want.vid && info.usbProductId === want.pid;
       });
-      return matches.length === 1 ? matches[0] : null;
+      if (matches.length === 1) return matches[0];
+
+      /* Several identical boards: vid:pid cannot separate them, and neither can
+         anything else the browser exposes — the firmware reports one serial for
+         every unit on purpose, so Windows reuses one COM port. What Detect can
+         pass is where its board sat in this list, which holds for the moment of
+         a handover in the same tab. A wrong guess is caught downstream, where
+         the chip's own signature is read. */
+      const at = ports[preferred.index];
+      if (at && matches.includes(at)) return at;
+      return null;
     }
 
     async function autoConnect() {
       const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+      /* Only a handover from Detect connects by itself. Opened on its own, this
+         page waits to be told which port to use, like every other page here. */
+      if (params.get("connect") !== "1") return;
       const port = await authorisedPort({
         vid: parseInt(params.get("vid") ?? "", 16),
         pid: parseInt(params.get("pid") ?? "", 16),
+        index: parseInt(params.get("idx") ?? "", 10),
       });
-      if (!port) return;                                  // nothing authorised yet: the button asks
+      if (!port) {
+        log("Detect sent this page here, but the board it used cannot be picked out "
+          + "from the others the browser knows. Press Connect and choose it.");
+        return;
+      }
       /* Another tab holding the board would be robbed by this reconnect, and
          would report the theft as a hardware fault. */
-      if (await claim.heldElsewhere()) {
+      if (await claim.heldElsewhere(await window.melexisSerial.indexOfPort(port))) {
         log("Another tab has this board open. Disconnect there, or close that tab, then press Connect.");
         return;
       }
@@ -840,14 +858,15 @@
       }
 
       try {
-        state.port = existingPort ?? await authorisedPort() ?? await navigator.serial.requestPort();
+        // A press of Connect always asks; only the handover arrives with a port.
+        state.port = existingPort ?? await navigator.serial.requestPort();
         await state.port.open(window.melexisSerial.lineOptions(state.port));
         state.writer = state.port.writable.getWriter();
         state.reader = state.port.readable.getReader();
         startReadLoop();
         rememberPort(state.port);
         setConnected(true);
-        claim.announce();
+        claim.announce(await window.melexisSerial.indexOfPort(state.port));
         log(`Serial port open: ${window.melexisSerial.describe(state.port)}, ${window.melexisSerial.describeLine(window.melexisSerial.lineOptions(state.port))}.`);
 
         await scpi(":I2C:INIT");

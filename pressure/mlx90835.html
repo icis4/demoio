@@ -1934,7 +1934,14 @@
                     const info = p.getInfo();
                     return info.usbVendorId === vid && info.usbProductId === pid;
                 });
-                return matches.length === 1 ? matches[0] : null;
+                if (matches.length === 1) return matches[0];
+
+                /* Several identical boards: nothing the browser exposes separates
+                   them, so a handover from Detect passes where its board sat in this
+                   list instead. */
+                const index = parseInt(new URLSearchParams(location.hash.replace(/^#/, '')).get('idx') ?? '', 10);
+                const at = ports[index];
+                return at && matches.includes(at) ? at : null;
             }
 
             /* A board that goes away mid-session leaves the page looking connected
@@ -1944,7 +1951,11 @@
             function handleDeviceLost(reason) {
                 if (deviceLost || !port) return;
                 deviceLost = true;
-                debugPrint(`Device lost (${reason}); disconnecting.`);
+                /* The browser's own words for this read like a broken board. They are
+                   not: the device is still there and still answers a shell. */
+                debugPrint(/device has been lost|network ?error/i.test(reason)
+                    ? 'The browser has lost its handle to this board — unplug the USB cable and plug it back in; the board itself is fine.'
+                    : `Device lost (${reason}); disconnecting.`);
                 void disconnectSerial();
             }
 
@@ -1982,7 +1993,10 @@
                     if (btnC0) btnC0.disabled = true;
 
                     // Reuse the authorised board; the chooser is only for granting access.
-                    port = await authorisedPort() || await navigator.serial.requestPort();
+                    /* A press of Connect always asks; the handover from Detect is the
+                       only path that reopens a known board without a dialog. */
+                    const handover = new URLSearchParams(location.hash.replace(/^#/, '')).get('connect') === '1';
+                    port = (handover && await authorisedPort()) || await navigator.serial.requestPort();
                     await new Promise(r => setTimeout(r, 150));
                     /* The board's CDC ignores line coding, so this page used to open
                        921600 7O2 for no reason. Detect hands over what was actually
@@ -2017,14 +2031,18 @@
                     if (btnC) { btnC.disabled = true; btnC.classList.add('disabled'); btnC.classList.remove('btn-success'); btnC.classList.add('btn-secondary'); }
                     if (btnD) { btnD.disabled = false; btnD.classList.remove('disabled', 'btn-outline-secondary'); btnD.classList.add('btn-success'); }
                     if (badge) { badge.className = 'badge text-bg-success'; badge.textContent = 'Connected'; }
-                    claim.announce();
+                    claim.announce(await window.melexisSerial.indexOfPort(port));
                     // Query ID before starting background read loop
                     try {
                         await scpi_command('*IDN?', { timeoutMs: 5000, idleMs: 500, terminatorRegex: /\s*\)>/, allowIdleReturn: true });
                     } catch (e) {
                         console.debug('IDN query failed', e);
-                        debugPrint(`IDN failed: ${String(e?.message || e)}`);
+                        if (!deviceLost) debugPrint(`IDN failed: ${String(e?.message || e)}`);
                     }
+
+                    /* A board that went away mid-sequence has already been reported and
+                       torn down; carrying on only adds the failures that follow from it. */
+                    if (deviceLost || !port) return;
 
                     // I2C handshake (best-effort): updates I2C status badge
                     const i2c = await tryI2cHandshake();
@@ -2225,17 +2243,25 @@
             // Hook up buttons (top bar)
             document.getElementById('btnConnect')?.addEventListener('click', connectSerial);
 
-            // Reopen a board that was authorised earlier; otherwise wait for the button.
-            /* Another tab holding the board would be robbed by this reconnect, and
-               would report the theft as a hardware fault. */
-            authorisedPort().then(async (p) => {
-                if (!p) return;
-                if (await claim.heldElsewhere()) {
+            /* Only a handover from Detect connects by itself; opened on its own this
+               page waits for the button, which asks which port to use. Another tab
+               holding the board would be robbed by a reconnect, and would report the
+               theft as a hardware fault, so that stands down too. */
+            (async () => {
+                const params = new URLSearchParams(location.hash.replace(/^#/, ''));
+                if (params.get('connect') !== '1') return;
+                const wanted = await authorisedPort();
+                if (!wanted) {
+                    debugPrint('Detect sent this page here, but the board it used cannot be picked '
+                        + 'out from the others the browser knows. Press Connect and choose it.');
+                    return;
+                }
+                if (await claim.heldElsewhere(await window.melexisSerial.indexOfPort(wanted))) {
                     debugPrint('Another tab has this board open. Disconnect there, or close that tab, then press Connect.');
                     return;
                 }
                 connectSerial();
-            });
+            })();
             document.getElementById('btnDisconnect')?.addEventListener('click', disconnectSerial);
             document.getElementById('btnDemo')?.addEventListener('click', async () => {
                 if (port && writer && inputStream && (isI2cConnected || isSpiConnected)) {

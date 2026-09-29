@@ -39,31 +39,48 @@
     return error && error.message ? error.message : String(error);
   }
 
+  /* Which port a tab holds, said as its place in getPorts(). With one board that
+     is always 0 and the distinction costs nothing; with several it is what keeps
+     a tab using one board from blocking a tab using another. -1 means the holder
+     could not work out its own index, which counts as a conflict with anyone. */
+  async function indexOfPort(port) {
+    try {
+      return (await navigator.serial.getPorts()).indexOf(port);
+    } catch {
+      return -1;
+    }
+  }
+
   function sharedClaim() {
     const channel = new BroadcastChannel(CHANNEL);
-    let holding = false;
+    let holding = null;          // the index held here, or null when holding nothing
+
+    const conflicts = (mine, theirs) => mine === -1 || theirs === -1 || mine === theirs;
 
     channel.addEventListener("message", (event) => {
-      // Somebody asking whether the port is taken; only a holder answers.
-      if (event.data === "who-holds" && holding) channel.postMessage("holding");
+      // Somebody asking whether a port is taken; only its holder answers.
+      const data = event.data;
+      if (data && data.type === "who-holds" && holding !== null && conflicts(data.index, holding)) {
+        channel.postMessage({ type: "holding", index: holding });
+      }
     });
 
     // A tab that goes away without disconnecting still frees the board.
     window.addEventListener("pagehide", () => {
-      if (!holding) return;
-      holding = false;
-      channel.postMessage("released");
+      if (holding === null) return;
+      holding = null;
+      channel.postMessage({ type: "released" });
     });
 
     const claim = {
-      announce() {
-        holding = true;
-        channel.postMessage("holding");
+      announce(index) {
+        holding = Number.isInteger(index) ? index : -1;
+        channel.postMessage({ type: "holding", index: holding });
       },
 
       release() {
-        holding = false;
-        channel.postMessage("released");
+        holding = null;
+        channel.postMessage({ type: "released" });
       },
 
       /* A refused open says nothing about why, and a lost device says something
@@ -84,17 +101,19 @@
           : message;
       },
 
-      heldElsewhere() {
+      heldElsewhere(index) {
+        const wanted = Number.isInteger(index) ? index : -1;
         return new Promise((resolve) => {
           let answered = false;
           const onReply = (event) => {
-            if (event.data !== "holding") return;
+            const data = event.data;
+            if (!data || data.type !== "holding" || !conflicts(wanted, data.index)) return;
             answered = true;
             channel.removeEventListener("message", onReply);
             resolve(true);
           };
           channel.addEventListener("message", onReply);
-          channel.postMessage("who-holds");
+          channel.postMessage({ type: "who-holds", index: wanted });
           setTimeout(() => {
             channel.removeEventListener("message", onReply);
             if (!answered) resolve(false);
@@ -231,6 +250,7 @@
 
   window.melexisSerial = {
     describe,
+    indexOfPort,
     lineFor,
     lineOptions,
     rememberLine,

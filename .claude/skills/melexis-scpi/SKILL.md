@@ -126,6 +126,19 @@ Do not restate command sets here — they change there. melexis_io has `doc/SCPI
 per-module files; evb and mip have no equivalent index, so read the pattern tables directly
 (`Application/**/commands_*.c`, the `.pattern` fields). The tables always win over the docs.
 
+## Boards are deliberately indistinguishable
+
+Every Melexis IO board enumerates as 03e9:0041 with the USB serial string `MELEXISIO`
+and answers `*IDN?` with `SN-0001` — the same values on every unit, on purpose: a unique
+serial makes Windows mint a new COM port per board, which is worse than not telling them
+apart. Two boards plugged in at once therefore look identical to `getInfo()`, to the
+picker's own filtering, and to the firmware's own identification.
+
+A page consequently cannot know which board it was handed, and must not guess: it asks.
+What it *can* check is the chip on the bus once connected, which is how a wrong pick gets
+caught (the array pages read the EEPROM signature, the pressure page its handshake).
+Never propose per-unit serials as a fix.
+
 ## Line settings apply to one target only
 
 Over **USB CDC** the line coding Web Serial asks for — baud rate, data bits, stop bits,

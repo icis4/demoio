@@ -242,7 +242,7 @@
     const state = {
       port: null, writer: null, reader: null, readLoop: null,
       rxBuffer: "", waiters: [],
-      scanning: false, cells: new Map(),
+      scanning: false, cells: new Map(), portIndex: -1,
     };
 
     function log(message) {
@@ -485,6 +485,7 @@
       if (info && Number.isInteger(info.usbVendorId) && Number.isInteger(info.usbProductId)) {
         params.push(`vid=${info.usbVendorId.toString(16)}`, `pid=${info.usbProductId.toString(16)}`);
       }
+      if (state.portIndex >= 0) params.push(`idx=${state.portIndex}`);
       return params.join("&");
     }
 
@@ -734,6 +735,12 @@
            So it always asks rather than reopening the last one silently, and it
            opens with the settings chosen beside the button. */
         state.port = await navigator.serial.requestPort();
+        /* Several identical boards cannot be told apart by anything the browser
+           exposes, so the handover passes this port's place in the list instead.
+           It is read here, while the list is the one the chip page will see. */
+        try {
+          state.portIndex = (await navigator.serial.getPorts()).indexOf(state.port);
+        } catch { state.portIndex = -1; }
         const line = lineSettings(state.port);
         const needed = window.melexisSerial.lineFor(state.port);
         window.melexisSerial.rememberLine(
@@ -744,7 +751,7 @@
         startReadLoop();
         rememberPort(state.port);
         setConnected(true);
-        claim.announce();
+        claim.announce(await window.melexisSerial.indexOfPort(state.port));
         log(`Serial port open: ${window.melexisSerial.describe(state.port)}, `
           + `${window.melexisSerial.describeLine(line)}${needed ? ` — ${needed.why}` : ""}.`);
 

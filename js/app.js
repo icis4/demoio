@@ -215,7 +215,7 @@
       await state.port.open(options);
       rememberPort(state.port);
 
-      claims.announce();
+      claims.announce(await window.melexisSerial?.indexOfPort(state.port));
       setSidebarOpen(false);
       setConnectionState('connected');
       const device = window.melexisSerial?.describe(state.port) ?? 'serial device';
