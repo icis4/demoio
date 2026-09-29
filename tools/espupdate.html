@@ -366,10 +366,11 @@
     </a>
     <h1>ESP32 Firmware Updater</h1>
     <p class="lede">
-      Writes a merged image to an ESP32 through its ROM loader over Web Serial — the same thing
-      <code>esptool --flash_offset 0 write_flash</code> does, in a Chromium-based browser over
-      <code>https://</code> or <code>http://localhost</code>. The board has to be in download mode
-      before it will answer.
+      Writes a merged image to an ESP32 over Web Serial, the way
+      <code>esptool.py write_flash 0x0 image.bin</code> does and with the same code underneath —
+      esptool-js, which resets the board into download mode, uploads its stub loader and verifies
+      what it wrote. Needs a Chromium-based browser over <code>https://</code> or
+      <code>http://localhost</code>; nothing has to be done to the board first.
     </p>
 
     <section class="grid">
@@ -410,7 +411,6 @@
         <div id="progressLabel" class="status-line">Idle.</div>
         <div class="actions">
           <button id="connectButton" type="button">Connect Board</button>
-          <button id="bootButton" type="button" class="secondary" disabled>Enter Download Mode</button>
           <button id="flashButton" type="button" disabled>Flash Firmware</button>
           <button id="resetButton" type="button" class="ghost" disabled>Reset Board</button>
           <button id="disconnectButton" type="button" class="ghost" disabled>Disconnect</button>
@@ -418,16 +418,17 @@
       </article>
 
       <article class="card">
-        <h2>Download mode</h2>
+        <h2>Notes</h2>
         <ul>
-          <li>Hold <strong>BOOT</strong>, tap <strong>RESET</strong>, release <strong>BOOT</strong>. On a XIAO
-            without a reset button, hold BOOT while plugging the cable in.</li>
-          <li>A board with native USB (ESP32-C3, C6, S3) enumerates again when it enters the ROM, so pick the
-            port <em>after</em> it is in download mode — the entry before that one is gone.</li>
-          <li>The ROM answers at any baud rate over native USB; the setting the port opens with does not
-            reach it.</li>
-          <li>Flashing does not erase what it does not write. A merged image covers the whole layout, so
-            nothing of the old firmware is left behind.</li>
+          <li>The board is put into download mode over DTR and RTS, and started again the same way when the
+            write finishes. Both restart it, so its USB device goes and comes back — losing the port at the
+            end is the firmware taking over, not a failure.</li>
+          <li>If it will not enter download mode by itself: hold <strong>BOOT</strong>, tap
+            <strong>RESET</strong>, release BOOT — or, on a XIAO with no reset button, hold BOOT while
+            plugging the cable in. Then connect and pick the port that appears.</li>
+          <li>Flashing erases only what it writes. A merged image covers bootloader, partition table and
+            application, so nothing of the old firmware is left behind.</li>
+          <li>What was written is read back and compared by MD5 before the board is started.</li>
         </ul>
       </article>
     </section>
