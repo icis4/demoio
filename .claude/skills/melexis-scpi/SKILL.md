@@ -126,6 +126,28 @@ Do not restate command sets here — they change there. melexis_io has `doc/SCPI
 per-module files; evb and mip have no equivalent index, so read the pattern tables directly
 (`Application/**/commands_*.c`, the `.pattern` fields). The tables always win over the docs.
 
+## The same commands arrive over Bluetooth
+
+`melexis_esp32_fw` serves its console over BLE as well as USB, on the Nordic UART
+Service (`6e400001-…`, RX `…0002`, TX `…0003`), advertising as `melexis-<mac tail>`.
+The SCPI above it is identical — same commands, same replies, same LF-only framing —
+so a page only needs somewhere else to put its bytes. `js/serial-port.js` holds that:
+`connectBluetooth({ onData, onDisconnect })` returns the same `{ write, close }` shape
+the serial side uses, and every page that drives a board has a Bluetooth button beside
+its Connect one.
+
+Three things are worth knowing before debugging it. The service UUID travels in the
+scan response rather than the advertisement, because a 128-bit UUID and a name together
+do not fit in 31 bytes — so the filter is on the name and the service is asked for
+separately. A write is cut into 20-byte pieces, which is what the ATT default of 23
+leaves; the firmware negotiates 517 and reassembles, but Web Bluetooth does not expose
+the negotiated value. And a pairing made before the firmware was reflashed breaks
+discovery until the operating system forgets the device, which reads as a GATT error
+naming nothing.
+
+The Triaxis pages and the thermal viewer are other people's work and are copied in
+unchanged, so they have no Bluetooth and should not be given any here.
+
 ## Boards are deliberately indistinguishable
 
 Every Melexis IO board enumerates as 03e9:0041 with the USB serial string `MELEXISIO`

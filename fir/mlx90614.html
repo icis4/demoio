@@ -113,6 +113,7 @@
       </div>
       <div class="toolbar-actions">
         <button id="btnConnect" class="btn btn-sm btn-primary">Connect</button>
+        <button id="btnConnectBle" class="btn btn-sm btn-outline-primary">Bluetooth</button>
         <button id="btnStream" class="btn btn-sm btn-outline-secondary" disabled>Start</button>
         <button id="btnDisconnect" class="btn btn-sm btn-outline-secondary" disabled>Disconnect</button>
       </div>
@@ -256,7 +257,7 @@
 
     const els = id => document.getElementById(id);
     const ui = {
-      btnConnect: els("btnConnect"), btnStream: els("btnStream"), btnDisconnect: els("btnDisconnect"),
+      btnConnect: els("btnConnect"), btnConnectBle: els("btnConnectBle"), btnStream: els("btnStream"), btnDisconnect: els("btnDisconnect"),
       badgeConn: els("badgeConn"), log: els("log"), slaveAddr: els("slaveAddr"),
       heroValue: els("heroValue"), heroAmbient: els("heroAmbient"),
       canvas: els("trend"), chartEmpty: els("chartEmpty"), tooltip: els("tooltip"),
@@ -324,9 +325,9 @@
 
     async function scpi(command, timeoutMs = 3000) {
       if (state.handleLost) throw new Error("the browser has lost its handle to this board");
-      if (!state.writer) throw new Error("Not connected.");
+      if (!state.link) throw new Error("Not connected.");
       state.rxBuffer = "";
-      await state.writer.write(new TextEncoder().encode(command + "\n"));   // LF only
+      await state.link.write(new TextEncoder().encode(command + "\n"));   // LF only
 
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
@@ -578,6 +579,7 @@
       ui.badgeConn.className = connected ? "badge text-bg-success" : "badge text-bg-secondary";
       ui.badgeConn.textContent = connected ? "Connected" : "Disconnected";
       ui.btnConnect.disabled = connected;
+      ui.btnConnectBle.disabled = connected;
       ui.btnStream.disabled = !connected;
       ui.btnDisconnect.disabled = !connected;
       ui.slaveAddr.disabled = connected;
@@ -746,6 +748,7 @@
         state.port = existingPort ?? await navigator.serial.requestPort();
         await state.port.open(window.melexisSerial.lineOptions(state.port));
         state.writer = state.port.writable.getWriter();
+        state.link = { kind: "serial", write: (bytes) => state.writer.write(bytes) };
         state.reader = state.port.readable.getReader();
         state.handleLost = false;
         startReadLoop();
@@ -754,15 +757,7 @@
         setConnected(true);
         claim.announce(await window.melexisSerial.indexOfPort(state.port));
         log(`Serial port open: ${window.melexisSerial.describe(state.port)}, ${window.melexisSerial.describeLine(window.melexisSerial.lineOptions(state.port))}.`);
-
-        await scpi(":I2C:INIT");
-        // SMBus on this part is specified for 10-100 kHz; the other pages here
-        // run the bus far faster and it would simply not answer.
-        await scpi(":I2C:FREQuency 100k");
-        log("SMBus ready at 100 kHz.");
-
-        await initSensor();
-        log(`Sensor ready at ${hex(state.slave)}.`);
+        await afterConnect();
       } catch (error) {
         if (error && error.name === "NotFoundError") {
           log("Port selection cancelled.");
@@ -770,6 +765,41 @@
           log(`Connect failed: ${await claim.reason(error)}`);
           ui.chartEmpty.textContent = "No MLX90614 answered on SMBus. Check wiring and the slave address.";
         }
+        await disconnect();
+      }
+    }
+
+    /* The same firmware answers over BLE, and everything above scpi() is the
+       same either way; js/serial-port.js explains the device side of it. */
+    /* What a session needs once it has a way to talk, whichever way that is. */
+    async function afterConnect() {
+      await scpi(":I2C:INIT");
+      // SMBus on this part is specified for 10-100 kHz; the other pages here
+      // run the bus far faster and it would simply not answer.
+      await scpi(":I2C:FREQuency 100k");
+      log("SMBus ready at 100 kHz.");
+
+      await initSensor();
+      log(`Sensor ready at ${hex(state.slave)}.`);
+    }
+
+    async function connectBluetooth() {
+      try {
+        const decoder = new TextDecoder();
+        state.link = await window.melexisSerial.connectBluetooth({
+          onData: (bytes) => { state.rxBuffer += decoder.decode(bytes, { stream: true }); notifyWaiters(); },
+          onDisconnect: () => { log("The board went out of range or switched off."); disconnect(); },
+        });
+        state.handleLost = false;
+        state.rxBuffer = "";
+        setConnected(true);
+        log(`Connected to ${state.link.name} over Bluetooth.`);
+        await afterConnect();
+      } catch (error) {
+        if (error?.name === "NotFoundError") { log("No device selected."); return; }
+        log(`Bluetooth connection failed: ${error.message}`);
+        const hint = window.melexisSerial.bluetoothHint(error);
+        if (hint) log(hint);
         await disconnect();
       }
     }
@@ -783,6 +813,13 @@
       if (state.readLoop) { try { await state.readLoop; } catch { /* reported */ } state.readLoop = null; }
       if (state.reader) { try { state.reader.releaseLock(); } catch { /* released */ } state.reader = null; }
       if (state.writer) { try { state.writer.releaseLock(); } catch { /* released */ } state.writer = null; }
+      if (state.link?.kind === "ble") {
+        const link = state.link;
+        state.link = null;                 // before closing: the handler must stay quiet
+        link.close();
+      }
+      state.link = null;
+
       if (state.port) {
         await window.melexisSerial.lowerSignals(state.port);
         try { await state.port.close(); } catch { /* closed */ }
@@ -795,6 +832,7 @@
     }
 
     ui.btnConnect.addEventListener("click", () => connect());
+    ui.btnConnectBle.addEventListener("click", () => connectBluetooth());
     ui.btnDisconnect.addEventListener("click", async () => { await disconnect(); log("Disconnected."); });
     ui.btnStream.addEventListener("click", () => { state.streaming ? stopStreaming() : startStreaming(); });
 

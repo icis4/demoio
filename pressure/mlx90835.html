@@ -675,6 +675,7 @@
             </div>
             <div class="toolbar-actions">
                 <button id="btnConnect" class="btn btn-success btn-sm">Connect</button>
+                <button id="btnConnectBle" class="btn btn-outline-success btn-sm">Bluetooth</button>
                 <button id="btnDisconnect" class="btn btn-outline-secondary btn-sm" disabled>Disconnect</button>
                 <button class="btn btn-outline-secondary btn-sm" onclick="window.location.reload()">Refresh</button>
                 <button id="btnHelp" class="btn btn-outline-info btn-sm">Help</button>
@@ -1253,6 +1254,7 @@
             let rxPipe = null;
             let txPipe = null;
             let inputStream = null;
+            let link = null;               // how to write, per transport
             let connectInProgress = false;
             let serialPumpTask = null;
             let serialRxBuffer = '';
@@ -2039,6 +2041,7 @@
                         }
                     });
                     writer = textEncoder.writable.getWriter();
+                    link = { kind: 'serial', write: (text) => writer.write(text) };
                     startSerialPump();
                     await flushStaleInput();
                     // UI state
@@ -2095,10 +2098,71 @@
                 }
             }
 
+            /* The same firmware answers over BLE, and everything above scpi_command()
+               is the same either way; js/serial-port.js explains the device side. */
+            async function connectBluetooth() {
+                try {
+                    clearDebugLog();
+                    deviceLost = false;
+                    resetFrameSync();
+                    outputConfig = null;
+                    setOutputSummary('–');
+                    setTemperature(null);
+                    setPressure(NaN);
+                    debugPrint('--- CONNECT (Bluetooth) ---');
+
+                    const decoder = new TextDecoder();
+                    link = await window.melexisSerial.connectBluetooth({
+                        onData: (bytes) => {
+                            serialRxBuffer += decoder.decode(bytes, { stream: true });
+                            notifySerialWaiters();
+                        },
+                        onDisconnect: () => {
+                            debugPrint('The board went out of range or switched off.');
+                            void disconnectSerial();
+                        },
+                    });
+
+                    const btnC = document.getElementById('btnConnect');
+                    const btnD = document.getElementById('btnDisconnect');
+                    const badge = document.getElementById('connStatus');
+                    if (btnC) btnC.disabled = true;
+                    if (document.getElementById('btnConnectBle')) document.getElementById('btnConnectBle').disabled = true;
+                    if (btnD) { btnD.disabled = false; btnD.classList.remove('disabled', 'btn-outline-secondary'); btnD.classList.add('btn-success'); }
+                    if (badge) { badge.className = 'badge text-bg-success'; badge.textContent = 'Connected'; }
+                    debugPrint(`Connected to ${link.name} over Bluetooth.`);
+
+                    try {
+                        await scpi_command('*IDN?', { timeoutMs: 5000, idleMs: 500, terminatorRegex: /\s*\)>/, allowIdleReturn: true });
+                    } catch (e) {
+                        debugPrint(`IDN failed: ${String(e?.message || e)}`);
+                    }
+
+                    const i2c = await tryI2cHandshake();
+                    if (i2c && i2c.notPresent) {
+                        if (await startSpiFallback()) await readOutputConfig('SPI');
+                    } else if (i2c && i2c.ok) {
+                        await readOutputConfig('I2C');
+                    }
+                } catch (err) {
+                    if (String(err?.name) === 'NotFoundError') { debugPrint('No device selected.'); return; }
+                    debugPrint(`Bluetooth connection failed: ${String(err?.message || err)}`);
+                    const hint = window.melexisSerial.bluetoothHint(err);
+                    if (hint) debugPrint(hint);
+                    await disconnectSerial();
+                }
+            }
+
             async function disconnectSerial() {
                 try {
                     debugPrint('--- DISCONNECT ---');
                     stopStream();
+                    if (link?.kind === 'ble') {
+                        const going = link;
+                        link = null;            // before closing: the handler must stay quiet
+                        going.close();
+                    }
+                    link = null;
                     await stopSerialPump();
                     if (writer) {
                         try { await writer.close(); } catch { }
@@ -2129,6 +2193,8 @@
                     const btnD = document.getElementById('btnDisconnect');
                     const badge = document.getElementById('connStatus');
                     if (btnC) { btnC.disabled = false; btnC.classList.remove('disabled', 'btn-secondary'); btnC.classList.add('btn-success'); }
+                    const btnBle = document.getElementById('btnConnectBle');
+                    if (btnBle) btnBle.disabled = false;
                     if (btnD) { btnD.disabled = true; btnD.classList.add('disabled'); btnD.classList.remove('btn-success'); btnD.classList.add('btn-outline-secondary'); }
                     if (badge) { badge.className = 'badge text-bg-secondary'; badge.textContent = 'Disconnected'; }
                     claim.release();
@@ -2150,8 +2216,8 @@
                     ...SCPI_OK_DEFAULTS,
                     ...(options || {}),
                 };
-                if (!port || !writer || !inputStream) {
-                    throw new Error('Serial port not connected');
+                if (!link) {
+                    throw new Error('Nothing is connected');
                 }
 
                 const termRe = terminatorRegex
@@ -2214,7 +2280,7 @@
                     serialRxBuffer = '';
                 }
 
-                await writer.write(`${command}\n`);
+                await link.write(`${command}\n`);
                 debugPrint(`TX flushed: ${command}`);
 
                 let raw = '';
@@ -2259,6 +2325,7 @@
 
             // Hook up buttons (top bar)
             document.getElementById('btnConnect')?.addEventListener('click', connectSerial);
+            document.getElementById('btnConnectBle')?.addEventListener('click', connectBluetooth);
 
             /* Only a handover from Detect connects by itself; opened on its own this
                page waits for the button, which asks which port to use. Another tab

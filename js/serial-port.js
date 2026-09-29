@@ -248,8 +248,85 @@
   const describeLine = (options) =>
     `${options.baudRate} ${options.dataBits}${options.parity[0].toUpperCase()}${options.stopBits}`;
 
+  /* ---- The same board, over Bluetooth ----
+   *
+   * The firmware on an ESP32 answers the same SCPI over BLE that it answers
+   * over USB, on the Nordic UART Service, so a page only needs somewhere else
+   * to put its bytes. This hands back the same shape the serial side uses: a
+   * write and a close.
+   *
+   * Two things cost time when this was first written, in the firmware's own
+   * console (html/terminal.html there): the service UUID travels in the scan
+   * response rather than the advertisement, because a 128-bit UUID and a name
+   * together do not fit in 31 bytes, so the filter is on the name and the
+   * service is asked for separately; and a pairing made before the firmware was
+   * reflashed breaks discovery until the operating system forgets the device.
+   */
+  const NUS = {
+    service: "6e400001-b5a3-f393-e0a9-e50e24dcca9e",
+    rx: "6e400002-b5a3-f393-e0a9-e50e24dcca9e",
+    tx: "6e400003-b5a3-f393-e0a9-e50e24dcca9e",
+  };
+  const BLE_NAME_PREFIX = "melexis-";
+  // What the ATT default of 23 leaves. The firmware negotiates 517, which Web
+  // Bluetooth does not expose, so this stays at the size that always fits.
+  const BLE_CHUNK = 20;
+
+  async function connectBluetooth({ onData, onDisconnect } = {}) {
+    if (!("bluetooth" in navigator)) {
+      throw new Error("Web Bluetooth is unavailable. Use Chrome or Edge over https:// or http://localhost.");
+    }
+
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: BLE_NAME_PREFIX }],
+      optionalServices: [NUS.service],
+    });
+
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(NUS.service);
+    const rx = await service.getCharacteristic(NUS.rx);
+    const tx = await service.getCharacteristic(NUS.tx);
+
+    tx.addEventListener("characteristicvaluechanged", (event) => {
+      if (onData) onData(new Uint8Array(event.target.value.buffer));
+    });
+    await tx.startNotifications();
+
+    let open = true;
+    device.addEventListener("gattserverdisconnected", () => {
+      if (!open) return;                 // a close from this side reports itself
+      open = false;
+      if (onDisconnect) onDisconnect();
+    });
+
+    return {
+      kind: "ble",
+      name: device.name,
+      async write(bytes) {
+        for (let at = 0; at < bytes.length; at += BLE_CHUNK) {
+          await rx.writeValueWithoutResponse(bytes.slice(at, at + BLE_CHUNK));
+        }
+      },
+      close() {
+        open = false;
+        try { device.gatt.disconnect(); } catch { /* already gone */ }
+      },
+    };
+  }
+
+  /* Discovery fails in a way that names neither cause; this is the one that is
+     usually true and can be acted on. */
+  function bluetoothHint(error) {
+    const message = error && error.message ? error.message : String(error);
+    return /discover|disconnect|GATT/i.test(message)
+      ? "A pairing made before the firmware was reflashed does this. Remove the device in the operating system, then connect again."
+      : null;
+  }
+
   window.melexisSerial = {
     describe,
+    connectBluetooth,
+    bluetoothHint,
     indexOfPort,
     lineFor,
     lineOptions,

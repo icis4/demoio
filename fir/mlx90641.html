@@ -96,6 +96,7 @@
       </div>
       <div class="toolbar-actions">
         <button id="btnConnect" class="btn btn-sm btn-primary">Connect</button>
+        <button id="btnConnectBle" class="btn btn-sm btn-outline-primary">Bluetooth</button>
         <button id="btnStream" class="btn btn-sm btn-outline-secondary" disabled>Start</button>
         <button id="btnDisconnect" class="btn btn-sm btn-outline-secondary" disabled>Disconnect</button>
       </div>
@@ -530,7 +531,7 @@
 
     const els = id => document.getElementById(id);
     const ui = {
-      btnConnect: els("btnConnect"), btnStream: els("btnStream"), btnDisconnect: els("btnDisconnect"),
+      btnConnect: els("btnConnect"), btnConnectBle: els("btnConnectBle"), btnStream: els("btnStream"), btnDisconnect: els("btnDisconnect"),
       badgeConn: els("badgeConn"), log: els("log"), slaveAddr: els("slaveAddr"),
       canvas: els("thermal"), empty: els("thermalEmpty"),
       scaleBar: els("scaleBar"), scaleMin: els("scaleMin"), scaleMax: els("scaleMax"),
@@ -609,10 +610,10 @@
 
     async function scpi(command, timeoutMs = 3000) {
       if (state.handleLost) throw new Error("the browser has lost its handle to this board");
-      if (!state.writer) throw new Error("Not connected.");
+      if (!state.link) throw new Error("Not connected.");
       state.rxBuffer = "";
       // LF only: the parser strips just the trailing \n.
-      await state.writer.write(new TextEncoder().encode(command + "\n"));
+      await state.link.write(new TextEncoder().encode(command + "\n"));
 
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
@@ -815,6 +816,7 @@
       ui.badgeConn.className = connected ? "badge text-bg-success" : "badge text-bg-secondary";
       ui.badgeConn.textContent = connected ? "Connected" : "Disconnected";
       ui.btnConnect.disabled = connected;
+      ui.btnConnectBle.disabled = connected;
       ui.btnStream.disabled = !connected;
       ui.btnDisconnect.disabled = !connected;
       ui.slaveAddr.disabled = connected;
@@ -979,6 +981,7 @@
         state.port = existingPort ?? await navigator.serial.requestPort();
         await state.port.open(window.melexisSerial.lineOptions(state.port));
         state.writer = state.port.writable.getWriter();
+        state.link = { kind: "serial", write: (bytes) => state.writer.write(bytes) };
         state.reader = state.port.readable.getReader();
         state.handleLost = false;
         startReadLoop();
@@ -987,33 +990,7 @@
         setConnected(true);
         claim.announce(await window.melexisSerial.indexOfPort(state.port));
         log(`Serial port open: ${window.melexisSerial.describe(state.port)}, ${window.melexisSerial.describeLine(window.melexisSerial.lineOptions(state.port))}.`);
-
-        await scpi(":I2C:INIT");
-        await scpi(":I2C:FREQuency 1000k");
-        log("I2C ready at 1 MHz.");
-
-        await readControl();
-
-        // 832 words is 1664 bytes, inside the board's 2048-byte transaction limit.
-        log("Reading EEPROM…");
-        const ee = await memRead(EE_START, EE_WORDS, null, 0, 8000);
-
-        const hamming = hammingDecode(ee);
-        if (hamming === -10) log("EEPROM has uncorrectable bit errors; calibration may be wrong.");
-        else if (hamming === -9) log("EEPROM had single-bit errors, corrected.");
-
-        if (checkEepromValid(ee) !== 0) {
-          log("EEPROM does not identify as an MLX90641.");
-        }
-
-        state.params = extractParameters(ee);
-        ui.infoBad.textContent = state.params.brokenPixel === 0xFFFF ? "none" : `pixel ${state.params.brokenPixel}`;
-        // The sensor stores the emissivity it was calibrated with; use it as the default.
-        if (state.params.emissivityEE > 0.1 && state.params.emissivityEE <= 1) {
-          ui.emissivity.value = state.params.emissivityEE.toFixed(2);
-        }
-        state.warmupFrames = WARMUP_FRAMES;
-        log(`Calibration ready. The first ${WARMUP_FRAMES} frames will be discarded.`);
+        await afterConnect();
       } catch (error) {
         if (error && error.name === "NotFoundError") {
           log("Port selection cancelled.");
@@ -1021,6 +998,59 @@
           log(`Connect failed: ${await claim.reason(error)}`);
           ui.empty.textContent = "No MLX90641 answered on I2C. Check wiring and the slave address.";
         }
+        await disconnect();
+      }
+    }
+
+    /* The same firmware answers over BLE, and everything above scpi() is the
+       same either way; js/serial-port.js explains the device side of it. */
+    /* What a session needs once it has a way to talk, whichever way that is. */
+    async function afterConnect() {
+      await scpi(":I2C:INIT");
+      await scpi(":I2C:FREQuency 1000k");
+      log("I2C ready at 1 MHz.");
+
+      await readControl();
+
+      // 832 words is 1664 bytes, inside the board's 2048-byte transaction limit.
+      log("Reading EEPROM…");
+      const ee = await memRead(EE_START, EE_WORDS, null, 0, 8000);
+
+      const hamming = hammingDecode(ee);
+      if (hamming === -10) log("EEPROM has uncorrectable bit errors; calibration may be wrong.");
+      else if (hamming === -9) log("EEPROM had single-bit errors, corrected.");
+
+      if (checkEepromValid(ee) !== 0) {
+        log("EEPROM does not identify as an MLX90641.");
+      }
+
+      state.params = extractParameters(ee);
+      ui.infoBad.textContent = state.params.brokenPixel === 0xFFFF ? "none" : `pixel ${state.params.brokenPixel}`;
+      // The sensor stores the emissivity it was calibrated with; use it as the default.
+      if (state.params.emissivityEE > 0.1 && state.params.emissivityEE <= 1) {
+        ui.emissivity.value = state.params.emissivityEE.toFixed(2);
+      }
+      state.warmupFrames = WARMUP_FRAMES;
+      log(`Calibration ready. The first ${WARMUP_FRAMES} frames will be discarded.`);
+    }
+
+    async function connectBluetooth() {
+      try {
+        const decoder = new TextDecoder();
+        state.link = await window.melexisSerial.connectBluetooth({
+          onData: (bytes) => { state.rxBuffer += decoder.decode(bytes, { stream: true }); notifyWaiters(); },
+          onDisconnect: () => { log("The board went out of range or switched off."); disconnect(); },
+        });
+        state.handleLost = false;
+        state.rxBuffer = "";
+        setConnected(true);
+        log(`Connected to ${state.link.name} over Bluetooth.`);
+        await afterConnect();
+      } catch (error) {
+        if (error?.name === "NotFoundError") { log("No device selected."); return; }
+        log(`Bluetooth connection failed: ${error.message}`);
+        const hint = window.melexisSerial.bluetoothHint(error);
+        if (hint) log(hint);
         await disconnect();
       }
     }
@@ -1035,6 +1065,13 @@
       if (state.readLoop) { try { await state.readLoop; } catch { /* reported */ } state.readLoop = null; }
       if (state.reader) { try { state.reader.releaseLock(); } catch { /* released */ } state.reader = null; }
       if (state.writer) { try { state.writer.releaseLock(); } catch { /* released */ } state.writer = null; }
+      if (state.link?.kind === "ble") {
+        const link = state.link;
+        state.link = null;                 // before closing: the handler must stay quiet
+        link.close();
+      }
+      state.link = null;
+
       if (state.port) {
         await window.melexisSerial.lowerSignals(state.port);
         try { await state.port.close(); } catch { /* closed */ }
@@ -1047,6 +1084,7 @@
     }
 
     ui.btnConnect.addEventListener("click", () => connect());
+    ui.btnConnectBle.addEventListener("click", () => connectBluetooth());
     ui.btnDisconnect.addEventListener("click", async () => { await disconnect(); log("Disconnected."); });
     ui.btnStream.addEventListener("click", () => { state.streaming ? stopStreaming() : startStreaming(); });
 
