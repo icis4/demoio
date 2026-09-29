@@ -375,8 +375,19 @@
       <article class="card">
         <h2>Firmware</h2>
         <div class="field">
-          <label for="firmwareFile">DfuSe image</label>
-          <input id="firmwareFile" type="file" accept=".dfu,application/octet-stream">
+          <label for="bundledImage">Firmware</label>
+          <select id="bundledImage">
+            <option value="">Choose a file instead…</option>
+            <option value="melexis_io_fw.dfu">melexis_io_fw — Melexis IO board</option>
+          </select>
+          <div class="hint">Ships with the site, from <code>bin/stm32/</code>.</div>
+        </div>
+        <div class="field">
+          <label>Or a DfuSe image of your own</label>
+          <div class="actions">
+            <button id="browseButton" type="button" class="ghost">Choose file…</button>
+          </div>
+          <input id="firmwareFile" type="file" accept=".dfu,application/octet-stream" hidden>
         </div>
         <div class="field">
           <label for="transferSize">Transfer size</label>
@@ -453,6 +464,8 @@
 
     const elements = {
       firmwareFile: document.getElementById("firmwareFile"),
+      bundledImage: document.getElementById("bundledImage"),
+      browseButton: document.getElementById("browseButton"),
       transferSize: document.getElementById("transferSize"),
       memoryDescriptor: document.getElementById("memoryDescriptor"),
       firmwareSummary: document.getElementById("firmwareSummary"),
@@ -502,6 +515,8 @@
       elements.runAppButton.disabled = !isConnected;
       elements.disconnectButton.disabled = !isConnected;
       elements.firmwareFile.disabled = isBusy;
+      elements.bundledImage.disabled = isBusy;
+      elements.browseButton.disabled = isBusy;
       elements.transferSize.disabled = isBusy;
       elements.memoryDescriptor.disabled = isBusy;
     }
@@ -1357,20 +1372,34 @@
       log("Device released.");
     }
 
+    function useFirmware(buffer, name) {
+      appState.firmware = buffer ? parseDfuSeFile(buffer, name) : null;
+      updateFirmwareSummary();
+      if (buffer) log(`Loaded firmware ${name}.`);
+      setBusy(false);
+    }
+
     async function handleFirmwareSelection() {
       const file = elements.firmwareFile.files?.[0];
-      if (!file) {
-        appState.firmware = null;
-        updateFirmwareSummary();
-        setBusy(false);
-        return;
-      }
+      if (!file) { useFirmware(null); return; }
+      elements.bundledImage.value = "";            // a file of one's own wins over the shipped one
+      useFirmware(await file.arrayBuffer(), file.name);
+    }
 
-      const buffer = await file.arrayBuffer();
-      appState.firmware = parseDfuSeFile(buffer, file.name);
-      updateFirmwareSummary();
-      log(`Loaded firmware ${file.name}.`);
-      setBusy(false);
+    /* The images that ship with the site are fetched rather than opened, so the
+       usual case needs no file dialog at all. */
+    async function handleBundledSelection() {
+      const name = elements.bundledImage.value;
+      if (!name) { useFirmware(null); return; }
+      elements.firmwareFile.value = "";
+      try {
+        const response = await fetch(`../bin/stm32/${name}`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        useFirmware(await response.arrayBuffer(), name);
+      } catch (error) {
+        useFirmware(null);
+        log(`Could not load ${name}: ${error.message}`);
+      }
     }
 
     async function flashFirmware() {
@@ -1424,15 +1453,19 @@
       }
     }
 
-    elements.firmwareFile.addEventListener("change", async () => {
+    const loadFirmware = (handler) => async () => {
       try {
-        await handleFirmwareSelection();
+        await handler();
       } catch (error) {
         appState.firmware = null;
         updateFirmwareSummary();
         log(error.message, "error");
       }
-    });
+    };
+
+    elements.browseButton.addEventListener("click", () => elements.firmwareFile.click());
+    elements.firmwareFile.addEventListener("change", loadFirmware(handleFirmwareSelection));
+    elements.bundledImage.addEventListener("change", loadFirmware(handleBundledSelection));
 
     elements.connectButton.addEventListener("click", async () => {
       setBusy(true);
