@@ -410,16 +410,26 @@
           <label for="bundledImage">Firmware</label>
           <select id="bundledImage">
             <option value="">Choose a file instead…</option>
-            <option value="melexis_esp32_merged_XiaoC6.bin">melexis_esp32_fw — XIAO ESP32-C6</option>
-            <option value="melexis_esp32_merged_XiaoC3.bin">melexis_esp32_fw — XIAO ESP32-C3</option>
-            <option value="melexis_esp32_merged_XiaoS3.bin">melexis_esp32_fw — XIAO ESP32-S3</option>
-            <option value="melexis_esp32_merged_QtPyS2.bin">melexis_esp32_fw — QT Py ESP32-S2</option>
-            <option value="melexis_esp32_merged_QtPyS3.bin">melexis_esp32_fw — QT Py ESP32-S3</option>
+            <optgroup label="melexis_esp32_fw (ESP-IDF)">
+              <option value="melexis_esp32_merged_XiaoC6.bin">XIAO ESP32-C6</option>
+              <option value="melexis_esp32_merged_XiaoC3.bin">XIAO ESP32-C3</option>
+              <option value="melexis_esp32_merged_XiaoS3.bin">XIAO ESP32-S3</option>
+              <option value="melexis_esp32_merged_QtPyS3.bin">QT Py ESP32-S3</option>
+              <option value="melexis_esp32_merged_QtPyS2.bin">QT Py ESP32-S2</option>
+            </optgroup>
+            <optgroup label="melexisio_esp_ard (Arduino)">
+              <option value="melexisio_esp_ard_XiaoC6.bin">XIAO ESP32-C6</option>
+              <option value="melexisio_esp_ard_XiaoC3.bin">XIAO ESP32-C3</option>
+              <option value="melexisio_esp_ard_XiaoS3.bin">XIAO ESP32-S3</option>
+              <option value="melexisio_esp_ard_QtPyS3.bin">QT Py ESP32-S3</option>
+              <option value="melexisio_esp_ard_QtPyS2.bin">QT Py ESP32-S2</option>
+            </optgroup>
           </select>
-          <div class="hint">These ship with the site, from <code>bin/esp32/</code>. Each is what
-            <code>idf.py merge-bin</code> leaves behind: bootloader, partition table and application in one
-            file, written from the offset below. The check before writing compares the chip, not the
-            board — the two ESP32-S3 images look alike to it, so choosing between them is yours.</div>
+          <div class="hint">These ship with the site, from <code>bin/esp32/</code>: the same five boards
+            built two ways, from ESP-IDF and from Arduino. Each is a whole flash image — bootloader,
+            partition table and application — written from the offset below. The check before writing
+            compares the chip, not the board or the build, so the images for one chip look alike to it and
+            choosing among them is yours.</div>
         </div>
         <div class="field">
           <label>Or a merged image of your own</label>
