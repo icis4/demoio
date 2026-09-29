@@ -418,7 +418,8 @@
           </select>
           <div class="hint">These ship with the site, from <code>bin/esp32/</code>. Each is what
             <code>idf.py merge-bin</code> leaves behind: bootloader, partition table and application in one
-            file, written from the offset below.</div>
+            file, written from the offset below. The check before writing compares the chip, not the
+            board — the two ESP32-S3 images look alike to it, so choosing between them is yours.</div>
         </div>
         <div class="field">
           <label>Or a merged image of your own</label>
