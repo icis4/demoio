@@ -304,7 +304,17 @@
             const { value, done } = await state.reader.read();
             if (done) break;
             if (value) { state.rxBuffer += decoder.decode(value, { stream: true }); notifyWaiters(); }
-          } catch { break; }
+          } catch (error) {
+            /* The read failing is the only place a lost handle shows itself. Left
+               unsaid, every command after it times out instead, and the page blames
+               the chip for what the browser did. */
+            if (/device has been lost|network ?error/i.test(error?.message ?? error?.name ?? "")) {
+              state.handleLost = true;
+              log("The browser has lost its handle to this board — unplug the USB cable and "
+                + "plug it back in; the board itself is fine.");
+            }
+            break;
+          }
         }
         notifyWaiters();
       })();
@@ -313,6 +323,7 @@
     const PROMPT_RE = /(?:^|\r?\n)\((\w+)\)>\s*$/;
 
     async function scpi(command, timeoutMs = 3000) {
+      if (state.handleLost) throw new Error("the browser has lost its handle to this board");
       if (!state.writer) throw new Error("Not connected.");
       state.rxBuffer = "";
       await state.writer.write(new TextEncoder().encode(command + "\n"));   // LF only
@@ -700,6 +711,30 @@
       await connect(port);
     }
 
+    /* A session that ended mid-command leaves the board still answering the last
+       one, and the next page to open the port reads that tail instead of its own
+       reply — the first command comes back (ERROR)> and everything after it is
+       one reply out of step. How long that tail runs depends on how much the
+       previous session left queued, so this waits for the line to fall quiet
+       rather than for a guessed interval, then drops whatever arrived: by
+       definition none of it was ours. A board with nothing to say costs one
+       quiet window.
+
+       The window has to outlast the board's own pauses: a read of an address
+       nobody answers takes about 250 ms, so a gap between two stale replies is
+       longer than an idle line ever is. */
+    const QUIET_MS = 400, FLUSH_CAP_MS = 6000;
+
+    async function flushStaleInput() {
+      const until = Date.now() + FLUSH_CAP_MS;
+      while (Date.now() < until) {
+        const before = state.rxBuffer.length;
+        await new Promise((resolve) => setTimeout(resolve, QUIET_MS));
+        if (state.rxBuffer.length === before) break;
+      }
+      state.rxBuffer = "";
+    }
+
     async function connect(existingPort) {
       if (!("serial" in navigator)) {
         log("Web Serial is unavailable. Use Chrome, Edge or Opera over https:// or http://localhost.");
@@ -712,7 +747,9 @@
         await state.port.open(window.melexisSerial.lineOptions(state.port));
         state.writer = state.port.writable.getWriter();
         state.reader = state.port.readable.getReader();
+        state.handleLost = false;
         startReadLoop();
+        await flushStaleInput();
         rememberPort(state.port);
         setConnected(true);
         claim.announce(await window.melexisSerial.indexOfPort(state.port));

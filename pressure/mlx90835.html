@@ -1331,6 +1331,22 @@
                 });
             }
 
+            /* A session that ended mid-command leaves the board still answering the
+               last one, and the next page to open the port reads that tail instead of
+               its own reply. The tail runs as long as the previous session left work
+               queued, so wait for quiet rather than for a guessed interval. */
+            const QUIET_MS = 400, FLUSH_CAP_MS = 6000;   // longer than a read of a dead address
+
+            async function flushStaleInput() {
+                const until = Date.now() + FLUSH_CAP_MS;
+                while (Date.now() < until) {
+                    const before = serialRxBuffer.length;
+                    await new Promise((resolve) => setTimeout(resolve, QUIET_MS));
+                    if (serialRxBuffer.length === before) break;
+                }
+                serialRxBuffer = '';
+            }
+
             function startSerialPump() {
                 if (!inputStream || serialPumpTask) return;
                 reader = inputStream.getReader();
@@ -2024,6 +2040,7 @@
                     });
                     writer = textEncoder.writable.getWriter();
                     startSerialPump();
+                    await flushStaleInput();
                     // UI state
                     const btnC = document.getElementById('btnConnect');
                     const btnD = document.getElementById('btnDisconnect');

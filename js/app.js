@@ -225,6 +225,17 @@
 
       // Start reading
       state.readLoop = startReading();
+      /* A session that ended mid-command leaves the board still answering it, and
+         this one would read that tail as the answer to its own first command. The
+         tail runs as long as the previous session left work queued, so wait for the
+         line to fall quiet before the probe starts. */
+      // Longer than the board's own pause on a read of an address nobody answers.
+      for (const until = Date.now() + 6000; Date.now() < until; ) {
+        const before = state.rxBytes;
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        if (state.rxBytes === before) break;
+      }
+      resetActiveProbe();
       requestCommandCatalog();
 
     } catch (err) {
