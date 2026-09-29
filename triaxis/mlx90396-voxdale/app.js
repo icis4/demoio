@@ -2,6 +2,9 @@ import { MLX90396_API } from './mlx_api.js';
 import { Arduino_API } from './arduino_api.js';
 import { 
   initSfiDemo, 
+  initCoilControls,
+  setCoilState,
+  clampCoilDwellS,
   resizeSfiCanvases, 
   updateSfiDomeKinematics, 
   setHardwareCoilCallback, 
@@ -41,15 +44,18 @@ let scpiLock = Promise.resolve();
 let scpiWaiter = null;
 let rxBuffer = '';
 let lastDataLine = '';
+let lastScalarLine = '';
 
 const magnetOffsets = { x: 0, y: 0 };
 const latestRawMagnet = { x: 0, y: 0 };
 
 window.addEventListener('DOMContentLoaded', () => {
+  setHardwareCoilCallback(handleHardwareCoilCommand);
+  initCoilControls();
   initSfiDemo();
   initTabNavigation();
-  setHardwareCoilCallback(toggleHardwareCoilPin);
   window.addEventListener('resize', resizeSfiCanvases);
+  window.addEventListener('pagehide', releaseCoilOnUnload);
 });
 
 function initTabNavigation() {
@@ -95,6 +101,12 @@ function appendLog(text, cls = 'log-rx') {
   miniLogWindow.scrollTop = miniLogWindow.scrollHeight;
 }
 
+// The prompt is the only reliable end-of-response marker: `\n(<status>)>`, where the
+// status is OK on success and a HAL/errno string otherwise (ERROR, BUSY, TIMEOUT,
+// CRC, ERR:<n>). Matching the shape rather than a fixed list is what lets a rejected
+// command surface as an error instead of as a timeout.
+const SCPI_PROMPT_RE = /\(([A-Za-z_][A-Za-z0-9_]*(?::[A-Za-z0-9]+)?)\)>\s*$/;
+
 function processRx(text) {
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
@@ -119,19 +131,20 @@ function processRx(text) {
       rxBuffer = '';
     } else {
       rxBuffer += char;
-      if (currentDriverType === 'scpi') {
-        if (rxBuffer.endsWith('(OK)>') || rxBuffer.endsWith('(ERR)>') || rxBuffer.endsWith('(E2BIG)>') || rxBuffer.endsWith('(ERANGE)>')) {
-          handlePrompt(rxBuffer.trim());
-          rxBuffer = '';
-        }
+      if (currentDriverType === 'scpi' && SCPI_PROMPT_RE.test(rxBuffer)) {
+        handlePrompt(rxBuffer.trim());
+        rxBuffer = '';
       }
     }
   }
 }
 
 function handlePrompt(line) {
-  if (line.endsWith('(OK)>')) {
-    let dataPart = line.slice(0, -5).trim();
+  const prompt = SCPI_PROMPT_RE.exec(line);
+  const status = prompt ? prompt[1] : null;
+
+  if (status === 'OK') {
+    let dataPart = line.slice(0, prompt.index).trim();
     if (dataPart.includes(':SPI') || dataPart.includes(',') || dataPart.includes('0x')) {
       lastDataLine = dataPart;
     }
@@ -140,13 +153,14 @@ function handlePrompt(line) {
 
     if (scpiWaiter) {
       clearTimeout(scpiWaiter.timeoutId);
-      scpiWaiter.resolve(lastDataLine);
+      scpiWaiter.resolve(scpiWaiter.scalar ? lastScalarLine : lastDataLine);
       const rel = scpiWaiter.release;
       scpiWaiter = null;
       if (rel) rel();
     }
     lastDataLine = '';
-  } else if (line.endsWith('(ERR)>') || line.endsWith('(E2BIG)>') || line.endsWith('(ERANGE)>')) {
+    lastScalarLine = '';
+  } else if (status) {
     appendLog(line + '\n', 'log-badprompt');
     if (scpiWaiter) {
       clearTimeout(scpiWaiter.timeoutId);
@@ -156,10 +170,14 @@ function handlePrompt(line) {
       if (rel) rel();
     }
     lastDataLine = '';
+    lastScalarLine = '';
   } else {
     appendLog(line + '\n', 'log-rx');
-    if (line.includes(',') && !line.startsWith(':') && !line.startsWith('*')) {
-      lastDataLine = line;
+    // Bare payload lines, e.g. the "1"/"0" that :A0:GPIO? answers with, carry no
+    // comma and no 0x, so they have to be captured separately for scalar reads.
+    if (!line.startsWith(':') && !line.startsWith('*')) {
+      if (line.includes(',')) lastDataLine = line;
+      lastScalarLine = line;
     }
   }
 }
@@ -175,7 +193,7 @@ async function sendCommand(cmd) {
   }
 }
 
-async function scpiQuery(cmd) {
+async function scpiQuery(cmd, options = {}) {
   let releaseLock;
   const nextLock = new Promise(resolve => { releaseLock = resolve; });
 
@@ -184,29 +202,189 @@ async function scpiQuery(cmd) {
 
   return new Promise((resolve, reject) => {
     lastDataLine = '';
-    scpiWaiter = { resolve, reject, release: releaseLock };
+    lastScalarLine = '';
+
+    // The timeout has to recognise its own waiter: a slow reply arriving after the
+    // 2.5 s deadline would otherwise be handed to (or discarded by) the next query.
+    const waiter = { resolve, reject, release: releaseLock, scalar: Boolean(options.scalar) };
+    scpiWaiter = waiter;
     sendCommand(cmd);
 
-    scpiWaiter.timeoutId = setTimeout(() => {
-      if (scpiWaiter) {
-        scpiWaiter.reject(new Error("Device Timeout on command: " + cmd));
-        scpiWaiter = null;
-        releaseLock();
-      }
+    waiter.timeoutId = setTimeout(() => {
+      if (scpiWaiter !== waiter) return;
+      scpiWaiter = null;
+      waiter.reject(new Error("Device Timeout on command: " + cmd));
+      releaseLock();
     }, 2500);
   });
 }
 
-// Requirement 4: Physical Hardware Coil Pin SCPI Trigger
-async function toggleHardwareCoilPin(state) {
-  if (!isConnected || currentDriverType !== 'scpi') return;
+// --- Stray field coil: Melexis IO A0 drives the MOSFET gate ---
+// :A0:GPIO:INIT:OUT arms the pin and drives the level given as its argument, so a
+// single command both configures the pin and leaves it in a known state. The coil
+// is only ever a timed pulse: every path that can end the session (pulse expiry,
+// explicit abort, Stop, disconnect, tab close) drives A0 low, so the MOSFET cannot
+// be left energised.
+const COIL_PIN = 'A0';
+
+let coilPinReady = false;
+let coilEnergised = false;
+let coilPulseTimer = null;
+
+function coilPinCmd(on) {
+  return `:${COIL_PIN}:GPIO ${on ? 1 : 0}`;
+}
+
+async function armCoilPin() {
+  if (coilPinReady) return;
+  const cmd = `:${COIL_PIN}:GPIO:INIT:OUT 0`;
+  appendLog(`[COIL] > ${cmd} (pin armed as output, level LOW)\n`, 'log-okprompt');
+  await scpiQuery(cmd);
+  coilPinReady = true;
+}
+
+// The firmware answers :A0:GPIO? with a bare "1" or "0" line, so this needs the
+// scalar read path rather than the comma-separated data one.
+async function readCoilPinLevel() {
+  const raw = await scpiQuery(`:${COIL_PIN}:GPIO?`, { scalar: true });
+  const match = /([01])\s*$/.exec(String(raw || '').trim());
+  return match ? match[1] === '1' : null;
+}
+
+async function driveCoil(on) {
+  await armCoilPin();
+  appendLog(`[COIL] > ${coilPinCmd(on)}\n`, 'log-rx');
+  await scpiQuery(coilPinCmd(on));
+
+  let level = null;
   try {
-    const pinCmd = state ? ':A3:GPIO:SET:OUT 1' : ':A3:GPIO:SET:OUT 0';
-    await scpiQuery(pinCmd);
-    appendLog(`[HARDWARE COIL] Pin set to: ${state ? 'HIGH (5mT ON)' : 'LOW (OFF)'}\n`, 'log-okprompt');
+    level = await readCoilPinLevel();
   } catch (err) {
-    console.warn('[COIL SCPI ERROR]', err);
+    appendLog(`[COIL] readback failed: ${err.message}\n`, 'log-badprompt');
   }
+
+  if (level === null) {
+    appendLog(`[COIL] ${COIL_PIN} level unconfirmed — no usable reply to :${COIL_PIN}:GPIO?\n`, 'log-badprompt');
+  } else if (level !== on) {
+    throw new Error(`${COIL_PIN} read back ${level ? 'HIGH' : 'LOW'} after commanding ${on ? 'HIGH' : 'LOW'}`);
+  } else {
+    appendLog(`[HARDWARE COIL] ${COIL_PIN} confirmed ${level ? 'HIGH — MOSFET gate driven, coil energised' : 'LOW — coil off'}\n`, 'log-okprompt');
+  }
+  return level;
+}
+
+function startCoilPulse(dwellS, hardware) {
+  if (coilPulseTimer !== null) clearTimeout(coilPulseTimer);
+  const dwellMs = dwellS * 1000;
+  coilPulseTimer = setTimeout(() => {
+    coilPulseTimer = null;
+    endCoilPulse(hardware);
+  }, dwellMs);
+  setCoilState({ active: true, hardware, endsAt: Date.now() + dwellMs });
+}
+
+async function endCoilPulse(hardware) {
+  if (coilEnergised && hardware) {
+    try {
+      await driveCoil(false);
+    } catch (err) {
+      appendLog(`[COIL] FAILED to switch the coil off: ${err.message}\n`, 'log-badprompt');
+    }
+  }
+  coilEnergised = false;
+  setCoilState({ active: false, hardware });
+}
+
+async function handleHardwareCoilCommand(request) {
+  const action = request && request.action === 'off' ? 'off' : 'pulse';
+  const hardware = isConnected && currentDriverType === 'scpi';
+
+  if (coilPulseTimer !== null) {
+    clearTimeout(coilPulseTimer);
+    coilPulseTimer = null;
+  }
+
+  if (!hardware) {
+    if (action === 'pulse') {
+      appendLog('[COIL] No SCPI link to the Melexis IO board — pulsing in simulation only, no pin is driven.\n', 'log-badprompt');
+      startCoilPulse(clampCoilDwellS(request && request.dwellS), false);
+    } else {
+      setCoilState({ active: false, hardware: false });
+    }
+    return true;
+  }
+
+  if (action === 'off') {
+    try {
+      await driveCoil(false);
+    } catch (err) {
+      appendLog(`[COIL] abort failed: ${err.message}\n`, 'log-badprompt');
+    }
+    coilEnergised = false;
+    setCoilState({ active: false, hardware: true });
+    return true;
+  }
+
+  const dwellS = clampCoilDwellS(request && request.dwellS);
+  try {
+    await driveCoil(true);
+  } catch (err) {
+    appendLog(`[COIL] could not energise the coil: ${err.message}\n`, 'log-badprompt');
+    // A rejected set can still have reached the pin, so force it low before
+    // reporting the fault rather than leaving the level unknown.
+    try {
+      await scpiQuery(coilPinCmd(false));
+    } catch (cleanupErr) {
+      appendLog(`[COIL] could not force ${COIL_PIN} low afterwards: ${cleanupErr.message}\n`, 'log-badprompt');
+    }
+    coilEnergised = false;
+    setCoilState({ active: false, hardware: true, fault: true });
+    return false;
+  }
+
+  coilEnergised = true;
+  startCoilPulse(dwellS, true);
+  return true;
+}
+
+// Fires on tab close and on bfcache navigation, so the state is pushed as well as
+// the pin: a page restored from the back/forward cache must not come back claiming
+// the coil is still on. The write itself cannot be awaited here.
+function releaseCoilOnUnload() {
+  if (coilPulseTimer !== null) {
+    clearTimeout(coilPulseTimer);
+    coilPulseTimer = null;
+  }
+  if (coilEnergised) {
+    coilEnergised = false;
+    if (writer) {
+      try {
+        writer.write(coilPinCmd(false) + '\n').catch(() => {});
+      } catch (err) {
+        // Port already closed: there is nothing left to drive the pin with.
+      }
+    }
+  }
+  setCoilState({ active: false, hardware: false });
+}
+
+async function releaseCoilBeforeDisconnect() {
+  if (coilPulseTimer !== null) {
+    clearTimeout(coilPulseTimer);
+    coilPulseTimer = null;
+  }
+
+  if (isConnected && currentDriverType === 'scpi' && coilEnergised) {
+    try {
+      await driveCoil(false);
+    } catch (err) {
+      appendLog(`[COIL] could not confirm the coil is off before closing the port: ${err.message}\n`, 'log-badprompt');
+    }
+  }
+
+  coilEnergised = false;
+  coilPinReady = false;
+  setCoilState({ active: false, hardware: false });
 }
 
 function setUIConnected(connected) {
@@ -261,14 +439,26 @@ async function connectSerial() {
       }
     })();
 
+    // The reader has to be live before the pin can be armed, and a previous
+    // session must not be able to leave the MOSFET energised.
+    if (currentDriverType === 'scpi') {
+      try {
+        await armCoilPin();
+      } catch (err) {
+        appendLog(`[COIL] could not arm ${COIL_PIN} as an output: ${err.message}\n`, 'log-badprompt');
+      }
+    }
+
   } catch (err) {
     appendLog(`[CONN ERROR]: ${err.message}\n`, 'log-badprompt');
   }
 }
 
 async function disconnectSerial() {
-  isReading = false;
   isDemoRunning = false;
+  // Before the streams go away, so the shut-off can still be sent and confirmed.
+  await releaseCoilBeforeDisconnect();
+  isReading = false;
   if (reader) { await reader.cancel(); reader.releaseLock(); }
   if (writer) { await writer.close(); writer.releaseLock(); }
   if (readableStreamClosed) await readableStreamClosed.catch(() => {});
@@ -431,8 +621,11 @@ btnModalConnect?.addEventListener('click', async () => {
 });
 
 btnStartDemo?.addEventListener('click', runJoystickDemo);
-btnStopDemo?.addEventListener('click', () => {
+btnStopDemo?.addEventListener('click', async () => {
   isDemoRunning = false;
+  if (coilEnergised) {
+    await handleHardwareCoilCommand({ action: 'off' });
+  }
   if (!isConnected) setSfiHardwareTracking(false);
   btnStartDemo.disabled = false;
   btnStopDemo.disabled = true;

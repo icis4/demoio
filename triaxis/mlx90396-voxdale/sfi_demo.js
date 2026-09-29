@@ -116,7 +116,7 @@ export function computeSfi2Px(dbx_dx, dbz_dx, dby_dy, dbz_dy, params = DEFAULT_C
 
 // --- Simulation & Telemetry State ---
 let autoPattern = true;
-let coilActive = false;
+let coilActive = false; // owned by setCoilState(); drives the simulated stray field below
 let animTime = 0;
 let joyX = 0, joyY = 0, joyZ = 0;
 let targetJoyX = 0, targetJoyY = 0, targetJoyZ = 0;
@@ -144,14 +144,162 @@ const tmpVec = new THREE.Vector3();
 let radarCanvasStd = null, radarCtxStd = null;
 let radarCanvasMlx = null, radarCtxMlx = null;
 
-let onHardwareCoilToggle = null;
 let liveHardwarePacket = null;
 const SINGLE_PIXEL_LSB_PER_MT = 20;
 const DIFFERENTIAL_LSB_PER_MT_MM = 120;
 const TRACE_HISTORY_POINTS = 45;
 
+// --- Stray field coil controls ---
+// The button is a timed pulse, never a latch: the coil energises, the badge counts
+// the dwell down, and the pin is driven low again when it hits zero. Clicking while
+// a pulse is running aborts it early instead of queueing a second one.
+// This module only renders and counts; app.js owns the pin and the authoritative
+// shut-off timer.
+const COIL_DWELL_DEFAULT_S = 5;
+const COIL_DWELL_MIN_S = 0.5;
+const COIL_DWELL_MAX_S = 60;
+
+let onHardwareCoilCommand = null;
+let coilView = { active: false, hardware: false, fault: false, endsAt: 0 };
+let coilCountdownTimer = null;
+let coilStartPending = false;
+
 export function setHardwareCoilCallback(cb) {
-  onHardwareCoilToggle = cb;
+  onHardwareCoilCommand = cb;
+}
+
+function clampCoilDwellS(value) {
+  const parsed = parseFloat(value);
+  if (!isFinite(parsed)) return COIL_DWELL_DEFAULT_S;
+  return Math.min(COIL_DWELL_MAX_S, Math.max(COIL_DWELL_MIN_S, parsed));
+}
+
+export { clampCoilDwellS };
+
+function coilRemainingS() {
+  return Math.max(0, (coilView.endsAt - Date.now()) / 1000);
+}
+
+function renderCoilState() {
+  const btnCoil = document.getElementById('btn-coil');
+  const btnCoilToggle = document.getElementById('btn-coil-toggle');
+  const dwellInput = document.getElementById('coil-dwell-seconds');
+  const panelLbl = document.getElementById('coil-readout-lbl');
+
+  // The dwell is latched when the pulse starts, so it cannot be edited mid-pulse.
+  if (dwellInput) dwellInput.disabled = coilView.active;
+
+  const fault = coilView.fault;
+  const remaining = coilRemainingS().toFixed(1);
+
+  // Kept in sync for the Requirement 4 panel, which is hidden by default but
+  // stays correct if it is ever brought back.
+  if (panelLbl) {
+    if (fault) {
+      panelLbl.textContent = 'COIL: FAULT — NOT DRIVEN';
+      panelLbl.style.color = '#ef4444';
+    } else if (coilView.active) {
+      panelLbl.textContent = `COIL: ACTIVE (+5.0 mT STRAY FIELD, ${remaining}s)`;
+      panelLbl.style.color = '#ef4444';
+    } else {
+      panelLbl.textContent = 'COIL: OFF (0.0 mT)';
+      panelLbl.style.color = '#94a3b8';
+    }
+  }
+
+  // The button is the only visible surface for the coil now, so the fault has to
+  // read on it rather than on a readout that is no longer there.
+  if (btnCoil) {
+    btnCoil.classList.toggle('ds-button--on', coilView.active && !fault);
+    btnCoil.classList.toggle('ds-button--fault', fault);
+    if (fault) {
+      btnCoil.textContent = 'Coil Fault — A0 not driven';
+      btnCoil.title = 'The last pulse could not energise the coil. A0 is held low — press to try again.';
+    } else {
+      btnCoil.textContent = coilView.active ? `Coil ON — ${remaining}s` : 'Stray Field Coil (5 mT)';
+      if (coilView.active) {
+        // The real/simulated distinction now lives only here, so it has to be
+        // stated explicitly rather than colour-coded.
+        btnCoil.title = coilView.hardware
+          ? 'Melexis IO A0 is driving the MOSFET gate. Click to drop the coil now instead of waiting out the pulse'
+          : 'No Melexis IO link — this pulse is simulated and drives no pin. Click to stop it.';
+      } else {
+        btnCoil.title = 'Pulse the 5 mT stray field coil on Melexis IO pin A0';
+      }
+    }
+  }
+
+  if (btnCoilToggle) {
+    btnCoilToggle.classList.toggle('ds-button--on', coilView.active && !fault);
+    btnCoilToggle.classList.toggle('ds-button--fault', fault);
+    btnCoilToggle.textContent = fault
+      ? 'Retry Coil Pulse'
+      : (coilView.active ? 'Abort Coil Pulse' : 'Pulse Coil (5 mT)');
+  }
+}
+
+export function setCoilState(next) {
+  coilView = {
+    active: Boolean(next && next.active),
+    hardware: Boolean(next && next.hardware),
+    fault: Boolean(next && next.fault),
+    endsAt: (next && next.endsAt) || 0
+  };
+
+  if (coilCountdownTimer !== null) {
+    clearInterval(coilCountdownTimer);
+    coilCountdownTimer = null;
+  }
+
+  renderCoilState();
+
+  if (coilView.active) {
+    coilCountdownTimer = setInterval(renderCoilState, 100);
+  }
+}
+
+export function initCoilControls() {
+  const btnCoil = document.getElementById('btn-coil');
+  const btnCoilToggle = document.getElementById('btn-coil-toggle');
+  const dwellInput = document.getElementById('coil-dwell-seconds');
+
+  const onCoilClick = async () => {
+    if (coilView.active) {
+      if (typeof onHardwareCoilCommand === 'function') {
+        try {
+          await onHardwareCoilCommand({ action: 'off' });
+        } catch (err) {
+          console.warn('[COIL] abort failed', err);
+        }
+      }
+      return;
+    }
+
+    if (coilStartPending) return;
+    coilStartPending = true;
+
+    const dwellS = clampCoilDwellS(dwellInput ? dwellInput.value : COIL_DWELL_DEFAULT_S);
+    if (dwellInput) dwellInput.value = String(dwellS);
+
+    try {
+      if (typeof onHardwareCoilCommand === 'function') {
+        await onHardwareCoilCommand({ action: 'pulse', dwellS });
+      } else {
+        // No bridge attached: run the dwell locally so the UI stays testable.
+        setCoilState({ active: true, hardware: false, endsAt: Date.now() + dwellS * 1000 });
+        setTimeout(() => setCoilState({ active: false, hardware: false }), dwellS * 1000);
+      }
+    } catch (err) {
+      console.warn('[COIL] pulse request failed', err);
+    } finally {
+      coilStartPending = false;
+    }
+  };
+
+  btnCoil?.addEventListener('click', onCoilClick);
+  btnCoilToggle?.addEventListener('click', onCoilClick);
+
+  setCoilState({ active: false, hardware: false });
 }
 
 export function setSfiHardwareTracking(enabled) {
@@ -173,35 +321,7 @@ export function initSfiDemo() {
   if (!container || !window.THREE) return;
 
   const btnPattern = document.getElementById('btn-pattern');
-  const btnCoil = document.getElementById('btn-coil');
-  const btnCoilToggle = document.getElementById('btn-coil-toggle');
   const btnResetTrace = document.getElementById('btn-reset-trace');
-  const coilLbl = document.getElementById('coil-readout-lbl');
-
-  const toggleCoilAction = () => {
-    coilActive = !coilActive;
-    if (coilActive) {
-      btnCoil?.classList.add('active');
-      btnCoilToggle?.classList.add('active');
-      if (coilLbl) {
-        coilLbl.innerText = 'COIL: ACTIVE (+5.0 mT STRAY FIELD)';
-        coilLbl.style.color = '#ef4444';
-      }
-    } else {
-      btnCoil?.classList.remove('active');
-      btnCoilToggle?.classList.remove('active');
-      if (coilLbl) {
-        coilLbl.innerText = 'COIL: INACTIVE (0.0 mT)';
-        coilLbl.style.color = '#94a3b8';
-      }
-    }
-    if (typeof onHardwareCoilToggle === 'function') {
-      onHardwareCoilToggle(coilActive);
-    }
-  };
-
-  btnCoil?.addEventListener('click', toggleCoilAction);
-  btnCoilToggle?.addEventListener('click', toggleCoilAction);
 
   btnPattern?.addEventListener('click', () => {
     autoPattern = !autoPattern;
@@ -551,15 +671,8 @@ export function initSfiDemo() {
       sfi2px.signalStrength
     );
 
-    let trueAngleDeg = (Math.atan2(joyY, joyX) * 180 / Math.PI + 360) % 360;
     let stdAngleDeg = (Math.atan2(displayStdBy, displayStdBx) * 180 / Math.PI + 360) % 360;
     let diffAngleDeg = (Math.atan2(displayMlxDBzY, displayMlxDBz) * 180 / Math.PI + 360) % 360;
-
-    let stdError = Math.abs(stdAngleDeg - trueAngleDeg);
-    if (stdError > 180) stdError = 360 - stdError;
-
-    let diffError = Math.abs(diffAngleDeg - trueAngleDeg);
-    if (diffError > 180) diffError = 360 - diffError;
 
     // Top Summary (if unhidden)
     const angleAlphaEl = document.getElementById('angle-alpha');
@@ -571,23 +684,19 @@ export function initSfiDemo() {
 
     // Standard 3D Hall Radar Readouts
     const angleStdEl = document.getElementById('radar-angle-std');
-    const errorStdEl = document.getElementById('radar-error-std');
     const alphaStdEl = document.getElementById('radar-alpha-std');
     const betaStdEl = document.getElementById('radar-beta-std');
 
     if (angleStdEl) angleStdEl.innerText = stdAngleDeg.toFixed(1) + '°';
-    if (errorStdEl) errorStdEl.innerText = stdError.toFixed(1) + '°';
     if (alphaStdEl) alphaStdEl.innerText = sfi1px.alphaDeg.toFixed(1) + '°';
     if (betaStdEl) betaStdEl.innerText = sfi1px.betaDeg.toFixed(1) + '°';
 
     // MLX90396 Differential SFI Radar Readouts (Desmos Calibrated)
     const angleMlxEl = document.getElementById('radar-angle-mlx');
-    const errorMlxEl = document.getElementById('radar-error-mlx');
     const alphaMlxEl = document.getElementById('radar-alpha-mlx');
     const betaMlxEl = document.getElementById('radar-beta-mlx');
 
     if (angleMlxEl) angleMlxEl.innerText = diffAngleDeg.toFixed(1) + '°';
-    if (errorMlxEl) errorMlxEl.innerText = diffError.toFixed(1) + '°';
     if (alphaMlxEl) alphaMlxEl.innerText = sfi2px.alphaDeg.toFixed(1) + '°';
     if (betaMlxEl) betaMlxEl.innerText = sfi2px.betaDeg.toFixed(1) + '°';
 

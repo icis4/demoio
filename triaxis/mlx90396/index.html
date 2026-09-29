@@ -204,7 +204,7 @@
       overflow: hidden;
     }
     .magnet-sensor {
-      width: min(88%, 700px); aspect-ratio: 1 / 1; max-height: 100%;
+      width: min(88%, 700px); aspect-ratio: 1 / 1; max-height: 100%; max-width: 100%;
       background: #0B2C40; border-radius: 6px;
       position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
       box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4); overflow: hidden;
@@ -290,12 +290,11 @@
             <div class="magnet-arrow" style="left: 12px; flex-direction: row;"><svg class="arrow-icon" viewBox="0 0 24 24" style="transform: rotate(-90deg); margin-right: 4px;"><path d="M12 2L4 10h5v12h6V10h5z"/></svg><span>-X</span></div>
             <div class="magnet-arrow" style="right: 12px; flex-direction: row;"><span>+X</span><svg class="arrow-icon" viewBox="0 0 24 24" style="transform: rotate(90deg); margin-left: 4px;"><path d="M12 2L4 10h5v12h6V10h5z"/></svg></div>
 
-            <span style="position: absolute; bottom: 12px; left: 16px; font-weight: bold; font-size: 1.2rem; color: #0B2C40; opacity: 0.8;">PCB</span>
             <div class="magnet-sensor">
               <svg class="sensor-grid" viewBox="-75 -75 150 150">
                 <defs>
-                  <pattern id="grid-1mm" width="20" height="20" patternUnits="userSpaceOnUse" x="-75" y="-75">
-                    <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(255, 255, 255, 0.09)" stroke-width="1" />
+                  <pattern id="grid-1mm" width="30" height="30" patternUnits="userSpaceOnUse" x="0" y="0">
+                    <path d="M 30 0 L 0 0 0 30" fill="none" stroke="rgba(255, 255, 255, 0.09)" stroke-width="1" />
                   </pattern>
                 </defs>
                 <rect x="-75" y="-75" width="150" height="150" fill="url(#grid-1mm)" />
@@ -319,16 +318,16 @@
                 <text class="grid-tick" data-mm="1" x="30" y="13" fill="rgba(255, 255, 255, 0.65)" font-size="8" text-anchor="middle" font-family="monospace">+1</text>
                 <text class="grid-tick" data-mm="1.5" x="45" y="13" fill="rgba(255, 255, 255, 0.45)" font-size="7" text-anchor="middle" font-family="monospace">+1.5</text>
                 <text class="grid-tick" data-mm="2" x="60" y="13" fill="rgba(255, 255, 255, 0.65)" font-size="8" text-anchor="middle" font-family="monospace">+2</text>
-                <text class="grid-tick" data-mm="2" x="6" y="-58" fill="rgba(255, 255, 255, 0.65)" font-size="8" alignment-baseline="middle" font-family="monospace">+2</text>
-                <text class="grid-tick" data-mm="1.5" x="6" y="-43" fill="rgba(255, 255, 255, 0.45)" font-size="7" alignment-baseline="middle" font-family="monospace">+1.5</text>
-                <text class="grid-tick" data-mm="1" x="6" y="-28" fill="rgba(255, 255, 255, 0.65)" font-size="8" alignment-baseline="middle" font-family="monospace">+1</text>
-                <text class="grid-tick" data-mm="-1" x="6" y="32" fill="rgba(255, 255, 255, 0.65)" font-size="8" alignment-baseline="middle" font-family="monospace">-1</text>
-                <text class="grid-tick" data-mm="-1.5" x="6" y="47" fill="rgba(255, 255, 255, 0.45)" font-size="7" alignment-baseline="middle" font-family="monospace">-1.5</text>
-                <text class="grid-tick" data-mm="-2" x="6" y="62" fill="rgba(255, 255, 255, 0.65)" font-size="8" alignment-baseline="middle" font-family="monospace">-2</text>
-                <text class="grid-tick" data-mm="-2.5" x="-71" y="-64" fill="#59FFB0" font-size="7.5" font-weight="bold" font-family="monospace">-2.5</text>
-                <text class="grid-tick" data-mm="2.5" x="47" y="-64" fill="#59FFB0" font-size="7.5" font-weight="bold" font-family="monospace">+2.5</text>
-                <text class="grid-tick" data-mm="-2.5" x="-71" y="71" fill="#59FFB0" font-size="7.5" font-weight="bold" font-family="monospace">-2.5</text>
-                <text class="grid-tick" data-mm="2.5" x="47" y="71" fill="#59FFB0" font-size="7.5" font-weight="bold" font-family="monospace">+2.5</text>
+                <text class="grid-tick" data-mm="2" x="6" y="-60" fill="rgba(255, 255, 255, 0.65)" font-size="8" dominant-baseline="middle" font-family="monospace">+2</text>
+                <text class="grid-tick" data-mm="1.5" x="6" y="-45" fill="rgba(255, 255, 255, 0.45)" font-size="7" dominant-baseline="middle" font-family="monospace">+1.5</text>
+                <text class="grid-tick" data-mm="1" x="6" y="-30" fill="rgba(255, 255, 255, 0.65)" font-size="8" dominant-baseline="middle" font-family="monospace">+1</text>
+                <text class="grid-tick" data-mm="-1" x="6" y="30" fill="rgba(255, 255, 255, 0.65)" font-size="8" dominant-baseline="middle" font-family="monospace">-1</text>
+                <text class="grid-tick" data-mm="-1.5" x="6" y="45" fill="rgba(255, 255, 255, 0.45)" font-size="7" dominant-baseline="middle" font-family="monospace">-1.5</text>
+                <text class="grid-tick" data-mm="-2" x="6" y="60" fill="rgba(255, 255, 255, 0.65)" font-size="8" dominant-baseline="middle" font-family="monospace">-2</text>
+                <text class="grid-tick" data-mm="-2.5" x="-70" y="-66" fill="#59FFB0" font-size="7.5" font-weight="bold" text-anchor="start" dominant-baseline="hanging" font-family="monospace">-2.5</text>
+                <text class="grid-tick" data-mm="2.5" x="70" y="-66" fill="#59FFB0" font-size="7.5" font-weight="bold" text-anchor="end" dominant-baseline="hanging" font-family="monospace">+2.5</text>
+                <text class="grid-tick" data-mm="-2.5" x="-70" y="66" fill="#59FFB0" font-size="7.5" font-weight="bold" text-anchor="start" dominant-baseline="hanging" font-family="monospace">-2.5</text>
+                <text class="grid-tick" data-mm="2.5" x="70" y="66" fill="#59FFB0" font-size="7.5" font-weight="bold" text-anchor="end" dominant-baseline="hanging" font-family="monospace">+2.5</text>
               </svg>
             </div>
             

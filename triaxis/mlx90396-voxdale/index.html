@@ -415,6 +415,17 @@
       display: block;
     }
 
+    /* Anchors the canvas so the readout can overlay it with the same
+       .plot-overlay / .xyz-value-box components the 3D field plots use,
+       instead of nudging the values with magic-number offsets. */
+    .radar-stage {
+      position: relative;
+      width: 100%;
+      max-width: 340px;
+      display: flex;
+      justify-content: center;
+    }
+
     .radar-badge {
       position: absolute;
       top: 12px;
@@ -566,6 +577,49 @@
       gap: var(--space-3);
     }
 
+    /* Energised coil: keep the danger fill and add a slow halo so the driven
+       state is impossible to mistake for an idle one. */
+    .ds-button--on {
+      --btn-bg: var(--color-danger);
+      --btn-bg-hover: var(--color-danger);
+      --btn-bg-active: var(--color-danger);
+      --btn-fg: #fff;
+      animation: coil-drive-glow 1s ease-in-out infinite;
+    }
+
+    @keyframes coil-drive-glow {
+      0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-danger) 45%, transparent), var(--btn-shadow); }
+      50%      { box-shadow: 0 0 0 5px color-mix(in srgb, var(--color-danger) 15%, transparent), var(--btn-shadow); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .ds-button--on { animation: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-danger) 55%, transparent), var(--btn-shadow); }
+    }
+
+    /* Pin not driven: hollow and amber, so a failed pulse cannot be mistaken
+       for an energised one. */
+    .ds-button--fault {
+      --btn-bg: var(--color-surface-raised);
+      --btn-bg-hover: var(--color-surface);
+      --btn-bg-active: var(--color-surface);
+      --btn-fg: var(--color-warning);
+      --btn-border: color-mix(in srgb, var(--color-warning) 65%, transparent);
+      --btn-shadow: none;
+      animation: none;
+    }
+
+    .coil-dwell-lbl {
+      font-size: var(--font-size-xs);
+      color: var(--color-ink-muted);
+    }
+
+    .coil-dwell-input {
+      width: 4.5rem;
+      min-height: 2rem;
+      padding: 0.25rem 0.5rem;
+      font-size: var(--font-size-sm);
+    }
+
     /* Debug Terminal */
     .log-window {
       height: 160px;
@@ -622,6 +676,9 @@
     <button id="btn-stop-demo" class="ds-button ds-button--secondary ds-button--sm" disabled>Stop</button>
     <button id="btn-pattern" class="ds-button ds-button--secondary ds-button--sm">Auto-Pattern</button>
     <button id="btn-coil" class="ds-button ds-button--danger ds-button--sm">Stray Field Coil (5 mT)</button>
+    <label class="coil-dwell-lbl" for="coil-dwell-seconds">pulse</label>
+    <input type="number" id="coil-dwell-seconds" class="ds-field__input coil-dwell-input" min="0.5" max="60" step="0.5" value="5"
+           title="Coil pulse width in seconds (0.5 - 60)" aria-label="Coil pulse width in seconds" />
     <button id="btn-gain-toggle" class="ds-button ds-button--secondary ds-button--sm">Gain 1px: 1x (72)</button>
     <button id="btn-calib-toggle" class="ds-button ds-button--secondary ds-button--sm">Calibration Tuning</button>
     <button id="btn-zero" class="ds-button ds-button--warning ds-button--sm">Zero / Tare</button>
@@ -653,7 +710,7 @@
             Requirement 4: Stray Field Disturbance Coil (SW + HW GPIO)
           </span>
           <p style="margin: 2px 0 0 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);" id="coil-sub-desc">
-            Injects 5.0 mT external uniform stray field via SCPI GPIO on physical rig.
+            Injects 5.0 mT external uniform stray field via SCPI GPIO on physical rig (Melexis IO A0).
           </p>
         </div>
         <div style="display: flex; gap: var(--space-2); align-items: center;">
@@ -829,13 +886,14 @@
           <span class="radar-badge ds-badge ds-badge--success">
             Legacy Standard 3D Hall Radar
           </span>
-          <canvas id="radarCanvasStd" class="radar-canvas"></canvas>
-          <div style="margin-top: var(--space-2);font-size: var(--font-size-large);color: var(--color-success);font-weight: 600;text-align: center;width: 100%;position: relative;left: 182px;bottom: 350px;">
-            <div>
-              θ_std: <b id="radar-angle-std">0.0°</b> | Error: <b id="radar-error-std">0.0°</b>
-            </div>
-            <div  style="margin-top: 4px;font-size: 11px;opacity: 0.9;color: var(--color-ink-muted);font-size: 15px;">
-              α_std: <b id="radar-alpha-std" style="color: var(--color-accent);">0.0°</b> | β_std: <b id="radar-beta-std" style="color: var(--color-accent);">0.0°</b>
+          <div class="radar-stage">
+            <canvas id="radarCanvasStd" class="radar-canvas"></canvas>
+            <div class="plot-overlay" style="right: -106px; bottom: 262px" >
+              <div class="plot-overlay-boxes">
+                <span class="xyz-value-box"><span class="xyz-value-lbl">θ_std</span><b id="radar-angle-std">0.0°</b></span>
+                <span class="xyz-value-box"><span class="xyz-value-lbl">α_std</span><b id="radar-alpha-std">0.0°</b></span>
+                <span class="xyz-value-box"><span class="xyz-value-lbl">β_std</span><b id="radar-beta-std">0.0°</b></span>
+              </div>
             </div>
           </div>
         </div>
@@ -844,13 +902,14 @@
           <span class="radar-badge ds-badge ds-badge--success">
             MLX90396 Differential SFI Radar
           </span>
-          <canvas id="radarCanvasMlx" class="radar-canvas"></canvas>
-          <div style="margin-top: var(--space-2);font-size: var(--font-size-large);color: var(--color-success);font-weight: 600;text-align: center;width: 100%;position: relative;left: 188px;top: -350px;">
-            <div>
-              θ_diff: <b id="radar-angle-mlx">0.0°</b> | Error: <b id="radar-error-mlx">0.0°</b>
-            </div>
-            <div style="margin-top: 4px;font-size: 11px;opacity: 0.9;color: var(--color-ink-muted);font-size: 15px;">
-              α_diff: <b id="radar-alpha-mlx" style="color: var(--color-accent);">0.0°</b> | β_diff: <b id="radar-beta-mlx" style="color: var(--color-accent);">0.0°</b>
+          <div class="radar-stage">
+            <canvas id="radarCanvasMlx" class="radar-canvas"></canvas>
+            <div class="plot-overlay" style="right: -106px; bottom: 262px;">
+              <div class="plot-overlay-boxes">
+                <span class="xyz-value-box"><span class="xyz-value-lbl">θ_diff</span><b id="radar-angle-mlx">0.0°</b></span>
+                <span class="xyz-value-box"><span class="xyz-value-lbl">α_diff</span><b id="radar-alpha-mlx">0.0°</b></span>
+                <span class="xyz-value-box"><span class="xyz-value-lbl">β_diff</span><b id="radar-beta-mlx">0.0°</b></span>
+              </div>
             </div>
           </div>
         </div>

@@ -104,14 +104,18 @@ browser DevTools console (there is no on-screen terminal window).
 ## 5. View 2 — Twist
 
 `view-magnet` — the diametrical twist demo. A half-blue/half-red magnet disk
-(blue = N, red = S) rides a 1 mm grid printed on a stylized sensor overlay over a **PCB**
-schematic.
+(blue = N, red = S) rides a 1 mm grid printed on a stylized sensor overlay.
 
 **Rendering**
 - Grid is **fixed at ±2.5 mm** — it never auto-ranges. Earlier builds rescaled the map from
   live peak tracking, which made the disk appear to "jump" during a pure rotation; that was
   removed. `gridHalfPx()` reads the sensor element's live `clientWidth/2`, so
   `pxPerMm = halfPx / 2.5` adapts to window size without changing the physical meaning.
+- **SVG unit mapping:** `viewBox="-75 -75 150 150"` over ±2.5 mm, so **1 mm = 30 user units**
+  and the origin is the exact centre of the grid. The `grid-1mm` `<pattern>` is therefore
+  `width/height="30"` at `x="0" y="0"` — lines fall on 0, ±30, ±60, so a line runs through the
+  origin and every ±1 mm / ±2 mm tick mark. Keep the pattern pitch equal to `150 / mmSpan`;
+  anything else silently shifts the mesh off the axes.
 - XY position becomes `translate3d(transX, transY, 0)`, clamped to the grid edges.
 - Twist angle becomes `rotate(-angle)` — the sign is deliberately inverted so a **rightward
   (CW) physical rotation renders as clockwise on screen** (CSS counts + as CW, but the raw
