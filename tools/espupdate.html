@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32 Firmware Updater</title>
+  <meta name="description" content="Single-file Web Serial updater that writes a merged ESP32 image through the ROM loader.">
+  <meta name="author" content="Ivaylo Ilchev">
+  <meta name="theme-color" content="#0b0e17">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet">
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+  <link rel="manifest" href="../manifest.webmanifest">
+  <style>
+    /* Shared design system with index.html / terminal.html */
+    :root {
+      color-scheme: dark;
+
+      --clr-bg:          #001A24;
+      --clr-surface:     #00293A;
+      --clr-surface-2:   #00354B;
+      --clr-border:      #0A4358;
+      --clr-border-subtle: #04303F;
+
+      --clr-text:        #EAF1F3;
+      --clr-text-muted:  #B2C4CB;
+
+      --clr-accent:      #65BBA9;
+      --clr-accent-glow: rgba(101, 187, 169, .25);
+      --clr-accent-bg:   rgba(101, 187, 169, .08);
+      --clr-danger:      #DB4140;
+
+      --ff-sans: 'Lato', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      --ff-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
+
+      --radius-sm: 2px;
+      --radius-md: 3px;
+      --radius-lg: 4px;
+      --radius-xl: 6px;
+
+      --shadow-lg: 0 8px 32px hsla(0, 0%, 0%, .4);
+      --dur-fast: 140ms;
+      --ease-out: cubic-bezier(.2, .8, .3, 1);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--clr-bg);
+      color: var(--clr-text);
+      font-family: var(--ff-sans);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Ambient background, matching the other pages */
+    .bg-grid {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(101, 187, 169, .04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(101, 187, 169, .04) 1px, transparent 1px);
+      background-size: 40px 40px;
+      mask-image: radial-gradient(ellipse 80% 60% at 50% 30%, #000 40%, transparent 100%);
+      -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 30%, #000 40%, transparent 100%);
+    }
+
+    .bg-glow {
+      position: fixed;
+      width: 520px;
+      height: 520px;
+      border-radius: 50%;
+      filter: blur(120px);
+      opacity: .5;
+      z-index: 0;
+      pointer-events: none;
+      background: var(--clr-accent-glow);
+    }
+
+    .bg-glow--1 { top: -240px; left: -160px; }
+    .bg-glow--2 { bottom: -280px; right: -180px; background: rgba(44, 109, 127, .18); }
+
+    .shell {
+      position: relative;
+      z-index: 1;
+      width: min(980px, calc(100vw - 32px));
+      margin: 32px auto;
+      padding: 28px;
+      border: 1px solid var(--clr-border-subtle);
+      border-radius: var(--radius-xl);
+      background: rgba(0, 41, 58, .7);
+      box-shadow: var(--shadow-lg);
+      backdrop-filter: blur(18px) saturate(1.6);
+      -webkit-backdrop-filter: blur(18px) saturate(1.6);
+    }
+
+    .home-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 18px;
+      padding: 4px 10px 4px 6px;
+      border-radius: var(--radius-sm);
+      color: var(--clr-text-muted);
+      font-size: 0.75rem;
+      font-weight: 500;
+      text-decoration: none;
+      transition: color var(--dur-fast) var(--ease-out),
+                  background var(--dur-fast) var(--ease-out);
+    }
+
+    .home-link svg {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+    }
+
+    .home-link:hover {
+      color: var(--clr-text);
+      background: var(--clr-surface-2);
+    }
+
+    .home-link:focus-visible {
+      outline: 2px solid var(--clr-accent);
+      outline-offset: 2px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(1.6rem, 2.6vw, 2.4rem);
+      line-height: 1.05;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, var(--clr-text), var(--clr-accent));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .lede {
+      margin: 0 0 28px;
+      max-width: 70ch;
+      color: var(--clr-text-muted);
+      font-size: 0.875rem;
+      line-height: 1.6;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 18px;
+    }
+
+    .card {
+      padding: 18px;
+      border: 1px solid var(--clr-border);
+      border-radius: var(--radius-lg);
+      background: var(--clr-surface);
+    }
+
+    .card h2 {
+      margin: 0 0 16px;
+      color: var(--clr-text-muted);
+      font-size: 0.6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .field {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .field label,
+    .hint,
+    .status-line,
+    .summary {
+      color: var(--clr-text-muted);
+      font-size: 0.75rem;
+    }
+
+    input[type="file"],
+    input[type="number"] {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--clr-border);
+      border-radius: var(--radius-sm);
+      background: var(--clr-surface-2);
+      color: var(--clr-text);
+      font: inherit;
+      font-size: 0.8125rem;
+      transition: border-color var(--dur-fast) var(--ease-out),
+                  box-shadow var(--dur-fast) var(--ease-out);
+    }
+
+    input[type="file"]:focus,
+    input[type="number"]:focus {
+      outline: none;
+      border-color: var(--clr-accent);
+      box-shadow: 0 0 0 3px var(--clr-accent-bg);
+    }
+
+    input[type="file"]::file-selector-button {
+      margin-right: 12px;
+      padding: 6px 12px;
+      border: 1px solid var(--clr-border);
+      border-radius: var(--radius-sm);
+      background: var(--clr-surface);
+      color: var(--clr-text);
+      font: inherit;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+
+    input[type="file"]::file-selector-button:hover {
+      border-color: var(--clr-accent);
+      color: var(--clr-accent);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    button {
+      padding: 10px 18px;
+      border: none;
+      border-radius: var(--radius-sm);
+      background: linear-gradient(135deg, var(--clr-accent), #2C6D7F);
+      color: #00222F;
+      font-family: var(--ff-sans);
+      font-size: 0.8125rem;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 2px 8px var(--clr-accent-glow);
+      transition: transform var(--dur-fast) var(--ease-out),
+                  box-shadow var(--dur-fast) var(--ease-out),
+                  filter var(--dur-fast) var(--ease-out),
+                  background var(--dur-fast) var(--ease-out),
+                  opacity var(--dur-fast) var(--ease-out);
+    }
+
+    button.secondary,
+    button.ghost {
+      background: var(--clr-surface-2);
+      color: var(--clr-text);
+      border: 1px solid var(--clr-border);
+      box-shadow: none;
+    }
+
+    button:hover:enabled {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 18px var(--clr-accent-glow);
+      filter: brightness(1.1);
+    }
+
+    button.secondary:hover:enabled,
+    button.ghost:hover:enabled {
+      border-color: var(--clr-accent);
+      color: var(--clr-accent);
+      filter: none;
+      box-shadow: none;
+    }
+
+    button:focus-visible {
+      outline: 2px solid var(--clr-accent);
+      outline-offset: 2px;
+    }
+
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    progress {
+      width: 100%;
+      height: 8px;
+      margin: 12px 0 6px;
+      border: none;
+      border-radius: 999px;
+      accent-color: var(--clr-accent);
+      background: var(--clr-surface-2);
+    }
+
+    progress::-webkit-progress-bar {
+      border-radius: 999px;
+      background: var(--clr-surface-2);
+    }
+
+    progress::-webkit-progress-value {
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--clr-accent), #2C6D7F);
+    }
+
+    .summary {
+      min-height: 1.5em;
+      margin-top: 10px;
+    }
+
+    .status {
+      margin-top: 18px;
+      padding: 16px;
+      border: 1px solid var(--clr-border-subtle);
+      border-radius: var(--radius-md);
+      background: #000D13;
+      color: var(--clr-text);
+      min-height: 260px;
+      font-family: var(--ff-mono);
+      font-size: 0.75rem;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      overflow: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--clr-border) transparent;
+    }
+
+    .danger {
+      color: var(--clr-danger);
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--clr-text-muted);
+      font-size: 0.8125rem;
+      line-height: 1.6;
+    }
+
+    code {
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: var(--clr-surface-2);
+      color: var(--clr-accent);
+      font-family: var(--ff-mono);
+      font-size: 0.9em;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      button, .home-link, input { transition: none; }
+      button:hover:enabled { transform: none; }
+    }
+  </style></head>
+<body>
+  <div class="bg-grid"></div>
+  <div class="bg-glow bg-glow--1"></div>
+  <div class="bg-glow bg-glow--2"></div>
+
+  <main class="shell">
+    <a class="home-link" href="../">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 12H5M12 19l-7-7 7-7"/>
+      </svg>
+      Home
+    </a>
+    <h1>ESP32 Firmware Updater</h1>
+    <p class="lede">
+      Writes a merged image to an ESP32 through its ROM loader over Web Serial — the same thing
+      <code>esptool --flash_offset 0 write_flash</code> does, in a Chromium-based browser over
+      <code>https://</code> or <code>http://localhost</code>. The board has to be in download mode
+      before it will answer.
+    </p>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Firmware</h2>
+        <div class="field">
+          <label for="bundledImage">Firmware</label>
+          <select id="bundledImage">
+            <option value="">Choose a file instead…</option>
+            <option value="melexis_esp32_fw-c6-merged.bin">melexis_esp32_fw — ESP32-C6</option>
+            <option value="melexis_esp32_fw-c3-merged.bin">melexis_esp32_fw — ESP32-C3</option>
+            <option value="melexis_esp32_fw-s3-merged.bin">melexis_esp32_fw — ESP32-S3</option>
+            <option value="melexis_esp32_fw-s2-merged.bin">melexis_esp32_fw — ESP32-S2</option>
+          </select>
+          <div class="hint">These ship with the site, from <code>bin/esp32/</code>. Each is what
+            <code>idf.py merge-bin</code> leaves behind: bootloader, partition table and application in one
+            file, written from the offset below.</div>
+        </div>
+        <div class="field">
+          <label>Or a merged image of your own</label>
+          <div class="actions">
+            <button id="browseButton" type="button" class="ghost">Choose file…</button>
+          </div>
+          <input id="firmwareFile" type="file" accept=".bin,application/octet-stream" hidden>
+        </div>
+        <div class="field">
+          <label for="flashOffset">Flash offset</label>
+          <input id="flashOffset" type="text" value="0x0" spellcheck="false">
+          <div class="hint">A merged image starts at 0. An application on its own usually starts at 0x10000.</div>
+        </div>
+        <div id="firmwareSummary" class="summary">No image loaded.</div>
+      </article>
+
+      <article class="card">
+        <h2>Device</h2>
+        <div id="deviceSummary" class="summary">No board connected.</div>
+        <progress id="progressBar" max="100" value="0"></progress>
+        <div id="progressLabel" class="status-line">Idle.</div>
+        <div class="actions">
+          <button id="connectButton" type="button">Connect Board</button>
+          <button id="bootButton" type="button" class="secondary" disabled>Enter Download Mode</button>
+          <button id="flashButton" type="button" disabled>Flash Firmware</button>
+          <button id="resetButton" type="button" class="ghost" disabled>Reset Board</button>
+          <button id="disconnectButton" type="button" class="ghost" disabled>Disconnect</button>
+        </div>
+      </article>
+
+      <article class="card">
+        <h2>Download mode</h2>
+        <ul>
+          <li>Hold <strong>BOOT</strong>, tap <strong>RESET</strong>, release <strong>BOOT</strong>. On a XIAO
+            without a reset button, hold BOOT while plugging the cable in.</li>
+          <li>A board with native USB (ESP32-C3, C6, S3) enumerates again when it enters the ROM, so pick the
+            port <em>after</em> it is in download mode — the entry before that one is gone.</li>
+          <li>The ROM answers at any baud rate over native USB; the setting the port opens with does not
+            reach it.</li>
+          <li>Flashing does not erase what it does not write. A merged image covers the whole layout, so
+            nothing of the old firmware is left behind.</li>
+        </ul>
+      </article>
+    </section>
+
+    <section id="statusLog" class="status" aria-live="polite"></section>
+  </main>
+  <script src="../js/serial-port.js"></script>
+  <script type="module">
+    /* The writing itself is esptool-js, Espressif's own: it carries the reset
+       strategies, the stub loader and every chip's quirks, which a page rewriting
+       them by hand gets wrong one at a time. The rest — which image, where it
+       comes from, what the reader is told — is here.
+     *
+     * It ships with the suite rather than coming from a CDN, because an installed
+     * copy caches what this origin serves and nothing else — a page that fetched
+     * its flasher from elsewhere would be the one broken thing offline.
+     */
+    import { ESPLoader, Transport } from "../js/vendor/esptool-js-0.7.0.js";
+
+    const els = (id) => document.getElementById(id);
+    const ui = {
+      file: els("firmwareFile"), offset: els("flashOffset"), bundled: els("bundledImage"),
+      browse: els("browseButton"), firmware: els("firmwareSummary"), device: els("deviceSummary"),
+      progress: els("progressBar"), progressLabel: els("progressLabel"),
+      connect: els("connectButton"), flash: els("flashButton"),
+      reset: els("resetButton"), disconnect: els("disconnectButton"),
+      log: els("statusLog"),
+    };
+
+    const state = { port: null, transport: null, loader: null, image: null, name: "", busy: false };
+
+    function log(message, kind = "") {
+      const line = document.createElement("div");
+      line.className = kind;
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+      ui.log.append(line);
+      ui.log.scrollTop = ui.log.scrollHeight;
+    }
+
+    const setProgress = (fraction, text) => {
+      ui.progress.value = Math.round(fraction * 100);
+      if (text) ui.progressLabel.textContent = text;
+    };
+
+    // What esptool-js prints as it works goes to the same log as everything else.
+    const terminal = {
+      clean() {},
+      writeLine(data) { if (String(data).trim()) log(String(data).trim()); },
+      write(data) { const text = String(data).trim(); if (text) log(text); },
+    };
+
+    /* SubtleCrypto has no MD5, and the library asks for one to check what it
+       wrote. This is the plain algorithm, over the binary string it hands in. */
+    function md5(bytes) {
+      const S = [7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22, 5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,
+                 4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23, 6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
+      const K = new Uint32Array(64);
+      for (let i = 0; i < 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296);
+
+      const padded = new Uint8Array((((bytes.length + 8) >> 6) + 1) << 6);
+      padded.set(bytes);
+      padded[bytes.length] = 0x80;
+      const tail = new DataView(padded.buffer);
+      tail.setUint32(padded.length - 8, (bytes.length << 3) >>> 0, true);
+      tail.setUint32(padded.length - 4, Math.floor(bytes.length / 536870912) >>> 0, true);
+
+      let [a0, b0, c0, d0] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476];
+      const words = new Uint32Array(16);
+      const view = new DataView(padded.buffer);
+      const rotate = (x, c) => (x << c) | (x >>> (32 - c));
+
+      for (let offset = 0; offset < padded.length; offset += 64) {
+        for (let i = 0; i < 16; i++) words[i] = view.getUint32(offset + i * 4, true);
+        let [A, B, C, D] = [a0, b0, c0, d0];
+        for (let i = 0; i < 64; i++) {
+          let F, g;
+          if (i < 16) { F = (B & C) | (~B & D); g = i; }
+          else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) % 16; }
+          else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) % 16; }
+          else { F = C ^ (B | ~D); g = (7 * i) % 16; }
+          F = (F + A + K[i] + words[g]) >>> 0;
+          A = D; D = C; C = B;
+          B = (B + rotate(F, S[i])) >>> 0;
+        }
+        a0 = (a0 + A) >>> 0; b0 = (b0 + B) >>> 0; c0 = (c0 + C) >>> 0; d0 = (d0 + D) >>> 0;
+      }
+
+      const out = new Uint8Array(16);
+      const result = new DataView(out.buffer);
+      [a0, b0, c0, d0].forEach((word, i) => result.setUint32(i * 4, word, true));
+      return Array.from(out, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+
+    /* This version of esptool-js takes the image as a Uint8Array; older examples
+       pass a binary string, which it now refuses. Whichever it hands back to the
+       checksum callback is turned into bytes here. */
+    const asBytes = (data) => (typeof data === "string"
+      ? Uint8Array.from(data, (ch) => ch.charCodeAt(0) & 0xFF)
+      : new Uint8Array(data));
+
+    // ---- the image ----
+    function useImage(name, bytes) {
+      state.image = bytes;
+      state.name = name;
+      ui.firmware.textContent = bytes
+        ? `${name} — ${bytes.length.toLocaleString()} bytes, MD5 ${md5(bytes)}`
+        : "No image loaded.";
+      ui.flash.disabled = !bytes || !state.loader;
+      if (bytes) log(`Loaded ${name}.`);
+    }
+
+    ui.browse.addEventListener("click", () => ui.file.click());
+
+    ui.file.addEventListener("change", async () => {
+      const file = ui.file.files?.[0];
+      if (!file) return;
+      ui.bundled.value = "";                       // a file of one's own wins over the shipped ones
+      useImage(file.name, new Uint8Array(await file.arrayBuffer()));
+    });
+
+    ui.bundled.addEventListener("change", async () => {
+      const name = ui.bundled.value;
+      if (!name) { useImage("", null); return; }
+      ui.file.value = "";
+      try {
+        const response = await fetch(`../bin/esp32/${name}`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        useImage(name, new Uint8Array(await response.arrayBuffer()));
+      } catch (error) {
+        useImage("", null);
+        log(`Could not load ${name}: ${error.message}`, "danger");
+      }
+    });
+
+    // ---- the board ----
+    async function connect() {
+      if (!("serial" in navigator)) {
+        log("Web Serial is unavailable. Use Chrome, Edge or Opera over https:// or http://localhost.", "danger");
+        return;
+      }
+      try {
+        state.port = await navigator.serial.requestPort();
+        state.transport = new Transport(state.port, true);
+        state.loader = new ESPLoader({ transport: state.transport, baudrate: 115200, terminal });
+
+        setProgress(0, "Looking for the board…");
+        /* main() syncs, works out which part this is and uploads the stub loader,
+           resetting into download mode along the way — including the sequence a
+           board with native USB needs. */
+        const chip = await state.loader.main();
+        ui.device.textContent = chip;
+        log(`Connected: ${chip}`, "ok");
+        setProgress(0, "Ready to flash.");
+        ui.connect.disabled = true;
+        ui.disconnect.disabled = false;
+        ui.reset.disabled = false;
+        ui.flash.disabled = !state.image;
+      } catch (error) {
+        if (error?.name === "NotFoundError") { log("Port selection cancelled."); return; }
+        log(String(error?.message ?? error), "danger");
+        ui.device.textContent = "Not answering.";
+        await disconnect();
+      }
+    }
+
+    async function disconnect() {
+      try {
+        if (state.transport) await state.transport.disconnect();
+      } catch { /* already gone */ }
+      state.port = state.transport = state.loader = null;
+      ui.connect.disabled = false;
+      ui.disconnect.disabled = true;
+      ui.reset.disabled = true;
+      ui.flash.disabled = true;
+      ui.device.textContent = "No board connected.";
+    }
+
+    /* Starting the application again is not the line pulse it looks like. The
+       library's hard reset only ever releases RTS, never pulls it, so EN stays
+       high and nothing restarts; and on a board with native USB Serial/JTAG that
+       line is an unreliable way in regardless. What does work is telling the stub
+       loader, which is still running after a write, to run the user code — and
+       the board then drops off the bus as its application takes over, so losing
+       the port here is the reset succeeding, not failing. */
+    async function resetBoard() {
+      if (!state.loader) return;
+      const hold = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      try {
+        /* The pulse esptool gives it: RTS pulled, which the USB Serial/JTAG
+           peripheral turns into EN low, held long enough for the chip to notice,
+           then released. The library's own hard reset never pulls the line — it
+           only releases it — which is why nothing happened, and its soft reset
+           refuses on anything but an ESP8266. */
+        await state.transport.setRTS(true);
+        await hold(200);
+        await state.transport.setRTS(false);
+        await hold(200);
+        log("Reset — the application is running. The board enumerates again, so this port is gone.", "ok");
+      } catch (error) {
+        const gone = /device has been lost|network ?error|closed|disconnected/i.test(error?.message ?? "");
+        if (gone) {
+          log("Reset — the board restarted and left this port behind.", "ok");
+        } else {
+          log(`Reset failed: ${error.message}`, "danger");
+        }
+      }
+      await disconnect();
+    }
+
+    ui.connect.addEventListener("click", () => connect());
+    ui.disconnect.addEventListener("click", () => disconnect());
+    ui.reset.addEventListener("click", () => resetBoard());
+
+    ui.flash.addEventListener("click", async () => {
+      if (state.busy || !state.image || !state.loader) return;
+      const text = ui.offset.value.trim();
+      const offset = Number.parseInt(text, text.toLowerCase().startsWith("0x") ? 16 : 10);
+      if (!Number.isInteger(offset) || offset < 0) { log("The flash offset is not a number.", "danger"); return; }
+
+      state.busy = true;
+      ui.flash.disabled = ui.reset.disabled = ui.disconnect.disabled = true;
+      const started = Date.now();
+      try {
+        await state.loader.writeFlash({
+          fileArray: [{ data: state.image, address: offset }],
+          flashSize: "keep",
+          eraseAll: false,
+          compress: true,
+          reportProgress: (index, written, total) => {
+            setProgress(written / total, `Writing ${Math.round((written / total) * 100)}%…`);
+          },
+          calculateMD5Hash: (image) => md5(asBytes(image)),
+        });
+        const seconds = ((Date.now() - started) / 1000).toFixed(1);
+        setProgress(1, `Done in ${seconds} s.`);
+        log(`Wrote ${state.name} at 0x${offset.toString(16)} in ${seconds} s.`, "ok");
+        await resetBoard();                       // esptool runs the new firmware too, by default
+      } catch (error) {
+        setProgress(0, "Failed.");
+        log(String(error?.message ?? error), "danger");
+      } finally {
+        state.busy = false;
+        ui.flash.disabled = !state.loader;
+        ui.reset.disabled = ui.disconnect.disabled = !state.loader;
+      }
+    });
+
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("../service-worker.js").catch(() => { /* optional */ });
+      });
+    }
+
+    log("Ready. Connect the board — it is put into download mode for you.");
+  </script>
+</body>
+</html>

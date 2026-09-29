@@ -16,6 +16,7 @@ const SHELL = [
   "./isp/js/firmware-updater.js",
   "./tools/terminal.html",
   "./tools/dfuupdate.html",
+  "./tools/espupdate.html",
   "./tools/i2cdebug.html",
   "./tools/webusb-probe.html",
   "./pressure/",
@@ -52,6 +53,7 @@ const SHELL = [
   "./css/style.css",
   "./js/app.js",
   "./js/serial-port.js",
+  "./js/vendor/esptool-js-0.7.0.js",
   "./favicon.svg",
   "./manifest.webmanifest",
 ];
