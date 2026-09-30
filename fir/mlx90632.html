@@ -519,17 +519,22 @@
       else if (cyclePosition === 2) { channel = 2; channelOld = 1; }
       else throw new Error(`Unexpected measurement cycle position ${cyclePosition}`);
 
-      const ambientNew = s16(await readReg(RAM_3(1)));
-      const ambientOld = s16(await readReg(RAM_3(2)));
+      /* RAM_1 to RAM_3 of both channels are six consecutive words, so one
+       * MemReaD brings every cell a sample needs. Read one at a time they were
+       * six commands, and what a command costs over Bluetooth is a connection
+       * interval regardless of how few bytes come back — this is the same data
+       * for a fifth of the waiting, and no worse over USB. Nothing here can be
+       * thinned out the way the ambient reading is on the MLX90614: both ambient
+       * cells feed the object temperature as well as their own. */
+      const ram = await readRegs(RAM_1(1), 6);
+      const cell = address => s16(ram[address - RAM_1(1)]);
+
+      const ambientNew = cell(RAM_3(1));
+      const ambientOld = cell(RAM_3(2));
 
       // Each object reading is the mean of two RAM cells, as the library does.
-      const newHi = s16(await readReg(RAM_2(channel)));
-      const newLo = s16(await readReg(RAM_1(channel)));
-      const objectNew = Math.trunc((newHi + newLo) / 2);
-
-      const oldHi = s16(await readReg(RAM_2(channelOld)));
-      const oldLo = s16(await readReg(RAM_1(channelOld)));
-      const objectOld = Math.trunc((oldHi + oldLo) / 2);
+      const objectNew = Math.trunc((cell(RAM_2(channel)) + cell(RAM_1(channel))) / 2);
+      const objectOld = Math.trunc((cell(RAM_2(channelOld)) + cell(RAM_1(channelOld))) / 2);
 
       const c = state.cal;
       const emissivity = Math.min(1, Math.max(0.1, Number(ui.emissivity.value) || 1));
