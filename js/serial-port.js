@@ -180,6 +180,10 @@
     "10c4:ea60": "ESP32 devkit (CP210x bridge)",
     "1a86:7523": "ESP32 devkit (CH340 bridge)",
     "1a86:55d4": "ESP32 devkit (CH343 bridge)",
+    /* An ESP32 board whose firmware presents its own CDC rather than the chip's
+       USB Serial/JTAG. It is still an ESP32, but the host can rarely reset it
+       into the downloader, so its buttons are usually the way in. */
+    "239a:8143": "ESP32 running CircuitPython",
   };
 
   /* Espressif's own USB Serial/JTAG answers for any product id under 0x303a,

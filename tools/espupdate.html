@@ -471,6 +471,12 @@
           <li>Flashing erases only what it writes. A merged image covers bootloader, partition table and
             application, so nothing of the old firmware is left behind.</li>
           <li>What was written is read back and compared by MD5 before the board is started.</li>
+          <li>A board that stops appearing altogether after an interrupted write is not dead: its
+            bootloader is rejecting the half-written application and restarting faster than the host can
+            enumerate it. Hold <strong>BOOT</strong>, tap <strong>RESET</strong>, and plug into the machine
+            rather than a hub. The ROM bootloader is in silicon and cannot be overwritten.</li>
+          <li>A board running firmware that presents its own USB serial port — CircuitPython, for one —
+            usually cannot be reset into download mode by the host at all, and needs its buttons.</li>
         </ul>
       </article>
     </section>
