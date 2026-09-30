@@ -33,9 +33,19 @@ the ROM downloader. Against a running board it fails with `Write timeout` or
 interrupted write leaves behind.
 
 The page does not have this problem for writing, because esptool-js resets into
-download mode itself. It does have it for *starting the application again*,
-which is why `resetBoard()` pulses RTS by hand rather than calling the
-library's hard reset: that one only ever releases the line.
+download mode itself. It does have it for *starting the application again*, and
+nothing the host can send solves it. Measured on a XIAO C6, C3 and S3, all
+three fail to restart the board:
+
+* the library's `after("hard_reset")`, which only releases RTS and never pulls it
+* a pulse on RTS by hand, pulled and released with the chip given time to notice
+* `ESP_RUN_USER_CODE` (0xD3) sent to the stub loader, which is what esptool
+  itself sends after a write — the library has the command but hides it behind
+  a check for ESP8266
+
+`resetBoard()` still tries the last two, because a devkit with a bridge chip
+does restart that way, and then says to press RESET rather than claiming the
+board was started.
 
 ## A board that stopped enumerating is not dead
 

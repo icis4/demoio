@@ -369,6 +369,11 @@
       backdrop-filter: blur(2px);
     }
 
+    /* The same dialog carries two kinds of news; only the stripe differs. */
+    .alert--note {
+      border-left-color: var(--clr-accent);
+    }
+
     .alert h2 {
       margin: 0 0 10px;
       font-size: 1rem;
@@ -462,9 +467,10 @@
       <article class="card">
         <h2>Notes</h2>
         <ul>
-          <li>The board is put into download mode over DTR and RTS, and started again the same way when the
-            write finishes. Both restart it, so its USB device goes and comes back — losing the port at the
-            end is the firmware taking over, not a failure.</li>
+          <li>The board is put into download mode for you. Starting it again afterwards is another matter:
+            on a board whose USB-C goes straight to the SoC — a XIAO or a QT Py, as against a devkit with a
+            bridge chip — nothing the host can send restarts it, so press <strong>RESET</strong> when the
+            write is done. Either way the port goes with the restart.</li>
           <li>If it will not enter download mode by itself: hold <strong>BOOT</strong>, tap
             <strong>RESET</strong>, release BOOT — or, on a XIAO with no reset button, hold BOOT while
             plugging the cable in. Then connect and pick the port that appears.</li>
@@ -518,7 +524,7 @@
 
     const state = {
       port: null, transport: null, loader: null,
-      image: null, name: "", imageChip: null, chip: "", busy: false,
+      image: null, name: "", imageChip: null, chip: "", busy: false, needsButton: false,
     };
 
     function log(message, kind = "") {
@@ -531,12 +537,16 @@
 
     /* Everything that stops the job says so twice: in the log, which keeps it,
        and in the dialog, which cannot be scrolled past. */
-    function fail(title, message) {
-      log(message, "danger");
+    function speak(title, message, kind) {
+      log(message, kind === "note" ? "ok" : "danger");
       ui.dialogTitle.textContent = title;
       ui.dialogMessage.textContent = message;
+      ui.dialog.classList.toggle("alert--note", kind === "note");
       if (typeof ui.dialog.showModal === "function" && !ui.dialog.open) ui.dialog.showModal();
     }
+
+    const fail = (title, message) => speak(title, message, "danger");
+    const tell = (title, message) => speak(title, message, "note");
 
     ui.dialogClose.addEventListener("click", () => ui.dialog.close());
 
@@ -663,6 +673,35 @@
     });
 
     // ---- the board ----
+    /* The dialog is also how the page asks for something and waits: the buttons
+       are on the board, so there is nothing to do until the operator is done. */
+    function ask(title, message) {
+      speak(title, message, "note");
+      return new Promise((resolve) => ui.dialog.addEventListener("close", resolve, { once: true }));
+    }
+
+    /* One attempt at the board on a port already chosen. main() syncs, works out
+       which part this is and uploads the stub loader, resetting into download mode
+       along the way — including the sequence a board with native USB needs. */
+    async function attach() {
+      state.transport = new Transport(state.port, true);
+      state.loader = new ESPLoader({ transport: state.transport, baudrate: 115200, terminal });
+      setProgress(0, "Looking for the board…");
+      state.chip = await state.loader.main();
+      /* A board whose USB-C goes straight to the SoC — vendor 0x303a, the chip's
+         own USB Serial/JTAG — cannot be restarted by anything the host sends. A
+         devkit with a bridge chip can, so the difference is worth knowing before
+         the write finishes rather than after. */
+      state.needsButton = state.port?.getInfo?.().usbVendorId === 0x303A;
+      ui.device.textContent = state.chip;
+      log(`Connected: ${state.chip}`, "ok");
+      setProgress(0, "Ready to flash.");
+      ui.connect.disabled = true;
+      ui.disconnect.disabled = false;
+      ui.reset.disabled = false;
+      ui.flash.disabled = !state.image;
+    }
+
     async function connect() {
       if (!("serial" in navigator)) {
         log("Web Serial is unavailable. Use Chrome, Edge or Opera over https:// or http://localhost.", "danger");
@@ -670,27 +709,31 @@
       }
       try {
         state.port = await navigator.serial.requestPort();
-        state.transport = new Transport(state.port, true);
-        state.loader = new ESPLoader({ transport: state.transport, baudrate: 115200, terminal });
-
-        setProgress(0, "Looking for the board…");
-        /* main() syncs, works out which part this is and uploads the stub loader,
-           resetting into download mode along the way — including the sequence a
-           board with native USB needs. */
-        const chip = await state.loader.main();
-        state.chip = chip;
-        ui.device.textContent = chip;
-        log(`Connected: ${chip}`, "ok");
-        setProgress(0, "Ready to flash.");
-        ui.connect.disabled = true;
-        ui.disconnect.disabled = false;
-        ui.reset.disabled = false;
-        ui.flash.disabled = !state.image;
       } catch (error) {
         if (error?.name === "NotFoundError") { log("Port selection cancelled."); return; }
-        fail("Could not talk to the board", String(error?.message ?? error));
-        ui.device.textContent = "Not answering.";
-        await disconnect();
+        fail("Could not open the port", String(error?.message ?? error));
+        return;
+      }
+      try {
+        await attach();
+      } catch (error) {
+        /* A board the host cannot reset into download mode — one running firmware
+           that presents its own CDC, or an application that holds the USB peripheral
+           — needs the two buttons, and nothing else will do instead. So say which
+           buttons, wait, and try the same port again before giving up on it. */
+        log(String(error?.message ?? error), "danger");
+        try { await state.transport?.disconnect(); } catch { /* already gone */ }
+        await ask("Hold BOOT, tap RESET, release BOOT",
+          "The board did not answer. Hold the BOOT button down, tap RESET (on a board without one, "
+          + "unplug and plug the cable back in while still holding BOOT), then let BOOT go and close "
+          + "this — that puts the chip in its download mode, and the page will try the same board again.");
+        try {
+          await attach();
+        } catch (again) {
+          fail("Could not talk to the board", String(again?.message ?? again));
+          ui.device.textContent = "Not answering.";
+          await disconnect();
+        }
       }
     }
 
@@ -717,17 +760,27 @@
       if (!state.loader) return;
       const hold = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       try {
-        /* The pulse esptool gives it: RTS pulled, which the USB Serial/JTAG
-           peripheral turns into EN low, held long enough for the chip to notice,
-           then released. The library's own hard reset never pulls the line — it
-           only releases it — which is why nothing happened, and its soft reset
-           refuses on anything but an ESP8266. */
+        /* Three ways of starting the application from here have been tried on a
+           XIAO C6, C3 and S3, whose USB-C goes straight to the SoC: the library's
+           hard reset, which only releases RTS and never pulls it; a pulse on RTS
+           by hand; and ESP_RUN_USER_CODE, which is what esptool sends to the stub
+           after a write. None of them restarts such a board — the button does.
+
+           A devkit with a bridge chip is a different matter, and there the pulse
+           does work, so the attempt stays and only the promise goes. */
+        const RUN_USER_CODE = state.loader.ESP_RUN_USER_CODE ?? 0xD3;
+        await state.loader.command(RUN_USER_CODE, new Uint8Array(0), 0, false);
+        await hold(200);
         await state.transport.setRTS(true);
         await hold(200);
         await state.transport.setRTS(false);
-        await hold(200);
-        // Measured: this starts the application on a C6, a C3 and an S3 alike.
-        log("Reset — the application is running. The board enumerates again, so this port is gone.", "ok");
+        if (state.needsButton) {
+          tell("Press RESET on the board",
+            "Nothing the host can send restarts a board whose USB-C goes straight to the chip. "
+            + "Press RESET, or unplug the cable and plug it back in.");
+        } else {
+          log("Reset — the application is running. The board enumerates again, so this port is gone.", "ok");
+        }
       } catch (error) {
         const gone = /device has been lost|network ?error|closed|disconnected/i.test(error?.message ?? "");
         if (gone) {
@@ -779,7 +832,15 @@
         const seconds = ((Date.now() - started) / 1000).toFixed(1);
         setProgress(1, `Done in ${seconds} s.`);
         log(`Wrote ${state.name} at 0x${offset.toString(16)} in ${seconds} s.`, "ok");
-        await resetBoard();                       // esptool runs the new firmware too, by default
+        if (state.needsButton) {
+          tell("Press RESET on the board",
+            `${state.name} is written and verified. This board's USB-C goes straight to the chip, and `
+            + "nothing the host can send will restart it — press RESET, or unplug the cable and plug it "
+            + "back in, to run what was just written.");
+          await disconnect();
+        } else {
+          await resetBoard();
+        }
       } catch (error) {
         setProgress(0, "Failed.");
         fail("Writing failed", String(error?.message ?? error));
