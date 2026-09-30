@@ -236,6 +236,14 @@
 
     /* Command byte: 0b000xxxxx reaches RAM, 0b001xxxxx reaches EEPROM. */
     const RAM_TA = 0x06, RAM_TOBJ1 = 0x07, RAM_TOBJ2 = 0x08;
+
+    /* What a sample costs over Bluetooth is the number of round-trips, not the
+     * bytes: ten bytes and a hundred both wait the same connection interval, and
+     * a sample is two or three commands. The ambient temperature is the one that
+     * moves slowly — it is the sensor's own case — so reading it every fifth
+     * cycle nearly halves the traffic while the object reading keeps its rate.
+     * Over USB there is nothing to save, so the thinning only applies to BLE. */
+    const AMBIENT_EVERY = 5;
     const EE_EMISSIVITY = 0x24;          // EEPROM 0x04
     const HISTORY = 240;
 
@@ -272,6 +280,8 @@
       slave: DEFAULT_SLAVE,
       streaming: false, dualZone: false,
       samples: [],          // { t, object, ambient }
+      ambient: null,        // last reading, held between reads over BLE
+      sinceAmbient: 0,
       hoverIndex: -1,
       lastSampleAt: 0,
     };
@@ -366,6 +376,8 @@
     }
 
     async function initSensor() {
+      state.ambient = null;
+      state.sinceAmbient = 0;
       const emissivityRaw = await smbusRead(EE_EMISSIVITY);
       const emissivity = emissivityRaw / 0xFFFF;
       ui.infoEmis.textContent = emissivity.toFixed(3);
@@ -380,7 +392,14 @@
     }
 
     async function readSample() {
-      const ambient = toCelsius(await smbusRead(RAM_TA));
+      const thin = state.link?.kind === "ble";
+      if (!thin || state.ambient === null || state.sinceAmbient >= AMBIENT_EVERY) {
+        state.ambient = toCelsius(await smbusRead(RAM_TA));
+        state.sinceAmbient = 0;
+      } else {
+        state.sinceAmbient += 1;
+      }
+      const ambient = state.ambient;
       const object = toCelsius(await smbusRead(RAM_TOBJ1));
       const object2 = state.dualZone ? toCelsius(await smbusRead(RAM_TOBJ2)) : null;
 
