@@ -20,8 +20,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet">
     <!-- Bootstrap CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
-        crossorigin="anonymous">
+    <link href="../css/vendor/bootstrap-5.3.3.min.css" rel="stylesheet">
     <link href="../css/theme.css" rel="stylesheet">
     <style>
         /* The panel is a label/value table, not a row of badges: the values here run
@@ -155,20 +154,58 @@
         }
 
         .card,
-        .modal-content {
+        .help-dialog {
             color: var(--mx-white);
         }
 
         .card-title,
         .card-subtitle,
-        .modal-title,
         .form-label,
         .fw-semibold {
             color: var(--mx-white);
         }
 
+        /* Native dialog, Bootstrap's look: the page keeps the stylesheet and
+           drops the 80 KB of JavaScript that only opened this one panel. */
+        .help-dialog {
+            width: min(1140px, calc(100vw - 32px));
+            max-height: calc(100vh - 64px);
+            padding: 0;
+            border: 1px solid var(--clr-border, rgba(255, 255, 255, .15));
+            border-radius: .5rem;
+            background: var(--mx-surface, #141922);
+        }
+
+        .help-dialog::backdrop {
+            background: rgba(0, 0, 0, .6);
+        }
+
+        .help-dialog__head,
+        .help-dialog__foot {
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+            padding: .75rem 1rem;
+        }
+
+        .help-dialog__head {
+            justify-content: space-between;
+            border-bottom: 1px solid var(--clr-border, rgba(255, 255, 255, .15));
+        }
+
+        .help-dialog__foot {
+            flex-wrap: wrap;
+            border-top: 1px solid var(--clr-border, rgba(255, 255, 255, .15));
+        }
+
+        .help-dialog__body {
+            padding: 1rem;
+            overflow: auto;
+            max-height: calc(100vh - 220px);
+        }
+
         .card .text-muted,
-        .modal .text-muted,
+        .help-dialog .text-muted,
         #chipStatus,
         #helpContent .text-muted {
             color: rgba(255, 255, 255, 0.74) !important;
@@ -754,38 +791,33 @@
             </div>
         </div>
     </div>
-    <!-- Help Modal -->
-    <div class="modal fade" id="helpModal" tabindex="-1" aria-labelledby="helpModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-xl modal-dialog-scrollable">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="helpModalLabel">Help / README</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <div class="btn-group btn-group-sm" role="group" aria-label="Help content tabs">
-                            <button type="button" id="helpTabReadme" class="btn btn-primary">README</button>
-                            <button type="button" id="helpTabLicense" class="btn btn-outline-primary">LICENSE</button>
-                        </div>
-                    </div>
-                    <div id="helpContent" class="markdown-body">
-                        <div class="text-muted small">Loading…</div>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <small class="text-muted me-auto">Licensed under MPL-2.0 — see <a href="LICENSE"
-                            target="_blank">LICENSE</a>.</small>
-                    <a href="README.md" target="_blank" class="btn btn-link">Open raw README</a>
-                    <a href="LICENSE" target="_blank" class="btn btn-link">Open LICENSE</a>
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+    <!-- Help, in the browser's own dialog: the only thing this page used
+         Bootstrap's JavaScript for, and one element does it. -->
+    <dialog id="helpModal" class="help-dialog" aria-labelledby="helpModalLabel">
+        <header class="help-dialog__head">
+            <h5 id="helpModalLabel" class="mb-0">Help / README</h5>
+            <button type="button" class="btn-close btn-close-white" data-close-help aria-label="Close"></button>
+        </header>
+        <div class="help-dialog__body">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Help content tabs">
+                    <button type="button" id="helpTabReadme" class="btn btn-primary">README</button>
+                    <button type="button" id="helpTabLicense" class="btn btn-outline-primary">LICENSE</button>
                 </div>
             </div>
+            <div id="helpContent" class="markdown-body">
+                <div class="text-muted small">Loading…</div>
+            </div>
         </div>
-    </div>
+        <footer class="help-dialog__foot">
+            <small class="text-muted me-auto">Licensed under MPL-2.0 — see <a href="LICENSE"
+                    target="_blank">LICENSE</a>.</small>
+            <a href="README.md" target="_blank" class="btn btn-link btn-sm">Open raw README</a>
+            <a href="LICENSE" target="_blank" class="btn btn-link btn-sm">Open LICENSE</a>
+            <button type="button" class="btn btn-secondary btn-sm" data-close-help>Close</button>
+        </footer>
+    </dialog>
 
-    <!-- Bootstrap JS (includes Popper) -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <!-- Markdown renderer -->
@@ -2435,7 +2467,7 @@
             let licenseLoaded = false;
             let readmeHtml = null;
             let licenseHtml = null;
-            let helpModalInstance = null;
+
 
             function setActiveTab(which) {
                 if (tabReadmeEl && tabLicenseEl) {
@@ -2506,16 +2538,17 @@
             if (helpBtn && helpModalEl && helpContent) {
                 helpBtn.addEventListener('click', async () => {
                     try {
-                        if (!helpModalInstance) {
-                            helpModalInstance = new bootstrap.Modal(helpModalEl);
-                        }
                         await loadReadme();
-                        helpModalInstance.show();
+                        if (!helpModalEl.open) helpModalEl.showModal();
                     } catch (e) {
+                        /* Never alert(): a modal dialog from script blocks every
+                           event after it, including the serial reader's. */
                         console.error('Help modal error', e);
-                        alert('Unable to open Help panel.');
                     }
                 });
+                for (const button of helpModalEl.querySelectorAll('[data-close-help]')) {
+                    button.addEventListener('click', () => helpModalEl.close());
+                }
                 tabReadmeEl?.addEventListener('click', () => { loadReadme(); });
                 tabLicenseEl?.addEventListener('click', () => { loadLicense(); });
             }
