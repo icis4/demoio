@@ -333,6 +333,101 @@
     };
   }
 
+  /* ---- The same board, over its own network ----
+   *
+   * A board with an address can serve these pages itself, and a page served by
+   * the board can talk back to it over a WebSocket. This exists so that it can:
+   * it hands back the same shape as the serial and Bluetooth sides, a write and
+   * a close, so a page gains a third way to reach a board without knowing a
+   * third set of rules.
+   *
+   * Why it has to be the board that serves the page: a page on https:// may not
+   * open ws:// or http:// to a private address. That is mixed content, which the
+   * browser refuses outright — no warning to dismiss, no flag — and Chrome asks
+   * separately before a public page may touch the local network at all. Served
+   * from the board, everything is one origin and none of it applies, which is
+   * why the default URL below is built from the page's own location rather than
+   * from an address somebody types.
+   *
+   * The console is line-based ASCII, so this sends text frames: a firmware
+   * handler then reads the payload as a string rather than reassembling bytes.
+   * Replies are accepted either way, because a server that answers in binary is
+   * answering correctly too.
+   */
+  const WS_OPEN_TIMEOUT = 5000;
+
+  function webSocketUrl(path = "/ws") {
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    return `${scheme}//${location.host}${path}`;
+  }
+
+  async function connectWebSocket({ url, onData, onDisconnect, binary = false } = {}) {
+    if (typeof WebSocket !== "function") throw new Error("This browser has no WebSocket.");
+
+    const target = url || webSocketUrl();
+    if (location.protocol === "https:" && target.startsWith("ws:")) {
+      throw new Error(
+        "A page served over https:// cannot open a plain ws:// socket. Open the page from the board itself.");
+    }
+
+    const socket = new WebSocket(target);
+    socket.binaryType = "arraybuffer";
+
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        try { socket.close(); } catch { /* never opened */ }
+        reject(new Error(`No answer from ${target} within ${WS_OPEN_TIMEOUT} ms.`));
+      }, WS_OPEN_TIMEOUT);
+
+      socket.addEventListener("open", () => { clearTimeout(timer); resolve(); }, { once: true });
+      /* An error event carries no reason by design — the browser withholds it so
+         a page cannot scan a network by watching failures. */
+      socket.addEventListener("error", () => {
+        clearTimeout(timer);
+        reject(new Error(`Could not open ${target}. The board may be off the network, or serving nothing there.`));
+      }, { once: true });
+    });
+
+    socket.addEventListener("message", (event) => {
+      if (!onData) return;
+      const data = event.data;
+      if (typeof data === "string") onData(encoder.encode(data));
+      else if (data instanceof ArrayBuffer) onData(new Uint8Array(data));
+      else if (data instanceof Blob) data.arrayBuffer().then((buffer) => onData(new Uint8Array(buffer)));
+    });
+
+    let open = true;
+    socket.addEventListener("close", () => {
+      if (!open) return;                 // a close from this side reports itself
+      open = false;
+      if (onDisconnect) onDisconnect();
+    });
+
+    return {
+      kind: "ws",
+      name: new URL(target).host,
+      async write(bytes) {
+        socket.send(binary ? bytes : decoder.decode(bytes));
+      },
+      close() {
+        open = false;
+        try { socket.close(); } catch { /* already gone */ }
+      },
+    };
+  }
+
+  /* Whether this page came from a board rather than from the tool site. A page
+     served from the board should reach it over the network it is already on,
+     and offering a port picker there would be asking for the cable back. */
+  function servedByBoard() {
+    return location.protocol.startsWith("http")
+      && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)
+      && !/github\.io$|^melexis\.io$|\.melexis\.io$/.test(location.hostname);
+  }
+
   /* Discovery fails in a way that names neither cause; this is the one that is
      usually true and can be acted on. */
   function bluetoothHint(error) {
@@ -346,6 +441,9 @@
     describe,
     connectBluetooth,
     bluetoothHint,
+    connectWebSocket,
+    webSocketUrl,
+    servedByBoard,
     indexOfPort,
     lineFor,
     lineOptions,
