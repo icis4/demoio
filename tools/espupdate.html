@@ -623,13 +623,30 @@
       [0x000C, "ESP32-C2"], [0x000D, "ESP32-C6"], [0x0010, "ESP32-H2"], [0x0012, "ESP32-P4"],
     ]);
 
-    function imageChip(bytes) {
+    function imageHeader(bytes) {
       for (const offset of HEADER_OFFSETS) {
         if (bytes[offset] !== IMAGE_MAGIC || bytes.length < offset + 14) continue;
         const id = bytes[offset + 12] | (bytes[offset + 13] << 8);
-        return CHIP_IDS.get(id) ?? `chip id 0x${id.toString(16).padStart(4, "0")}`;
+        return { at: offset, id, chip: CHIP_IDS.get(id) ?? `chip id 0x${id.toString(16).padStart(4, "0")}` };
       }
       return null;                                  // not an ESP-IDF image, or one this cannot read
+    }
+
+    const imageChip = bytes => imageHeader(bytes)?.chip ?? null;
+
+    /* Where the image belongs in flash, read from where its header sits rather
+       than assumed. A merged image padded from zero has the header at 0x1000 on
+       an ESP32 or S2 and at 0 on the newer parts, and goes to 0 either way. One
+       that begins at the bootloader has its header at 0 — and if that bootloader
+       is an ESP32's or an S2's, which cannot live anywhere but 0x1000, then 0x1000
+       is where the file goes. Written to 0 instead it flashes cleanly, verifies,
+       and the board does not boot. */
+    function imageOffset(bytes) {
+      const header = imageHeader(bytes);
+      if (!header) return null;
+      if (header.at === 0x1000) return 0x0;
+      const bootloaderAt1000 = header.id === 0x0000 || header.id === 0x0002;  // ESP32, S2
+      return bootloaderAt1000 ? 0x1000 : 0x0;
     }
 
     // ---- the image ----
@@ -637,6 +654,14 @@
       state.image = bytes;
       state.name = name;
       state.imageChip = bytes ? imageChip(bytes) : null;
+      const suggested = bytes ? imageOffset(bytes) : null;
+      if (suggested !== null) {
+        const current = ui.offset.value.trim();
+        ui.offset.value = `0x${suggested.toString(16)}`;
+        if (current.toLowerCase() !== ui.offset.value) {
+          log(`Flash offset set to ${ui.offset.value}, from where the image carries its header.`);
+        }
+      }
       ui.firmware.textContent = bytes
         ? `${name} — ${bytes.length.toLocaleString()} bytes, ${state.imageChip ?? "unrecognised header"}, `
           + `MD5 ${md5(bytes)}`
