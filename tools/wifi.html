@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Put a Melexis IO ESP32 board on a network — scan for access points, join one, and see the address it was given.">
+  <title>WiFi</title>
+  <meta name="theme-color" content="#0b0e17">
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+  <link rel="manifest" href="../manifest.webmanifest">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
+  <link href="../css/theme.css" rel="stylesheet">
+  <style>
+    body { min-height: 100vh; }
+    .shell { width: min(1100px, calc(100vw - 32px)); margin: 32px auto; }
+
+    .home-link {
+      display: inline-flex; align-items: center; gap: 6px;
+      margin-bottom: 6px; padding: 4px 10px 4px 6px;
+      border-radius: var(--mx-radius); color: var(--mx-text-muted);
+      font-size: .75rem; font-weight: 500; text-decoration: none;
+      transition: color 140ms ease, background 140ms ease;
+    }
+    .home-link svg { width: 14px; height: 14px; flex-shrink: 0; }
+    .home-link:hover { color: var(--mx-text); background: var(--mx-surface); }
+
+    .top-toolbar {
+      display: flex; align-items: flex-end; justify-content: space-between;
+      flex-wrap: wrap; gap: 12px; margin-bottom: 20px;
+    }
+    .top-toolbar h1 { margin: 0; font-size: clamp(1.6rem, 2.6vw, 2.2rem); }
+    .toolbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .card { border: 1px solid var(--clr-border); border-radius: var(--radius-lg); background: var(--clr-surface); }
+    .card h2 { margin: 0 0 14px; color: var(--clr-text-muted); font-size: .6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+
+    .kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: .8125rem; }
+    .kv dt { color: var(--clr-text-muted); font-weight: 500; }
+    .kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; word-break: break-all; }
+
+    .networks { width: 100%; font-size: .8125rem; border-collapse: collapse; }
+    .networks th { color: var(--clr-text-muted); font-size: .6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; padding: 0 10px 6px; text-align: left; }
+    .networks td { padding: 7px 10px; border-top: 1px solid var(--clr-border); }
+    .networks tbody tr { cursor: pointer; }
+    .networks tbody tr:hover td { background: var(--mx-bg); }
+    .networks tr.is-picked td { background: var(--mx-bg); box-shadow: inset 2px 0 0 var(--mx-accent); }
+    .networks .ssid { font-weight: 600; word-break: break-all; }
+    .networks .num { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+    .networks .joined { color: var(--mx-accent); font-size: .6875rem; font-weight: 600; letter-spacing: .04em; }
+    .networks .open-net { color: var(--clr-warning, #e0a106); }
+
+    /* Four bars rather than a number alone: the dBm is there for whoever reads
+       dBm, and the bars for whoever just wants to know which one to pick. */
+    .bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 14px; margin-right: 8px; }
+    .bars i { width: 3px; background: var(--clr-border); border-radius: 1px; }
+    .bars i:nth-child(1) { height: 25%; }
+    .bars i:nth-child(2) { height: 50%; }
+    .bars i:nth-child(3) { height: 75%; }
+    .bars i:nth-child(4) { height: 100%; }
+    .bars i.on { background: var(--mx-accent); }
+
+    .log {
+      margin: 0; padding: 10px 12px; max-height: 260px; overflow: auto;
+      border-radius: var(--mx-radius); background: var(--mx-bg);
+      color: var(--clr-text-muted); font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: .6875rem; line-height: 1.55; white-space: pre-wrap;
+    }
+    .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+    .empty-row td { color: var(--clr-text-dim); text-align: center; padding: 18px 10px; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <a class="home-link" href="../index.html">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 12H5M12 19l-7-7 7-7"/>
+      </svg>
+      Home
+    </a>
+
+    <div class="top-toolbar">
+      <div>
+        <h1 class="fw-bold">WiFi</h1>
+        <div class="text-secondary" style="font-size:.8125rem">Put the board on a network and keep it there</div>
+      </div>
+      <div class="toolbar-actions">
+        <button id="btnConnect" class="btn btn-sm btn-primary">Connect</button>
+        <button id="btnConnectBle" class="btn btn-sm btn-outline-primary">Bluetooth</button>
+        <button id="btnDisconnect" class="btn btn-sm btn-outline-secondary" disabled>Disconnect</button>
+      </div>
+    </div>
+
+    <div class="row g-3">
+      <div class="col-12 col-lg-8">
+        <div class="card mb-3">
+          <div class="card-body">
+            <div class="d-flex align-items-start justify-content-between">
+              <h2>Networks</h2>
+              <button id="btnScan" class="btn btn-sm btn-outline-primary" disabled>Scan</button>
+            </div>
+            <table class="networks">
+              <thead>
+                <tr><th>Network</th><th style="text-align:right">Signal</th><th style="text-align:right">Ch</th><th>Security</th></tr>
+              </thead>
+              <tbody id="networksBody">
+                <tr class="empty-row"><td colspan="4">Connect to a board, then scan.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-body">
+            <h2>Join</h2>
+            <div class="row g-2">
+              <div class="col-12 col-sm-6">
+                <label class="form-label" for="ssid" style="font-size:.75rem">Network name</label>
+                <input id="ssid" class="form-control form-control-sm mono" placeholder="Pick one above, or type it" disabled>
+              </div>
+              <div class="col-12 col-sm-6">
+                <label class="form-label" for="password" style="font-size:.75rem">Password</label>
+                <div class="input-group input-group-sm">
+                  <input id="password" type="password" class="form-control form-control-sm mono" placeholder="Leave empty for an open network" disabled>
+                  <button id="btnShowPass" class="btn btn-outline-secondary" type="button" disabled>Show</button>
+                </div>
+              </div>
+            </div>
+            <div class="d-flex gap-2 mt-3 flex-wrap">
+              <button id="btnJoin" class="btn btn-sm btn-primary" disabled>Join</button>
+              <button id="btnLeave" class="btn btn-sm btn-outline-secondary" disabled>Leave network</button>
+              <button id="btnForget" class="btn btn-sm btn-outline-danger" disabled>Forget</button>
+            </div>
+            <div class="form-text" style="font-size:.6875rem">
+              A network that joins is remembered in the board's EEPROM journal, and the board rejoins it
+              at power-up with no host attached. <strong>Leave network</strong> drops the link but keeps
+              what is remembered; <strong>Forget</strong> clears it. The password is sent to the board as
+              typed and is never stored by this page — the board does not print it back either.
+            </div>
+            <div id="charWarning" class="alert alert-warning py-2 px-3 mt-3 mb-0" style="font-size:.75rem" hidden></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <h2>Log</h2>
+            <pre id="log" class="log"></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-lg-4">
+        <div class="card mb-3">
+          <div class="card-body">
+            <div class="d-flex align-items-start justify-content-between">
+              <h2>Connection</h2>
+              <button id="btnStatus" class="btn btn-sm btn-outline-secondary" disabled>Refresh</button>
+            </div>
+            <dl class="kv">
+              <dt>Link</dt><dd><span id="badgeConn" class="badge text-bg-secondary">Disconnected</span></dd>
+              <dt>Radio</dt><dd id="infoState">—</dd>
+              <dt>Network</dt><dd id="infoSsid">—</dd>
+              <dt>Signal</dt><dd id="infoRssi">—</dd>
+              <dt>Channel</dt><dd id="infoChannel">—</dd>
+              <dt>Address</dt><dd id="infoAddress">—</dd>
+              <dt>Gateway</dt><dd id="infoGateway">—</dd>
+              <dt>Remembered</dt><dd id="infoRemembered">—</dd>
+              <dt>Free heap</dt><dd id="infoHeap">—</dd>
+            </dl>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-body">
+            <h2>Console over the network</h2>
+            <p class="mb-2" style="font-size:.8125rem">
+              Once the board has an address it listens for the same SCPI console on TCP, so a terminal
+              reaches it without the cable.
+            </p>
+            <div id="consoleLine" class="mono" style="font-size:.8125rem; color: var(--clr-text-dim)">—</div>
+            <div class="form-text" style="font-size:.6875rem">
+              Port 2001 is mipcon's default. A browser cannot open a raw TCP socket, so this page stays on
+              USB or Bluetooth — the address is for a terminal elsewhere.
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <h2>Board</h2>
+            <dl class="kv">
+              <dt>Board</dt><dd id="infoBoard">—</dd>
+              <dt>Firmware</dt><dd id="infoFirmware">—</dd>
+            </dl>
+            <div class="form-text mt-2" style="font-size:.6875rem">
+              The radio is on the ESP32 boards. A Melexis IO board on STM32 answers everything else but
+              has no <code>:WiFi:</code> commands.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="../js/serial-port.js"></script>
+
+  <script>
+    const claim = window.melexisSerial.claim;
+  (() => {
+    "use strict";
+
+    /* :WiFi:CONect waits CONNECT_TIMEOUT_MS (12 s) for a join, and on a failure
+       it goes back to the remembered network, which is another 12 s. The reply
+       to a scan arrives when the radio has finished sweeping every channel. */
+    const JOIN_TIMEOUT = 30000, SCAN_TIMEOUT = 20000;
+
+    const els = id => document.getElementById(id);
+    const ui = {
+      btnConnect: els("btnConnect"), btnConnectBle: els("btnConnectBle"), btnDisconnect: els("btnDisconnect"),
+      badgeConn: els("badgeConn"), log: els("log"),
+      btnScan: els("btnScan"), networksBody: els("networksBody"),
+      ssid: els("ssid"), password: els("password"), btnShowPass: els("btnShowPass"),
+      btnJoin: els("btnJoin"), btnLeave: els("btnLeave"), btnForget: els("btnForget"),
+      charWarning: els("charWarning"), btnStatus: els("btnStatus"),
+      infoState: els("infoState"), infoSsid: els("infoSsid"), infoRssi: els("infoRssi"),
+      infoChannel: els("infoChannel"), infoAddress: els("infoAddress"), infoGateway: els("infoGateway"),
+      infoRemembered: els("infoRemembered"), infoHeap: els("infoHeap"), consoleLine: els("consoleLine"),
+      infoBoard: els("infoBoard"), infoFirmware: els("infoFirmware"),
+    };
+
+    const state = {
+      port: null, writer: null, reader: null, readLoop: null, link: null,
+      rxBuffer: "", waiters: [], handleLost: false,
+      networks: [], joinedSsid: "", busy: false,
+    };
+
+    function log(message) {
+      ui.log.textContent += `[${new Date().toLocaleTimeString()}] ${message}\n`;
+      ui.log.scrollTop = ui.log.scrollHeight;
+    }
+
+    // ---- serial ----
+    function notifyWaiters() {
+      const pending = state.waiters;
+      state.waiters = [];
+      for (const resolve of pending) resolve();
+    }
+
+    function waitForData(timeoutMs) {
+      return new Promise((resolve) => {
+        let done = false;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        state.waiters.push(finish);
+        setTimeout(finish, timeoutMs);
+      });
+    }
+
+    function startReadLoop() {
+      const decoder = new TextDecoder();
+      state.readLoop = (async () => {
+        while (state.port && state.port.readable && state.reader) {
+          try {
+            const { value, done } = await state.reader.read();
+            if (done) break;
+            if (value) { state.rxBuffer += decoder.decode(value, { stream: true }); notifyWaiters(); }
+          } catch (error) {
+            if (/device has been lost|network ?error/i.test(error?.message ?? error?.name ?? "")) {
+              state.handleLost = true;
+              log("The browser has lost its handle to this board — unplug the USB cable and "
+                + "plug it back in; the board itself is fine.");
+            }
+            break;
+          }
+        }
+        notifyWaiters();
+      })();
+    }
+
+    const PROMPT_RE = /(?:^|\r?\n)\((\w+)\)>\s*$/;
+
+    /* Unlike the other pages this one keeps the text of a failed command. The
+       firmware explains a refused join in words — "wrong password (reason 15)",
+       "no such network in range" — and that sentence is the whole value of the
+       reply, so throwing it away and reporting (ERROR) would be the worst of
+       both. The caller decides what a non-OK status means. */
+    async function exchange(command, timeoutMs = 4000) {
+      if (state.handleLost) throw new Error("the browser has lost its handle to this board");
+      if (!state.link) throw new Error("Not connected.");
+      state.rxBuffer = "";
+      await state.link.write(new TextEncoder().encode(command + "\n"));   // LF only
+
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const match = state.rxBuffer.match(PROMPT_RE);
+        if (match) {
+          return { status: match[1], text: state.rxBuffer.slice(0, match.index).trim() };
+        }
+        await waitForData(15);
+      }
+      throw new Error(`Timed out waiting for a reply to ${command.split(" ")[0]}`);
+    }
+
+    async function scpi(command, timeoutMs = 4000) {
+      const reply = await exchange(command, timeoutMs);
+      if (reply.status !== "OK") {
+        throw new Error(reply.text || `${command.split(" ")[0]} → (${reply.status})`);
+      }
+      return reply.text;
+    }
+
+    // ---- the network list ----
+    /* The firmware prints fixed columns — "%-32s %5d %4d %s" — but an SSID may
+       hold spaces of its own, so the three known fields are taken from the right
+       and whatever is left is the name. Splitting on whitespace from the left
+       would cut "Guest Network" in half. */
+    const ROW_RE = /^(.*?)\s+(-?\d+)\s+(\d+)\s+(\S+)$/;
+
+    function parseNetworks(text) {
+      const out = [];
+      for (const line of text.split(/\r?\n/)) {
+        if (!line.trim() || /^\s*SSID\s+RSSI/.test(line) || /^\d+ found\s*$/.test(line.trim())) continue;
+        const match = line.match(ROW_RE);
+        if (!match) continue;
+        out.push({ ssid: match[1].trim(), rssi: Number(match[2]), channel: Number(match[3]), auth: match[4] });
+      }
+      /* Strongest first: the list is there to be picked from, and the one to
+         pick is almost always the one with the best signal. */
+      out.sort((a, b) => b.rssi - a.rssi);
+      return out;
+    }
+
+    const barCount = rssi => rssi >= -55 ? 4 : rssi >= -65 ? 3 : rssi >= -75 ? 2 : 1;
+
+    function renderNetworks() {
+      const rows = state.networks;
+      if (rows.length === 0) {
+        ui.networksBody.innerHTML = '<tr class="empty-row"><td colspan="4">Nothing in range.</td></tr>';
+        return;
+      }
+      ui.networksBody.replaceChildren(...rows.map((net) => {
+        const tr = document.createElement("tr");
+        if (net.ssid && net.ssid === ui.ssid.value) tr.className = "is-picked";
+
+        const name = document.createElement("td");
+        name.className = "ssid";
+        name.textContent = net.ssid || "(hidden)";
+        if (net.ssid && net.ssid === state.joinedSsid) {
+          const tag = document.createElement("span");
+          tag.className = "joined ms-2";
+          tag.textContent = "JOINED";
+          name.append(tag);
+        }
+
+        const signal = document.createElement("td");
+        signal.className = "num";
+        const bars = document.createElement("span");
+        bars.className = "bars";
+        const lit = barCount(net.rssi);
+        for (let i = 1; i <= 4; i++) {
+          const bar = document.createElement("i");
+          if (i <= lit) bar.className = "on";
+          bars.append(bar);
+        }
+        signal.append(bars, `${net.rssi} dBm`);
+
+        const channel = document.createElement("td");
+        channel.className = "num";
+        channel.textContent = String(net.channel);
+
+        const auth = document.createElement("td");
+        auth.textContent = net.auth;
+        if (net.auth === "open") auth.className = "open-net";
+
+        tr.append(name, signal, channel, auth);
+        tr.addEventListener("click", () => pick(net));
+        return tr;
+      }));
+    }
+
+    function pick(net) {
+      if (!net.ssid) {
+        log("That network does not broadcast its name; type it by hand.");
+        return;
+      }
+      ui.ssid.value = net.ssid;
+      /* An open network takes no password, and leaving a stale one in the box
+         would send it for nothing. */
+      if (net.auth === "open") ui.password.value = "";
+      checkCharacters();
+      renderNetworks();
+      ui.password.focus();
+    }
+
+    async function scan() {
+      if (state.busy) return;
+      state.busy = true;
+      ui.btnScan.disabled = true;
+      ui.networksBody.innerHTML = '<tr class="empty-row"><td colspan="4">Scanning…</td></tr>';
+      try {
+        const text = await scpi(":WiFi:List", SCAN_TIMEOUT);
+        state.networks = parseNetworks(text);
+        renderNetworks();
+        log(`Scan: ${state.networks.length} network(s) in range.`);
+      } catch (error) {
+        ui.networksBody.innerHTML = '<tr class="empty-row"><td colspan="4">The scan did not finish.</td></tr>';
+        log(`Scan failed: ${error.message}`);
+      } finally {
+        state.busy = false;
+        ui.btnScan.disabled = !state.link;
+      }
+    }
+
+    // ---- joining ----
+    /* The console splits a line on ";" before anything else and its parameters
+       on ",", and neither is escapable — a credential holding one cannot be sent
+       at all, so say so instead of sending half of it. */
+    function checkCharacters() {
+      const offenders = [];
+      if (/[,;]/.test(ui.ssid.value)) offenders.push("the network name");
+      if (/[,;]/.test(ui.password.value)) offenders.push("the password");
+      if (offenders.length === 0) {
+        ui.charWarning.hidden = true;
+        return true;
+      }
+      ui.charWarning.hidden = false;
+      ui.charWarning.textContent =
+        `A comma or a semicolon in ${offenders.join(" and ")} cannot be sent: the console uses both as `
+        + "separators and has no way to quote them. Join this network from the board's own console, or "
+        + "change the credential.";
+      return false;
+    }
+
+    async function join() {
+      const ssid = ui.ssid.value.trim();
+      if (!ssid) { log("Pick a network, or type its name."); return; }
+      if (!checkCharacters()) { log("Refused to send: the credentials hold a separator."); return; }
+
+      const password = ui.password.value;
+      state.busy = true;
+      setBusy(true);
+      /* Never the password, here or anywhere else on the page. */
+      log(`:WiFi:CONect ${ssid}${password ? ",••••" : ""} — this takes a few seconds.`);
+      try {
+        const reply = await exchange(
+          password ? `:WiFi:CONect ${ssid},${password}` : `:WiFi:CONect ${ssid}`, JOIN_TIMEOUT);
+        if (reply.status === "OK") {
+          log(`Joined ${ssid}.`);
+          applyStatus(reply.text);      // the firmware prints the status block on success
+        } else {
+          /* The words are the firmware's: "wrong password (reason 15)", "no such
+             network in range", and the line saying it went back to what it had. */
+          log(`Could not join ${ssid}: ${reply.text || "refused"}`);
+          await refreshStatus();
+        }
+      } catch (error) {
+        log(`Join failed: ${error.message}`);
+      } finally {
+        state.busy = false;
+        setBusy(false);
+      }
+    }
+
+    async function leave() {
+      try {
+        await scpi(":WiFi:DISConnect", 8000);
+        log("Left the network. What was remembered is still remembered.");
+      } catch (error) {
+        log(`Disconnect failed: ${error.message}`);
+      }
+      await refreshStatus();
+    }
+
+    async function forget() {
+      try {
+        const text = await scpi(":WiFi:FORget", 8000);
+        log(text || "Forgotten.");
+      } catch (error) {
+        log(`Forget failed: ${error.message}`);
+      }
+      await refreshStatus();
+    }
+
+    // ---- status ----
+    /* "Key:   value" per line, the keys fixed by the firmware. */
+    function statusFields(text) {
+      const fields = new Map();
+      for (const line of text.split(/\r?\n/)) {
+        const match = line.match(/^\s*([A-Za-z ]+):\s*(.*)$/);
+        if (match) fields.set(match[1].trim(), match[2].trim());
+      }
+      return fields;
+    }
+
+    function applyStatus(text) {
+      const f = statusFields(text);
+      const stateWord = f.get("State") ?? "—";
+      state.joinedSsid = f.get("SSID") ?? "";
+
+      ui.infoState.textContent = stateWord;
+      ui.infoState.className = stateWord === "joined" ? "text-success" : "";
+      ui.infoSsid.textContent = f.get("SSID") ?? "—";
+      ui.infoRssi.textContent = f.get("RSSI") ?? "—";
+      ui.infoChannel.textContent = f.get("Channel") ?? "—";
+      ui.infoAddress.textContent = f.get("Address") ?? "—";
+      ui.infoGateway.textContent = f.get("Gateway") ?? "—";
+      ui.infoRemembered.textContent = f.get("Remembered") ?? "—";
+      ui.infoHeap.textContent = f.get("Free heap") ?? "—";
+
+      const address = f.get("Address");
+      const console_ = f.get("Console") ?? "";
+      const port = (console_.match(/port\s+(\d+)/) ?? [])[1];
+      ui.consoleLine.textContent = address && port ? `${address}:${port}  ·  ${console_}` : "—";
+      ui.consoleLine.style.color = address && port ? "var(--mx-accent)" : "var(--clr-text-dim)";
+
+      renderNetworks();
+    }
+
+    async function refreshStatus() {
+      try {
+        applyStatus(await scpi(":WiFi:STATus?", 6000));
+      } catch (error) {
+        log(`:WiFi:STATus? failed: ${error.message}`);
+      }
+    }
+
+    // ---- board ----
+    async function readIdentity() {
+      try {
+        const line = (await scpi("*IDN?", 3000)).split(/\r?\n/).find(l => l.trim()) ?? "";
+        log(`*IDN? ${line}`);
+        const fields = line.split(",").map(f => f.trim());
+        ui.infoBoard.textContent = fields[1] || line || "—";
+        ui.infoFirmware.textContent = fields[3] || "—";
+      } catch {
+        ui.infoBoard.textContent = "unknown";
+      }
+    }
+
+    function setBusy(busy) {
+      for (const el of [ui.btnJoin, ui.btnScan, ui.btnLeave, ui.btnForget, ui.btnStatus]) {
+        el.disabled = busy || !state.link;
+      }
+      ui.btnJoin.textContent = busy ? "Joining…" : "Join";
+    }
+
+    function setConnected(connected) {
+      ui.badgeConn.className = connected ? "badge text-bg-success" : "badge text-bg-secondary";
+      ui.badgeConn.textContent = connected ? "Connected" : "Disconnected";
+      ui.btnConnect.disabled = connected;
+      ui.btnConnectBle.disabled = connected;
+      ui.btnDisconnect.disabled = !connected;
+      for (const el of [ui.btnScan, ui.btnJoin, ui.btnLeave, ui.btnForget, ui.btnStatus,
+                        ui.ssid, ui.password, ui.btnShowPass]) {
+        el.disabled = !connected;
+      }
+      if (!connected) {
+        for (const el of [ui.infoState, ui.infoSsid, ui.infoRssi, ui.infoChannel, ui.infoAddress,
+                          ui.infoGateway, ui.infoRemembered, ui.infoHeap, ui.infoBoard, ui.infoFirmware]) {
+          el.textContent = "—";
+        }
+        ui.consoleLine.textContent = "—";
+        ui.consoleLine.style.color = "var(--clr-text-dim)";
+        ui.networksBody.innerHTML = '<tr class="empty-row"><td colspan="4">Connect to a board, then scan.</td></tr>';
+        state.networks = [];
+        state.joinedSsid = "";
+      }
+    }
+
+    /* A session that ended mid-command leaves the board still answering the last
+       one, and the next page to open the port reads that tail instead of its own
+       reply. Waiting for the line to fall quiet costs one window on a board with
+       nothing to say, and saves every reply after it from being one out of step. */
+    const QUIET_MS = 400, FLUSH_CAP_MS = 6000;
+
+    async function flushStaleInput() {
+      const until = Date.now() + FLUSH_CAP_MS;
+      while (Date.now() < until) {
+        const before = state.rxBuffer.length;
+        await new Promise((resolve) => setTimeout(resolve, QUIET_MS));
+        if (state.rxBuffer.length === before) break;
+      }
+      state.rxBuffer = "";
+    }
+
+    async function connect() {
+      if (!("serial" in navigator)) {
+        log("Web Serial is unavailable. Use Chrome, Edge or Opera over https:// or http://localhost.");
+        return;
+      }
+      try {
+        // Nothing hands this page a port, so Connect always asks.
+        state.port = await navigator.serial.requestPort();
+        await state.port.open(window.melexisSerial.lineOptions(state.port));
+        state.writer = state.port.writable.getWriter();
+        state.link = { kind: "serial", write: (bytes) => state.writer.write(bytes) };
+        state.reader = state.port.readable.getReader();
+        state.handleLost = false;
+        startReadLoop();
+        await flushStaleInput();
+        setConnected(true);
+        claim.announce(await window.melexisSerial.indexOfPort(state.port));
+        log(`Serial port open: ${window.melexisSerial.describe(state.port)}.`);
+        await afterConnect();
+      } catch (error) {
+        if (error && error.name === "NotFoundError") log("Port selection cancelled.");
+        else log(`Connect failed: ${await claim.reason(error)}`);
+        await disconnect();
+      }
+    }
+
+    /* The same firmware answers over BLE; js/serial-port.js explains the device side. */
+    async function connectBluetooth() {
+      try {
+        const decoder = new TextDecoder();
+        state.link = await window.melexisSerial.connectBluetooth({
+          onData: (bytes) => { state.rxBuffer += decoder.decode(bytes, { stream: true }); notifyWaiters(); },
+          onDisconnect: () => { log("The board went out of range or switched off."); disconnect(); },
+        });
+        state.handleLost = false;
+        state.rxBuffer = "";
+        setConnected(true);
+        log(`Connected to ${state.link.name} over Bluetooth.`);
+        await afterConnect();
+      } catch (error) {
+        if (error?.name === "NotFoundError") { log("No device selected."); return; }
+        log(`Bluetooth connection failed: ${error.message}`);
+        const hint = window.melexisSerial.bluetoothHint(error);
+        if (hint) log(hint);
+        await disconnect();
+      }
+    }
+
+    /* What a session needs once it has a way to talk, whichever way that is. */
+    async function afterConnect() {
+      await readIdentity();
+      try {
+        applyStatus(await scpi(":WiFi:STATus?", 6000));
+      } catch (error) {
+        log(`This board did not answer :WiFi:STATus? — ${error.message}. `
+          + "A Melexis IO board on STM32 has no radio; the WiFi commands are the ESP32 firmware's.");
+      }
+    }
+
+    async function disconnect() {
+      if (state.reader) { try { await state.reader.cancel(); } catch { /* gone */ } }
+      if (state.readLoop) { try { await state.readLoop; } catch { /* reported */ } state.readLoop = null; }
+      if (state.reader) { try { state.reader.releaseLock(); } catch { /* released */ } state.reader = null; }
+      if (state.writer) { try { state.writer.releaseLock(); } catch { /* released */ } state.writer = null; }
+      if (state.link?.kind === "ble") {
+        const link = state.link;
+        state.link = null;                 // before closing: the handler must stay quiet
+        link.close();
+      }
+      state.link = null;
+
+      if (state.port) {
+        await window.melexisSerial.lowerSignals(state.port);
+        try { await state.port.close(); } catch { /* closed */ }
+        state.port = null;
+      }
+
+      state.rxBuffer = "";
+      claim.release();
+      setConnected(false);
+    }
+
+    ui.btnConnect.addEventListener("click", () => connect());
+    ui.btnConnectBle.addEventListener("click", () => connectBluetooth());
+    ui.btnDisconnect.addEventListener("click", disconnect);
+    ui.btnScan.addEventListener("click", scan);
+    ui.btnJoin.addEventListener("click", join);
+    ui.btnLeave.addEventListener("click", leave);
+    ui.btnForget.addEventListener("click", forget);
+    ui.btnStatus.addEventListener("click", refreshStatus);
+    ui.ssid.addEventListener("input", () => { checkCharacters(); renderNetworks(); });
+    ui.password.addEventListener("input", checkCharacters);
+    ui.password.addEventListener("keydown", (event) => { if (event.key === "Enter") join(); });
+    ui.btnShowPass.addEventListener("click", () => {
+      const shown = ui.password.type === "text";
+      ui.password.type = shown ? "password" : "text";
+      ui.btnShowPass.textContent = shown ? "Show" : "Hide";
+    });
+
+    window.addEventListener("beforeunload", () => { disconnect(); });
+
+    setConnected(false);
+
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("../service-worker.js").catch(() => {
+          /* Offline support is optional; the page works without it. */
+        });
+      });
+    }
+  })();
+  </script>
+</body>
+</html>

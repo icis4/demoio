@@ -18,6 +18,7 @@ const SHELL = [
   "./tools/dfuupdate.html",
   "./tools/espupdate.html",
   "./tools/i2cdebug.html",
+  "./tools/wifi.html",
   "./tools/webusb-probe.html",
   "./pressure/",
   "./pressure/index.html",
