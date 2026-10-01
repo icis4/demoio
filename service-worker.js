@@ -57,6 +57,8 @@ const SHELL = [
   "./fir/mlx90642.html",
   "./css/theme.css",
   "./css/vendor/bootstrap-5.3.3.min.css",
+  "./js/vendor/chart-4.4.1.umd.min.js",
+  "./js/vendor/marked-15.0.12.min.js",
   "./css/style.css",
   "./js/app.js",
   "./js/serial-port.js",
