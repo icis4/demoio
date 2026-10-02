@@ -1108,13 +1108,33 @@
 
     /* The same firmware answers over BLE, and everything above scpi() is the
        same either way; js/serial-port.js explains the device side of it. */
+    /* 1 MHz is what a Melexis IO board does comfortably with the sensor on a
+       short lead. The same part on an ESP32 answers (ERROR) at 1 MHz and reads
+       cleanly at 400 kHz — measured on a 90640 over a XIAO C6 — because the
+       speed a bus will take is a property of the wiring and the pull-ups, not
+       of the chip. A frame is 832 words, so it is worth starting at the top and
+       stepping down only as far as it has to. */
+    const BUS_SPEEDS = ["1000k", "400k", "100k"];
+
+    async function useFastestBus(probe) {
+      let last = null;
+      for (const speed of BUS_SPEEDS) {
+        await scpi(`:I2C:FREQuency ${speed}`);
+        try {
+          await probe();
+          log(last ? `I2C ready at ${speed}; ${BUS_SPEEDS[0]} did not answer.` : `I2C ready at ${speed}.`);
+          return speed;
+        } catch (error) {
+          last = error;
+        }
+      }
+      throw last ?? new Error("the sensor answered at no bus speed");
+    }
+
     /* What a session needs once it has a way to talk, whichever way that is. */
     async function afterConnect() {
       await scpi(":I2C:INIT");
-      await scpi(":I2C:FREQuency 1000k");
-      log("I2C ready at 1 MHz.");
-
-      await readControl();
+      await useFastestBus(readControl);
 
       // 832 words is 1664 bytes, inside the board's 2048-byte transaction limit.
       log("Reading EEPROM…");
