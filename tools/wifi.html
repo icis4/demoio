@@ -144,6 +144,53 @@
           </div>
         </div>
 
+        <div class="card mb-3">
+          <div class="card-body">
+            <div class="d-flex align-items-start justify-content-between">
+              <h2>Be a hotspot</h2>
+              <span id="hotspotBadge" class="badge text-bg-secondary">Off</span>
+            </div>
+            <p class="mb-3" style="font-size:.8125rem">
+              With no network to join, a board is reachable over this cable and nothing else. Told to be
+              a hotspot, it carries its own: associate with it and everything is at
+              <code>192.168.4.1</code>.
+            </p>
+            <div class="row g-2">
+              <div class="col-12 col-sm-6">
+                <label class="form-label" for="apSsid" style="font-size:.75rem">Hotspot name</label>
+                <input id="apSsid" class="form-control form-control-sm mono" placeholder="melexis-XXXXXX" disabled>
+              </div>
+              <div class="col-12 col-sm-6">
+                <label class="form-label" for="apPass" style="font-size:.75rem">Key (WPA2, 8 characters or more)</label>
+                <div class="input-group input-group-sm">
+                  <input id="apPass" type="password" class="form-control form-control-sm mono" placeholder="Required" disabled>
+                  <button id="btnShowApPass" class="btn btn-outline-secondary" type="button" disabled>Show</button>
+                </div>
+              </div>
+            </div>
+            <div class="d-flex gap-2 mt-3 flex-wrap">
+              <button id="btnApStart" class="btn btn-sm btn-primary" disabled>Start hotspot</button>
+              <button id="btnApStop" class="btn btn-sm btn-outline-secondary" disabled>Stop</button>
+              <button id="btnApForget" class="btn btn-sm btn-outline-danger" disabled>Forget key</button>
+            </div>
+            <div id="apWarning" class="alert alert-warning py-2 px-3 mt-3 mb-0" style="font-size:.75rem" hidden></div>
+            <div class="form-text mt-2" style="font-size:.6875rem">
+              It is a setting, not a rescue: the board does not become a hotspot because a network is
+              missing, and does not stop being one because a network turned up. It does what it was last
+              told, across power cycles. <strong>Stop</strong> lowers it and keeps the name and key;
+              <strong>Forget key</strong> takes them out of the journal, which is what a board being
+              passed on wants. An open hotspot is refused — the key is the only thing between the board's
+              console and anyone in range.
+            </div>
+            <div class="form-text mt-2" style="font-size:.6875rem">
+              <strong>On a phone, switch mobile data off first.</strong> The board offers no route to the
+              internet, so Android and iOS keep the mobile connection and send
+              <code>http://192.168.4.1/</code> down that instead. The association succeeds either way,
+              which is what makes it confusing — the pages simply never answer until mobile data is off.
+            </div>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-body">
             <h2>Log</h2>
@@ -168,6 +215,10 @@
               <dt>Address</dt><dd id="infoAddress">—</dd>
               <dt>Gateway</dt><dd id="infoGateway">—</dd>
               <dt>Remembered</dt><dd id="infoRemembered">—</dd>
+              <dt>Hotspot</dt><dd id="infoHotspot">—</dd>
+              <dt>Hotspot name</dt><dd id="infoApSsid">—</dd>
+              <dt>Hotspot address</dt><dd id="infoApAddress">—</dd>
+              <dt>Hotspot clients</dt><dd id="infoApClients">—</dd>
               <dt>Free heap</dt><dd id="infoHeap">—</dd>
             </dl>
           </div>
@@ -229,12 +280,22 @@
       infoChannel: els("infoChannel"), infoAddress: els("infoAddress"), infoGateway: els("infoGateway"),
       infoRemembered: els("infoRemembered"), infoHeap: els("infoHeap"), consoleLine: els("consoleLine"),
       infoBoard: els("infoBoard"), infoFirmware: els("infoFirmware"),
+      apSsid: els("apSsid"), apPass: els("apPass"), btnShowApPass: els("btnShowApPass"),
+      btnApStart: els("btnApStart"), btnApStop: els("btnApStop"), btnApForget: els("btnApForget"),
+      hotspotBadge: els("hotspotBadge"), apWarning: els("apWarning"),
+      infoHotspot: els("infoHotspot"), infoApSsid: els("infoApSsid"),
+      infoApAddress: els("infoApAddress"), infoApClients: els("infoApClients"),
     };
 
     const state = {
       port: null, writer: null, reader: null, readLoop: null, link: null,
       rxBuffer: "", waiters: [], handleLost: false,
       networks: [], joinedSsid: "", busy: false,
+      /* Bumped on every connect. A read loop that is still unwinding from the
+         previous port carries the number it started with, so its error cannot
+         mark a session that opened after it as lost -- which is what left a
+         freshly replugged board reporting a handle it no longer had. */
+      session: 0,
     };
 
     function log(message) {
@@ -260,6 +321,7 @@
 
     function startReadLoop() {
       const decoder = new TextDecoder();
+      const mine = state.session;
       state.readLoop = (async () => {
         while (state.port && state.port.readable && state.reader) {
           try {
@@ -267,16 +329,27 @@
             if (done) break;
             if (value) { state.rxBuffer += decoder.decode(value, { stream: true }); notifyWaiters(); }
           } catch (error) {
-            if (/device has been lost|network ?error/i.test(error?.message ?? error?.name ?? "")) {
-              state.handleLost = true;
-              log("The browser has lost its handle to this board — unplug the USB cable and "
-                + "plug it back in; the board itself is fine.");
+            if (mine === state.session
+                && /device has been lost|network ?error/i.test(error?.message ?? error?.name ?? "")) {
+              handleIsLost();
             }
             break;
           }
         }
         notifyWaiters();
       })();
+    }
+
+    /* One place, so the page says it once and then stops offering buttons that
+       cannot work. Everything here is reachable again after a replug, which is
+       the only thing that clears it. */
+    function handleIsLost() {
+      if (state.handleLost) return;
+      state.handleLost = true;
+      log("The browser has lost its handle to this board — unplug the USB cable and "
+        + "plug it back in; the board itself is fine. Nothing is wrong with the firmware, "
+        + "and the hotspot is unaffected.");
+      setConnected(false);
     }
 
     const PROMPT_RE = /(?:^|\r?\n)\((\w+)\)>\s*$/;
@@ -483,6 +556,108 @@
       await refreshStatus();
     }
 
+    // ---- hotspot ----
+    /* WPA2's own floor, and the firmware's: a shorter key is refused rather
+       than quietly opened, so the page says so before the round trip. */
+    const AP_KEY_MIN = 8;
+
+    function applyHotspot(f) {
+      /* :WiFi:AP? and :WiFi:STATus? both carry "Hotspot"; only the first has
+         the rest, so a missing field leaves its row alone rather than blanking
+         what the other call filled in. */
+      const up = f.get("Hotspot");
+      if (up !== undefined) {
+        ui.infoHotspot.textContent = up;
+        ui.infoHotspot.className = up === "up" ? "text-success" : "";
+        ui.hotspotBadge.className = up === "up" ? "badge text-bg-success" : "badge text-bg-secondary";
+        ui.hotspotBadge.textContent = up === "up" ? "Up" : "Off";
+      }
+      if (f.has("Hotspot SSID")) {
+        /* Down, the board answers with the name it would use, marked
+           "(suggested)". That belongs in the input as a placeholder, not as a
+           value somebody then has to delete. */
+        const name = f.get("Hotspot SSID");
+        const suggested = name.endsWith("(suggested)");
+        const bare = suggested ? name.replace(/\s*\(suggested\)$/, "") : name;
+        ui.infoApSsid.textContent = bare;
+        ui.apSsid.placeholder = bare;
+        if (!suggested && !ui.apSsid.value) ui.apSsid.value = bare;
+      }
+      if (f.has("Hotspot address")) ui.infoApAddress.textContent = f.get("Hotspot address");
+      if (f.has("Hotspot clients")) ui.infoApClients.textContent = f.get("Hotspot clients");
+      if (up === "off") {
+        ui.infoApAddress.textContent = "—";
+        ui.infoApClients.textContent = "—";
+      }
+    }
+
+    function apWarn(message) {
+      ui.apWarning.textContent = message ?? "";
+      ui.apWarning.hidden = !message;
+    }
+
+    async function refreshHotspot() {
+      if (linkIsGone()) return;
+      try {
+        applyHotspot(statusFields(await scpi(":WiFi:AP?", 6000)));
+      } catch (error) {
+        if (!linkIsGone()) log(`:WiFi:AP? failed: ${error.message}`);
+      }
+    }
+
+    async function startHotspot() {
+      const ssid = ui.apSsid.value.trim() || ui.apSsid.placeholder.trim();
+      const key = ui.apPass.value;
+
+      if (!ssid) {
+        apWarn("Give the hotspot a name. Connect to a board and it suggests its own.");
+        return;
+      }
+      if (key.length < AP_KEY_MIN) {
+        apWarn(`The key must be at least ${AP_KEY_MIN} characters. The board refuses a shorter one `
+               + `rather than opening the hotspot without a password.`);
+        return;
+      }
+      apWarn(null);
+
+      try {
+        log(`:WiFi:AP ${ssid},•••••• — raising the hotspot.`);
+        applyHotspot(statusFields(await scpi(`:WiFi:AP ${ssid},${key}`, 10000)));
+        log(`The board is a hotspot called ${ssid}. Associate with it and it is at 192.168.4.1.`);
+      } catch (error) {
+        if (!linkIsGone()) {
+          log(`The hotspot did not come up: ${error.message}`);
+          apWarn(error.message);
+          await refreshHotspot();
+        }
+      }
+      await refreshStatus();
+    }
+
+    async function stopHotspot() {
+      try {
+        await scpi(":WiFi:AP:OFF", 8000);
+        log("Hotspot down. Its name and key are still remembered.");
+      } catch (error) {
+        if (!linkIsGone()) log(`Stopping the hotspot failed: ${error.message}`);
+      }
+      await refreshHotspot();
+      await refreshStatus();
+    }
+
+    async function forgetHotspot() {
+      try {
+        await scpi(":WiFi:AP:FORget", 8000);
+        ui.apPass.value = "";
+        ui.apSsid.value = "";
+        log("Hotspot forgotten: the key is out of the board's journal.");
+      } catch (error) {
+        log(`Forget failed: ${error.message}`);
+      }
+      await refreshHotspot();
+      await refreshStatus();
+    }
+
     // ---- status ----
     /* "Key:   value" per line, the keys fixed by the firmware. */
     function statusFields(text) {
@@ -509,6 +684,8 @@
       ui.infoRemembered.textContent = f.get("Remembered") ?? "—";
       ui.infoHeap.textContent = f.get("Free heap") ?? "—";
 
+      applyHotspot(f);
+
       const address = f.get("Address");
       const console_ = f.get("Console") ?? "";
       const port = (console_.match(/port\s+(\d+)/) ?? [])[1];
@@ -519,10 +696,13 @@
     }
 
     async function refreshStatus() {
+      if (linkIsGone()) return;
       try {
         applyStatus(await scpi(":WiFi:STATus?", 6000));
       } catch (error) {
-        log(`:WiFi:STATus? failed: ${error.message}`);
+        /* A lost link has already said so, once, with what to do about it.
+           Repeating it per command turned one problem into four lines. */
+        if (!linkIsGone()) log(`:WiFi:STATus? failed: ${error.message}`);
       }
     }
 
@@ -540,7 +720,8 @@
     }
 
     function setBusy(busy) {
-      for (const el of [ui.btnJoin, ui.btnScan, ui.btnLeave, ui.btnForget, ui.btnStatus]) {
+      for (const el of [ui.btnJoin, ui.btnScan, ui.btnLeave, ui.btnForget, ui.btnStatus,
+                        ui.btnApStart, ui.btnApStop, ui.btnApForget]) {
         el.disabled = busy || !state.link;
       }
       ui.btnJoin.textContent = busy ? "Joining…" : "Join";
@@ -553,7 +734,9 @@
       ui.btnConnectBle.disabled = connected;
       ui.btnDisconnect.disabled = !connected;
       for (const el of [ui.btnScan, ui.btnJoin, ui.btnLeave, ui.btnForget, ui.btnStatus,
-                        ui.ssid, ui.password, ui.btnShowPass]) {
+                        ui.ssid, ui.password, ui.btnShowPass,
+                        ui.btnApStart, ui.btnApStop, ui.btnApForget,
+                        ui.apSsid, ui.apPass, ui.btnShowApPass]) {
         el.disabled = !connected;
       }
       if (!connected) {
@@ -598,6 +781,7 @@
         state.link = { kind: "serial", write: (bytes) => state.writer.write(bytes) };
         state.reader = state.port.readable.getReader();
         state.handleLost = false;
+        state.session += 1;
         startReadLoop();
         await flushStaleInput();
         setConnected(true);
@@ -620,6 +804,7 @@
           onDisconnect: () => { log("The board went out of range or switched off."); disconnect(); },
         });
         state.handleLost = false;
+        state.session += 1;
         state.rxBuffer = "";
         setConnected(true);
         log(`Connected to ${state.link.name} over Bluetooth.`);
@@ -639,9 +824,36 @@
       try {
         applyStatus(await scpi(":WiFi:STATus?", 6000));
       } catch (error) {
+        /* A board that refuses the command and a link that died say the same
+           thing to this catch, and they want opposite advice. Guessing wrong
+           told somebody their ESP32 had no radio while the real answer was to
+           replug the cable. */
+        if (linkIsGone()) return;
         log(`This board did not answer :WiFi:STATus? — ${error.message}. `
           + "A Melexis IO board on STM32 has no radio; the WiFi commands are the ESP32 firmware's.");
+        return;
       }
+      /* Separately, and after: firmware older than the hotspot answers
+         :WiFi:STATus? and not :WiFi:AP?, and that is a board with a radio
+         rather than one without, so it does not deserve the message above. */
+      try {
+        applyHotspot(statusFields(await scpi(":WiFi:AP?", 6000)));
+      } catch (error) {
+        if (linkIsGone()) return;
+        ui.infoHotspot.textContent = "not in this firmware";
+        for (const el of [ui.btnApStart, ui.btnApStop, ui.btnApForget, ui.apSsid,
+                          ui.apPass, ui.btnShowApPass]) {
+          el.disabled = true;
+        }
+        log("This board's firmware has no :WiFi:AP — the hotspot needs melexis_esp32_fw with #34 in it.");
+      }
+    }
+
+    /* Whether the last failure was the link rather than the board. handleIsLost()
+       has already said what to do about it, so callers only need to know not to
+       add a diagnosis of their own. */
+    function linkIsGone() {
+      return state.handleLost || !state.link;
     }
 
     async function disconnect() {
@@ -674,7 +886,16 @@
     ui.btnJoin.addEventListener("click", join);
     ui.btnLeave.addEventListener("click", leave);
     ui.btnForget.addEventListener("click", forget);
-    ui.btnStatus.addEventListener("click", refreshStatus);
+    ui.btnStatus.addEventListener("click", () => { refreshStatus(); refreshHotspot(); });
+    ui.btnApStart.addEventListener("click", startHotspot);
+    ui.btnApStop.addEventListener("click", stopHotspot);
+    ui.btnApForget.addEventListener("click", forgetHotspot);
+    ui.apPass.addEventListener("keydown", (event) => { if (event.key === "Enter") startHotspot(); });
+    ui.btnShowApPass.addEventListener("click", () => {
+      const shown = ui.apPass.type === "text";
+      ui.apPass.type = shown ? "password" : "text";
+      ui.btnShowApPass.textContent = shown ? "Show" : "Hide";
+    });
     ui.ssid.addEventListener("input", () => { checkCharacters(); renderNetworks(); });
     ui.password.addEventListener("input", checkCharacters);
     ui.password.addEventListener("keydown", (event) => { if (event.key === "Enter") join(); });
