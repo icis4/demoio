@@ -183,10 +183,13 @@
               console and anyone in range.
             </div>
             <div class="form-text mt-2" style="font-size:.6875rem">
-              <strong>On a phone, switch mobile data off first.</strong> The board offers no route to the
-              internet, so Android and iOS keep the mobile connection and send
-              <code>http://192.168.4.1/</code> down that instead. The association succeeds either way,
-              which is what makes it confusing — the pages simply never answer until mobile data is off.
+              <strong>The hotspot is a way to the board, not a way out.</strong> A laptop with a cable
+              keeps the internet on the cable and reaches <code>192.168.4.1</code> over the hotspot, both
+              at once. A phone has only the hotspot and its mobile data, so it keeps mobile data and
+              sends <code>http://192.168.4.1/</code> down that — <strong>switch mobile data off</strong>
+              and the board answers. A VPN takes the default route and does the same to a machine that
+              would otherwise have been fine. The association succeeds in every case, which is what makes
+              it confusing rather than obvious.
             </div>
           </div>
         </div>
