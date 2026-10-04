@@ -710,15 +710,51 @@
      * (ERROR)> for an address nobody answers, (ERANGE)> for a read longer than it
      * allows — leaves the bus fit for the next one, which is what this depends on.
      */
+    /* An IEEE 488.2 definite-length block, which is what :B64 answers with:
+     * '#', one digit saying how many digits of length follow, the length,
+     * then the characters. The length counts characters, not the bytes they
+     * decode to — checking it is what catches a reply cut short, which would
+     * otherwise decode into fewer pixels that all look plausible. */
+    function parseBlock(payload) {
+      const body = payload.trim();
+      if (body[0] !== "#") {
+        throw new Error("not a definite-length block");
+      }
+      const digits = Number(body[1]);
+      if (!(digits >= 1 && digits <= 9)) {
+        throw new Error(`bad block header: ${body.slice(0, 4)}`);
+      }
+      const declared = Number(body.slice(2, 2 + digits));
+      const chars = body.slice(2 + digits, 2 + digits + declared);
+      if (chars.length !== declared) {
+        throw new Error(`block says ${declared} characters, ${chars.length} arrived`);
+      }
+      const binary = atob(chars);
+      const out = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+      return out;
+    }
+
     async function memReadOnce(address, words, into, offset = 0, timeoutMs = 5000) {
-      const payload = await scpi(`:I2C:MemReaD ${hex(state.slave)},${hex(address)},2,${words * 2}`, timeoutMs);
-      const bytes = payload.split(",");
+      const out = into || new Uint16Array(words);
+      let bytes;
+
+      if (state.base64) {
+        /* Three characters per byte become 1.33. On a serial link that is a
+         * third of the reply; it is the slow links — BLE, a low baud rate —
+         * where it decides the frame rate. */
+        const payload = await scpi(`:I2C:MemReaD:B64 ${hex(state.slave)},${hex(address)},2,${words * 2}`, timeoutMs);
+        bytes = parseBlock(payload);
+      } else {
+        const payload = await scpi(`:I2C:MemReaD ${hex(state.slave)},${hex(address)},2,${words * 2}`, timeoutMs);
+        bytes = payload.split(",").map(b => parseInt(b, 16));
+      }
+
       if (bytes.length < words * 2) {
         throw new Error(`Short read at ${hex(address)}: ${bytes.length} of ${words * 2} bytes`);
       }
-      const out = into || new Uint16Array(words);
       for (let i = 0; i < words; i++) {
-        out[offset + i] = (parseInt(bytes[i * 2], 16) << 8) | parseInt(bytes[i * 2 + 1], 16);
+        out[offset + i] = (bytes[i * 2] << 8) | bytes[i * 2 + 1];
       }
       return out;
     }
@@ -1131,10 +1167,25 @@
       throw last ?? new Error("the sensor answered at no bus speed");
     }
 
+    /* Whether this board has the :B64 reads, asked once rather than assumed.
+     * Older firmware, and the ESP32 boards until they catch up, answer
+     * (ERROR) to an unknown command, which is a clean no. */
+    async function probeBase64() {
+      state.base64 = false;
+      try {
+        parseBlock(await scpi(`:I2C:MemReaD:B64 ${hex(state.slave)},${hex(CTRL_REG)},2,2`, 2000));
+        state.base64 = true;
+        log("Reading in base64: a third of the characters hexadecimal needs.");
+      } catch {
+        log("This board has no :B64 reads; using hexadecimal.");
+      }
+    }
+
     /* What a session needs once it has a way to talk, whichever way that is. */
     async function afterConnect() {
       await scpi(":I2C:INIT");
       await useFastestBus(readControl);
+      await probeBase64();
 
       // 832 words is 1664 bytes, inside the board's 2048-byte transaction limit.
       log("Reading EEPROM…");

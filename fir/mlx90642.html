@@ -412,15 +412,48 @@
      *
      * Do not extend this to the data-ready wait: that one is meant to time out.
      */
+    /* An IEEE 488.2 definite-length block, which is what :B64 answers with:
+     * '#', one digit saying how many digits of length follow, the length,
+     * then the characters. The length counts characters, not the bytes they
+     * decode to -- checking it is what catches a reply cut short, which would
+     * otherwise decode into fewer values that all look plausible. */
+    function parseBlock(payload) {
+      const body = payload.trim();
+      if (body[0] !== "#") {
+        throw new Error("not a definite-length block");
+      }
+      const digits = Number(body[1]);
+      if (!(digits >= 1 && digits <= 9)) {
+        throw new Error(`bad block header: ${body.slice(0, 4)}`);
+      }
+      const declared = Number(body.slice(2, 2 + digits));
+      const chars = body.slice(2 + digits, 2 + digits + declared);
+      if (chars.length !== declared) {
+        throw new Error(`block says ${declared} characters, ${chars.length} arrived`);
+      }
+      const binary = atob(chars);
+      const out = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+      return out;
+    }
+
     async function memReadOnce(address, words) {
-      const payload = await scpi(`:I2C:MemReaD ${hex(state.slave)},${hex(address)},2,${words * 2}`, 4000);
-      const bytes = payload.split(",");
+      let bytes;
+
+      if (state.base64) {
+        const payload = await scpi(`:I2C:MemReaD:B64 ${hex(state.slave)},${hex(address)},2,${words * 2}`, 4000);
+        bytes = parseBlock(payload);
+      } else {
+        const payload = await scpi(`:I2C:MemReaD ${hex(state.slave)},${hex(address)},2,${words * 2}`, 4000);
+        bytes = payload.split(",").map(b => parseInt(b, 16));
+      }
+
       if (bytes.length < words * 2) {
         throw new Error(`Short read at ${hex(address)}: ${bytes.length} of ${words * 2} bytes`);
       }
       const out = new Uint16Array(words);
       for (let i = 0; i < words; i++) {
-        out[i] = (parseInt(bytes[i * 2], 16) << 8) | parseInt(bytes[i * 2 + 1], 16);
+        out[i] = (bytes[i * 2] << 8) | bytes[i * 2 + 1];
       }
       return out;
     }
@@ -807,9 +840,26 @@
     }
 
     /* What a session needs once it has a way to talk, whichever way that is. */
+    /* Whether this board has the :B64 reads, asked once rather than assumed.
+     * Older firmware, and the ESP32 boards until they catch up, answer
+     * (ERROR) to an unknown command, which is a clean no. The device-id
+     * words are read because this part has no control register at a fixed
+     * place the way the 90640 and 90641 do. */
+    async function probeBase64() {
+      state.base64 = false;
+      try {
+        parseBlock(await scpi(`:I2C:MemReaD:B64 ${hex(state.slave)},${hex(ADDR.id)},2,2`, 2000));
+        state.base64 = true;
+        log("Reading in base64: a third of the characters hexadecimal needs.");
+      } catch {
+        log("This board has no :B64 reads; using hexadecimal.");
+      }
+    }
+
     async function afterConnect() {
       await scpi(":I2C:INIT");
       await useFastestBus(readDeviceInfo);
+      await probeBase64();
       log(`MLX90642 found at ${hex(state.slave)}.`);
     }
 
