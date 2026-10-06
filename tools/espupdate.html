@@ -520,7 +520,7 @@
 
     const state = {
       port: null, transport: null, loader: null,
-      image: null, name: "", imageChip: null, chip: "", busy: false, needsButton: false,
+      image: null, name: "", imageChip: null, chip: "", chipName: null, busy: false, needsButton: false,
     };
 
     function log(message, kind = "") {
@@ -714,6 +714,11 @@
          devkit with a bridge chip can, so the difference is worth knowing before
          the write finishes rather than after. */
       state.needsButton = state.port?.getInfo?.().usbVendorId === 0x303A;
+      /* main() returns a description -- "ESP32-S3 (QFN56) (revision v0.2)",
+         "ESP32-D0WDQ6 (revision v3.1)" -- which names the package and not the
+         family. CHIP_NAME is the family on its own, and it is what the image
+         header can be compared with. */
+      state.chipName = state.loader.chip?.CHIP_NAME ?? null;
       ui.device.textContent = state.chip;
       log(`Connected: ${state.chip}`, "ok");
       setProgress(0, "Ready to flash.");
@@ -826,12 +831,27 @@
         return;
       }
 
-      /* "ESP32-C6 (revision 1)" against "ESP32-C6": the connected part has to be
-         named by the image, and an image whose header could not be read is left
-         to the reader rather than guessed at. */
-      if (state.imageChip && !state.chip.startsWith(state.imageChip)) {
+      /* The family the image names has to be the family the board is, and an
+         image whose header could not be read is left to the reader rather than
+         guessed at.
+
+         This used to ask whether the board's description started with the
+         image's chip, which is right in one direction only: "ESP32" is a
+         prefix of "ESP32-S3" and of "ESP32-C6", so an image for a plain ESP32
+         passed on any of them. It went unnoticed while nothing here was built
+         for a plain ESP32 -- the test only fails on a combination that did not
+         exist. CHIP_NAME is the family exactly, so the comparison is an
+         equality now and reads the same in both directions.
+
+         The old test stays as the fallback for a library version that does not
+         expose CHIP_NAME: half a check is better than none. */
+      const mismatch = state.imageChip && (state.chipName
+        ? state.chipName !== state.imageChip
+        : !state.chip.startsWith(state.imageChip));
+      if (mismatch) {
         fail("Wrong image for this board",
-          `${state.name} is built for ${state.imageChip}, and this board is ${state.chip}. `
+          `${state.name} is built for ${state.imageChip}, and this board is `
+          + `${state.chipName ?? state.chip}. `
           + "It would write cleanly and then not boot, so it is not being written.");
         return;
       }
