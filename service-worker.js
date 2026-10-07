@@ -14,6 +14,7 @@ const SHELL = [
   "./isp/js/dfu.js",
   "./isp/js/dfuse.js",
   "./isp/js/firmware-updater.js",
+  "./tools/firmware.html",
   "./tools/terminal.html",
   "./tools/dfuupdate.html",
   "./tools/espupdate.html",

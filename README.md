@@ -8,7 +8,10 @@ step, no drivers. Everything runs client-side from a static page.
 | Tool | Page | Uses |
 |---|---|---|
 | SCPI Terminal | [tools/terminal.html](tools/terminal.html) | Web Serial |
-| DFU Updater | [tools/dfuupdate.html](tools/dfuupdate.html) | WebUSB |
+| WiFi | [tools/wifi.html](tools/wifi.html) | Web Serial / BLE → SCPI |
+| I2C Debug | [tools/i2cdebug.html](tools/i2cdebug.html) | Web Serial / BLE → I2C |
+| STM32 DFU Tool | [tools/dfuupdate.html](tools/dfuupdate.html) | WebUSB |
+| ESP32 ESP Tool | [tools/espupdate.html](tools/espupdate.html) | Web Serial |
 | Pressure | [pressure/](pressure/) | Web Serial → I2C/SPI |
 | Infrared | [fir/](fir/) | Web Serial → I2C |
 
@@ -50,7 +53,7 @@ three implement, so connecting works without telling it which board is attached.
 The full protocol contract — framing, prompt parsing, probe order, per-firmware divergences — is
 in [.claude/skills/melexis-scpi/SKILL.md](.claude/skills/melexis-scpi/SKILL.md).
 
-## DFU Updater
+## STM32 DFU Tool
 
 Flashes ST DfuSe `.dfu` images over WebUSB, talking to STM DFU bootloaders directly. Parses DfuSe
 targets and elements, reads DFU functional descriptors, recovers STM memory maps from USB string
