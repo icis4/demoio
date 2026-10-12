@@ -169,9 +169,11 @@ Thumbstick-with-twist tab):
   - **Hardware write (SCPI only)** — `setGainSel` is the local table; the field below it,
     `Device confirmed: …`, is a readback of register `0x00` bits `[5:0]`/`[11:6]` via
     `MLX90396_API.setGain`/`readGain` (unlock `0x43=0x9952, 0x44=0x84DE`, field write,
-    readback verify). Editing the field is debounced (~300 ms) and writes in real time;
-    switching the mode selector restores that mode's default (`1px → 0`, `2px → 0`) on the
-    chip. Without an SCPI device the value stays local and the readback shows `not read`.
+    readback verify). Editing the field is debounced (~300 ms) and writes in real time.
+    Switching 1px↔2px mode does NOT push gain to the chip (with zeroed table defaults
+    that would collapse electrical gain and flatten live readings); it only re-syncs the
+    display, and starting the demo re-reads the chip and adopts what it holds.
+    Without an SCPI device every value stays local and the readback shows `not read`.
 - **Calibration constants** `k1, k2, o11, o12, o21, o22` — edited live; every change
   re-renders the readouts immediately. They feed the Desmos cross-axis model:
 

@@ -97,11 +97,11 @@ export class MLX90396_API {
 
   _checkMaskLimit(data_mask) {
       // The part measures at most 6 channels per SM/SB/SWOC/RM, and MI6 is the
-      // warning flag for over-asking. The reference firmware counts every bit
-      // set in the mask, including vdd, so a mask that mixes vdd with 6 axes is
-      // rejected here rather than being sent and refused by the part.
+      // warning flag for over-asking. Only bits 2..21 select measurement
+      // channels, so reserved bit 0 and the supply bit are excluded from the
+      // budget check instead of triggering a refusal.
       let count = 0;
-      let temp_mask = data_mask;
+      let temp_mask = data_mask & 0xFFFFFC;
       while (temp_mask) {
           temp_mask &= (temp_mask - 1);
           if (++count > 6) return true;
@@ -259,7 +259,10 @@ export class MLX90396_API {
 
       // 2. Read register 0x00 to preserve NV_GAINSEL_2PX (bits [11:6])
       const readRes = await this.rr(0x00);
-      const currentVal = readRes.error ? 0 : readRes.data;
+      // Abort on a failed read: substituting 0 would wipe the 2px gain field
+      // instead of failing safe.
+      if (readRes.error) return false;
+      const currentVal = readRes.data;
 
       // 3. Clear bits [5:0] and apply new 6-bit gain
       const updatedVal = (currentVal & ~0x003F) | (gainValue & 0x003F);

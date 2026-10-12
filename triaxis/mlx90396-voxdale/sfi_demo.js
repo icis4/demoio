@@ -893,10 +893,17 @@ export function initSfiDemo() {
 
         // Render the differential radar from its calibrated α/β angles.
         const radarTargetStd = isLiveHardwareConnected ? null : { x: trueBx, y: trueBy };
-        const radarTargetMlx = isLiveHardwareConnected ? null : {
-          x: Math.atan2(targetMlxDBx, targetMlxDBz) * 180 / Math.PI,
-          y: Math.atan2(targetMlxDBy, targetMlxDBzY) * 180 / Math.PI
-        };
+        // The dashed sim ring tracks the magnet only while the differential
+        // field is meaningful; on the all-zero start frame the gradients vanish
+        // (dead null), so atan2(0,0)=0 would pin the ring to the right corner
+        // and read as a broken element. Same threshold as the needle gate.
+        const radarTargetMlx = isLiveHardwareConnected ? null
+          : (Math.hypot(targetMlxDBx, targetMlxDBz, targetMlxDBy, targetMlxDBzY) > NO_MAG_DIFF_MT_MM
+            ? {
+                x: Math.atan2(targetMlxDBx, targetMlxDBz) * 180 / Math.PI,
+                y: Math.atan2(targetMlxDBy, targetMlxDBzY) * 180 / Math.PI
+              }
+            : null);
 
         drawRadar(radarCtxStd, displayStdBx, displayStdBy, radarTargetStd, '#ef4444', 'LEGACY 3D HALL', 28.0);
         drawAngleRadar(radarCtxMlx, dispAlpha, dispBeta, radarTargetMlx, '#10b981', 'MLX90396 SFI · α×β');
@@ -1094,8 +1101,11 @@ function drawAngleRadar(ctx, alphaDeg, betaDeg, target, themeColor, label) {
   ctx.fillText('β 0°', cx, cy - radius + 14);
 
   // Simulation reference: dashed ring at the true α/β position.
-  if (target && !isNaN(target.x) && !isNaN(target.y)) {
-    const tx = xOf(target.x), ty = yOf(target.y);
+      if (target && !isNaN(target.x) && !isNaN(target.y)) {
+        // The target comes from a raw atan2 (−180…180) while xOf/yOf assume
+        // the 0…180 band, so it goes through the same rim clamp as the needle
+        // instead of drawing radii outside the disc.
+        const [tx, ty] = clampPoint(xOf(target.x), yOf(target.y));
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
     ctx.lineWidth = 1.5;
     ctx.setLineDash([3, 3]);

@@ -97,11 +97,11 @@ export class MLX90396_API {
 
   _checkMaskLimit(data_mask) {
       // The part measures at most 6 channels per SM/SB/SWOC/RM, and MI6 is the
-      // warning flag for over-asking. The reference firmware counts every bit
-      // set in the mask, including vdd, so a mask that mixes vdd with 6 axes is
-      // rejected here rather than being sent and refused by the part.
+      // warning flag for over-asking. Only bits 2..21 select measurement
+      // channels, so reserved bit 0 and the supply bit are excluded from the
+      // budget check instead of triggering a refusal.
       let count = 0;
-      let temp_mask = data_mask;
+      let temp_mask = data_mask & 0xFFFFFC;
       while (temp_mask) {
           temp_mask &= (temp_mask - 1);
           if (++count > 6) return true;
@@ -244,6 +244,32 @@ export class MLX90396_API {
       return result;
   }
 
+  // Status-only RM: returns { ok, status } without consuming the pending
+  // measurement, mirroring the readout page's DRDY poll (sampleOnce issues a
+  // 1-byte RM against a deadline, then reads the full frame).
+  async rmStatus() {
+      const mosi = [MLX90396_API.Mlx90396Command.RM_NO_TEMP, 0];
+      mosi[1] = this._crc_2f(mosi.slice(0, 1));
+      const miso = await this._send_spi(mosi, 2);
+      if (!miso || miso.length < 2) return { ok: false, status: 0 };
+      return { ok: this._verify_crc(miso.slice(0, 1), miso[1]), status: miso[0] };
+  }
+
+  // Wait for conversion-complete after SM: polls the status byte about every
+  // 2 ms up to deadlineMs, then proceeds regardless so a slow or silent part
+  // can never stall the loop. Returns true when DRDY (status bit 0) was seen.
+  async awaitReady(deadlineMs = 10) {
+      const t0 = Date.now();
+      for (;;) {
+          try {
+              const st = await this.rmStatus();
+              if (st.ok && (st.status & 0x01)) return true;
+          } catch (_) { /* transport hiccup: retry until the deadline */ }
+          if (Date.now() - t0 >= deadlineMs) return false;
+          await new Promise(r => setTimeout(r, 2));
+      }
+  }
+
   // GAINSEL fields share register 0x00: bits[5:0] = 1px, bits[11:6] = 2px.
   // Writes require the unlock sequence (datasheet 15.4.3) and must preserve the
   // other field; a readback then confirms what the part actually holds.
@@ -253,12 +279,17 @@ export class MLX90396_API {
 
       const is2px = mode === '2px';
       const readRes = await this.rr(0x00);
-      const currentVal = readRes.error ? 0 : readRes.data;
+      // Abort on a failed read: substituting 0 would wipe the other mode's
+      // gain field instead of failing safe.
+      if (readRes.error) return { ok: false };
+      const currentVal = readRes.data;
 
       const gainField = gainValue & 0x003F;
+      // Preserve everything outside the written field, including bits 15:12 -
+      // the old positive masks zeroed the upper nibble on every gain write.
       const updatedVal = is2px
-          ? (currentVal & 0x003F) | (gainField << 6)
-          : (currentVal & 0x0FC0) | gainField;
+          ? (currentVal & ~0x0FC0) | (gainField << 6)
+          : (currentVal & ~0x003F) | gainField;
 
       if (await this.wr(0x00, updatedVal)) return { ok: false };
 

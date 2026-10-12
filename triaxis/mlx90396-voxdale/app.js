@@ -13,6 +13,7 @@ import {
   resetPlotLines,
   setSfiHardwareTracking,
   setCalibrationParams,
+  resetCalibrationParams,
   getCalibrationParams
 } from './sfi_demo.js';
 // DOM Elements
@@ -545,7 +546,7 @@ async function runJoystickDemo() {
         if (prefix.includes('SPI2') || prefix === ':SPI2') {
           console.log('[INIT] Configuring Melexis IO SPI2 Header Connection...');
           await scpiQuery(`${prefix}:Init 0`);
-          // await scpiQuery(`${prefix}:SET:CS0 0`);
+          await scpiQuery(`${prefix}:SET:CS0 0`);
           await scpiQuery(":A3:GPIO:INIT:OUT 0");
         } else {
           console.log('[INIT] Configuring Melexis IO Cable Connection...');
@@ -804,14 +805,13 @@ Object.entries(calInputs).forEach(([key, inputEl]) => {
   }
 });
 
-// Reset calibration inputs to zero (the page default)
+// Reset calibration inputs to the documented engine defaults (K=1.0)
 btnCalibReset?.addEventListener('click', () => {
-  const zeros = { k1: 0, k2: 0, o11: 0, o12: 0, o21: 0, o22: 0 };
-  setCalibrationParams(zeros);
-  Object.entries(zeros).forEach(([k, val]) => {
+  const defs = resetCalibrationParams();
+  Object.entries(defs).forEach(([k, val]) => {
     if (calInputs[k]) calInputs[k].value = val;
   });
-  appendLog('[CALIBRATION] Reset parameters to zero (K=0.0, Ortho=0.0).\n', 'log-okprompt');
+  appendLog('[CALIBRATION] Reset parameters to default (K=1.0, Ortho=0.0).\n', 'log-okprompt');
 });
 
 // --- 3. GAINSEL FIELD (thumbstick-style, 1px) ---

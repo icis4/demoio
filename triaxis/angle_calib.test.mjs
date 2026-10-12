@@ -16,7 +16,7 @@ import {
   calculateSfiDifferentialAngles,
   calculateDifferentialGimbalInput,
   createCalibrator
-} from 'file:///C:/Users/IYP/Documents/Projects/demoio/triaxis/angle_calib.js';
+} from './angle_calib.js';
 
 // --- Reference oracle (verbatim math from sfi_demo.js) ---
 const REF_PARAMS = { k1: 1.0, o11: 0.0, o12: 0.0, k2: 1.0, o21: 0.0, o22: 0.0 };

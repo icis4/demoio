@@ -59,22 +59,14 @@ export function calcTwist2px({ X02, Z02, Y13, Z13 }) {
 export const TWIST_CAL = { ...CALIB_DEFAULTS };
 
 export function applyTwistCalibration(x, y, z) {
+  // One angle definition only. The old identity fast-path hand-rolled
+  // atan2(z, x) with a SIGNED z: a negative vertical field then gave negative
+  // alpha/beta, and the radar's (90-α)/90 mapping pushed the needle past the
+  // rim into the corner until a K or offset was changed. Delegating to the
+  // Desmos core keeps atan2's first argument a magnitude (hypot), so the
+  // calibrated angles stay in the 0..180° band at every parameter set -
+  // including the k1=k2=1, o=0 default.
   const p = normalizeParams(TWIST_CAL);
-  const isIdentity = p.k1 === 1 && p.k2 === 1 && p.o11 === 0 && p.o12 === 0 && p.o21 === 0 && p.o22 === 0;
-  if (isIdentity) {
-    // Vanilla mode: identity calibration is a true no-op, so the calibrated
-    // readout equals the pure atan2 (no tangential cross-axis mixing) until
-    // the user actually enters calibration offsets / gains.
-    const a1 = Math.atan2(z, x);
-    const b1 = Math.atan2(z, y);
-    return {
-      alphaRad: a1,
-      betaRad: b1,
-      alphaDeg: toDeg(a1),
-      betaDeg: toDeg(b1),
-    };
-  }
-  // Non-identity: delegate the Desmos model to the shared angle_calib.js module.
   return calculateDesmosAngles(x, y, z, p);
 }
 

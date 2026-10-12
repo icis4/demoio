@@ -44,8 +44,8 @@ Not a tab — a drawer toggled by the **Calibration Tuning** button, which sits 
 
 - **GAINSEL (electrical gain)** — Same control as the Thumbstick page: 0–63 numeric field. The hint shows the 6-bit value (starts at 0 = `0b000000`). Over SCPI the value is written to `GAINSEL_1PX` (reg 0x00 bits [5:0]) with the unlock sequence + readback verify, then confirmed in the **Device confirmed** line; without hardware it stays local ("Device: not read"). Typing applies instantly with a 300 ms debounce; pressing Enter writes immediately. The **Gain 1px** button in the controls bar toggles 9 ↔ 37 and stays in sync with this field.
 
-- **Reset Defaults** — Resets all six constants to 0.
+- **Reset Defaults** — Restores K-factors to 1.0 and orthogonality to 0.0.
 
-- **Differential angle formula** — Defaults to the reviewed normal formula `ATAN2(X02, Z02)` / `ATAN2(Y13, Z13)`. Select **Enhanced** to use the cross-axis formula shown in the panel.
+- **Differential angle formula** — Defaults to the reviewed normal formula `ATAN2(X02, Z02)` / `ATAN2(Y13, Z13)`. Select **Enhanced** to use the cross-axis formula shown in the panel. Note the two modes agree only inside the normal operating band: Enhanced folds the other plane's gradient into each magnitude, so flipping the selector with the magnet far off-centre jumps discontinuously by design (reviewer slide 12 specifies the cross terms explicitly).
 
 - **k1/k2/o11/o12/o21/o22 inputs** — Enhanced formula parameters: α uses `sqrt(X02² + (k1·(Z13 − o11·X02))²)` over `Z02 − o12·X02`; β uses `sqrt(Y13² + (k2·(Z02 − o21·Y13))²)` over `Z13 − o22·Y13`. The selected formula feeds the radars, readouts and live gimbal.

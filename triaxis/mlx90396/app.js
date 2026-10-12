@@ -375,16 +375,13 @@ function initTwistControls() {
   modeSel?.addEventListener('change', async () => {
     twistMode = modeSel.value;
     if (unitLbl) unitLbl.textContent = `Units: ${twistMode === '2px' ? 'mT/mm' : 'mT'}`;
-    // Restoring the mode's default electrical gain on the hardware is part of
-    // the switch (defaults are zeroed per user request: 1px -> 0, 2px -> 0).
-    // setSensorGain no-ops on the readback when
-    // no SCPI device is attached; readSensorGain then re-syncs the field to
-    // whatever the chip actually reports.
-    const modeDefault = getGainSel(twistMode);
+    // The switch does NOT push the table gain to the chip: with zeroed table
+    // defaults that would collapse electrical gain on every 1px<->2px change
+    // and flatten live readings until the trim is retyped. It only re-syncs
+    // the display; readSensorGain then adopts whatever the part actually
+    // holds (no-op without an SCPI device attached).
     syncTwistGainField(gainInput);
-    if (!(await setSensorGain(modeDefault))) {
-      await readSensorGain();
-    }
+    await readSensorGain();
     updateTwistUI(latestTwistPoints);
   });
 
@@ -726,8 +723,17 @@ const radarCanvas = document.getElementById('radar-canvas');
 const radarCtx = radarCanvas ? radarCanvas.getContext('2d') : null;
 const radarReadout = document.getElementById('radar-readout');
 const radarState = { x: 0, y: 0 };
+// Displayed position, glided toward radarState at rAF rate so the needle moves
+// at panel refresh speed even when telemetry arrives at the 10-25 ms loop
+// cadence (a raw data-rate update reads as "low FPS" stepping).
+const radarSmooth = { x: 0, y: 0 };
 
 const RADAR_SCALE = 90; // tilt degrees at the rim
+// No-signal dead zone for the radar scope: below this absolute-field magnitude
+// (≈0.25 mT at 20 LSB/mT) there is no X/Y tilt to point at. Without this gate
+// the all-zero start frame feeds atan2(0,0)=0° through the angular formula and
+// the needle slams to the right rim until a real field arrives.
+const RADAR_NO_MAG_MT = 5;
 
 function pushRadarPoint(x, y) {
   radarState.x = x;
@@ -739,6 +745,13 @@ function pushRadarFromAvg(x, y, z) {
   const bx = typeof x === 'number' && Number.isFinite(x) ? x : 0;
   const by = typeof y === 'number' && Number.isFinite(y) ? y : 0;
   const bz = typeof z === 'number' && Number.isFinite(z) ? z : 0;
+  // Park at the neutral point (α=β=90° → offset 0,0) while the field is
+  // negligible, mirroring the Voxdale no-signal park instead of pinning to the
+  // rim on a degenerate atan2(0,0).
+  if (Math.hypot(bx, by, bz) < RADAR_NO_MAG_MT) {
+    pushRadarPoint(0, 0);
+    return;
+  }
   const cal = applyTwistCalibration(bx, by, bz);
   if (!Number.isFinite(cal.alphaDeg) || !Number.isFinite(cal.betaDeg)) {
     pushRadarPoint(0, 0);
@@ -762,6 +775,13 @@ function drawRadar() {
   const ctx = radarCtx;
 
   ctx.clearRect(0, 0, w, h);
+
+  // Glide the needle toward the latest telemetry. ~35% per frame reaches 90%
+  // of the way in ~6 frames (<100 ms), so the scope feels fluid without
+  // gambling on how fast the data loop actually runs.
+  const glide = 0.35;
+  radarSmooth.x += (radarState.x - radarSmooth.x) * glide;
+  radarSmooth.y += (radarState.y - radarSmooth.y) * glide;
 
   // Reticle: dark disc, rings every 25 %, crosshair.
   ctx.fillStyle = '#030816';
@@ -787,10 +807,10 @@ function drawRadar() {
   ctx.fillText('270° (-Y)', cx, cy + R - 8);
 
   // Measured vector (solid line), boundary-clamped to the rim, +Y up.
-  const dist = Math.hypot(radarState.x, radarState.y);
+  const dist = Math.hypot(radarSmooth.x, radarSmooth.y);
   const clamp = dist > 0 ? Math.min(dist, RADAR_SCALE) / dist : 1;
-  const bx = cx + ((radarState.x * clamp) / RADAR_SCALE) * R;
-  const by = cy - ((radarState.y * clamp) / RADAR_SCALE) * R;
+  const bx = cx + ((radarSmooth.x * clamp) / RADAR_SCALE) * R;
+  const by = cy - ((radarSmooth.y * clamp) / RADAR_SCALE) * R;
   const range = Math.min(RADAR_SCALE, dist);
 
   ctx.strokeStyle = '#65BBA9';
@@ -808,7 +828,7 @@ function drawRadar() {
   ctx.restore();
 
   if (radarReadout) {
-    const azRaw = Math.atan2(radarState.y, radarState.x) * (180 / Math.PI);
+    const azRaw = Math.atan2(radarSmooth.y, radarSmooth.x) * (180 / Math.PI);
     const az = azRaw < 0 ? azRaw + 360 : azRaw;
     radarReadout.textContent = `Azimuth: ${az.toFixed(1)}° | Range: ${((range / RADAR_SCALE) * 100).toFixed(0)}%`;
   }
@@ -1054,6 +1074,7 @@ async function disconnectSerial(reason = 'manual') {
     // readouts.
     magnetState.inited = false;
     radarState.x = 0; radarState.y = 0;
+    radarSmooth.x = 0; radarSmooth.y = 0;
     latestTwistPoints.length = 0;
 
     setUIConnected(false);
@@ -1140,11 +1161,11 @@ async function runJoystickDemo() {
 
           if (currentDriverType === 'scpi') {
             await activeDevice.sm(0xFC000); 
-            await new Promise(r => setTimeout(r, 2)); 
+            await activeDevice.awaitReady();
             const res01 = await activeDevice.rm(false, 0xFC000); 
             
             await activeDevice.sm(0x03F00); 
-            await new Promise(r => setTimeout(r, 2)); 
+            await activeDevice.awaitReady();
             const res23 = await activeDevice.rm(false, 0x03F00); 
 
             // The chip's dedicated differential channels. Mask 0x000FC covers
@@ -1153,10 +1174,11 @@ async function runJoystickDemo() {
             // transfer for the price the old four-channel mask already cost.
             // These feed the diagnostics tab and the 2px twist readouts.
             // A third transfer cannot be avoided: 12 absolute + 6 gradient is 18
-            // channels and the part allows 6 per measurement. 2 ms matches what
-            // the voxdale app uses, to keep the loop period down.
+            // channels and the part allows 6 per measurement. Each SM is
+            // followed by a DRDY-gated wait (bounded, so a slow conversion
+            // still yields fresh data without stalling the loop).
             await activeDevice.sm(0x000FC); 
-            await new Promise(r => setTimeout(r, 2)); 
+            await activeDevice.awaitReady();
             const resDiff = await activeDevice.rm(false, 0x000FC); 
             frames = { res01, res23, resDiff };
 

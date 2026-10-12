@@ -69,4 +69,4 @@
 
 - **GAINSEL field** — 0–63 electrical gain register; the hint shows the 6-bit value (starts at 0 = `0b000000`). Over SCPI the change is written to the chip (unlock + readback verify) and confirmed in the "Device confirmed" line; without hardware it stays local. Switching 1px↔2px mode restores each mode's default (0 / 0) on the device; starting the demo re-reads the chip and adopts whatever it actually holds.
 
-- **Calibration constants k1 k2 o11 o12 o21 o22** — edited live; every keystroke updates the calibrated readouts using the published Desmos cross-axis formula. Defaults are all zero (`k1=k2=0, o=0`); with non-negative Z this matches the raw atan2 exactly, so nothing is "hidden". The live engine is initialised from these fields on load, so display and math always agree.
+- **Calibration constants k1 k2 o11 o12 o21 o22** — edited live; every keystroke updates the calibrated readouts using the published Desmos cross-axis formula. Defaults `k1=k2=1, o=0` are an exact no-op: calibrated = raw, so nothing is "hidden". The live engine is initialised from these fields on load, so display and math always agree.

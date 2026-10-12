@@ -15,7 +15,11 @@
  * (sfi_demo.js) byte-for-byte for 1px mode. For 2px mode each signal arrives as
  * a two-component gradient pair, so the angle is computed in the pair's own
  * plane with the orthogonality terms as Z<->X / Z<->Y crosstalk corrections;
- * this reproduces the Voxdale reference `computeSfi2Px` exactly.
+ * that is `calculate2pxAngles` (parity-tested below). Production Voxdale
+ * differential angles instead come from `calculateSfiDifferentialAngles`,
+ * which implements the reviewer's slide-12 formulas verbatim: the `normal`
+ * branch is intentionally calibration-free (plain atan2 per gradient plane),
+ * and only the `enhanced` branch consumes k1/o11/o12/k2/o21/o22.
  *
  * No DOM access, no state at module load: usable from Node tests and the browser.
  *
