@@ -39,19 +39,19 @@ export class MLX90396_API {
       
       await new Promise(r => setTimeout(r, 2));
       await this.query(`${prefix}:CS0 1`);
-      
-      if (!response) return Array(miso_len).fill(0);
-      
-      response = response.replace(scpiCmd, '').trim();
-      const tokens = response.match(/0x[0-9a-fA-F]+|[0-9a-fA-F]+/g) || [];
-      const rxArray = tokens.map(tok => parseInt(tok, 16));
 
-      if (rxArray.length >= mosi_data.length + miso_len) {
-        return rxArray.slice(mosi_data.length, mosi_data.length + miso_len);
-      } else if (rxArray.length >= miso_len) {
-        return rxArray.slice(-miso_len);
+      if (!response) return Array(miso_len).fill(0);
+
+      const stripped = response.replace(scpiCmd, '').trim();
+      const tokens = stripped.match(/0x[0-9a-fA-F]+|[0-9a-fA-F]+/g) || [];
+      const rx = tokens.map(tok => parseInt(tok, 16));
+
+      if (rx.length >= mosi_data.length + miso_len) {
+          return rx.slice(mosi_data.length, mosi_data.length + miso_len);
       }
-      
+      if (rx.length >= miso_len) {
+          return rx.slice(-miso_len);
+      }
       return Array(miso_len).fill(0);
   }
 
@@ -96,11 +96,15 @@ export class MLX90396_API {
   }
 
   _checkMaskLimit(data_mask) {
+      // The part measures at most 6 channels per SM/SB/SWOC/RM, and MI6 is the
+      // warning flag for over-asking. The reference firmware counts every bit
+      // set in the mask, including vdd, so a mask that mixes vdd with 6 axes is
+      // rejected here rather than being sent and refused by the part.
       let count = 0;
-      let temp_mask = data_mask & 0xFFFFFC; 
+      let temp_mask = data_mask;
       while (temp_mask) {
           temp_mask &= (temp_mask - 1);
-          if (++count > 6) return true; 
+          if (++count > 6) return true;
       }
       return false;
   }
@@ -221,21 +225,61 @@ export class MLX90396_API {
       
       let result = { raw: miso };
       let offset = 1; 
-      
+
       if (temp) {
-          result.t = this._s16((miso[offset] << 8) | miso[offset + 1]);
+          const w = (miso[offset] << 8) | miso[offset + 1];
+          result.t = this._s16(w);
           offset += 2;
       }
       
       for (let key of activeKeys) {
-          result[key] = this._s16((miso[offset] << 8) | miso[offset + 1]);
+          const w = (miso[offset] << 8) | miso[offset + 1];
+          result[key] = this._s16(w);
           offset += 2;
       }
       
       result.error = !this._verify_crc(miso.slice(0, offset), miso[offset]);
       result.status = miso[0];
-      
+
       return result;
+  }
+
+  // GAINSEL fields share register 0x00: bits[5:0] = 1px, bits[11:6] = 2px.
+  // Writes require the unlock sequence (datasheet 15.4.3) and must preserve the
+  // other field; a readback then confirms what the part actually holds.
+  async setGain(mode, gainValue, persist = false) {
+      if (await this.wr(0x43, 0x9952)) return { ok: false };
+      if (await this.wr(0x44, 0x84DE)) return { ok: false };
+
+      const is2px = mode === '2px';
+      const readRes = await this.rr(0x00);
+      const currentVal = readRes.error ? 0 : readRes.data;
+
+      const gainField = gainValue & 0x003F;
+      const updatedVal = is2px
+          ? (currentVal & 0x003F) | (gainField << 6)
+          : (currentVal & 0x0FC0) | gainField;
+
+      if (await this.wr(0x00, updatedVal)) return { ok: false };
+
+      const verifyRes = await this.rr(0x00);
+      const verifiedField = is2px
+          ? (verifyRes.data >> 6) & 0x003F
+          : verifyRes.data & 0x003F;
+      const ok = !verifyRes.error && verifiedField === gainField;
+
+      if (ok && persist) await this.hs();
+
+      return { ok, value: ok ? verifiedField : null, raw: verifyRes.data };
+  }
+
+  async readGain(mode) {
+      const readRes = await this.rr(0x00);
+      if (readRes.error) return { error: true, value: null, raw: null };
+      const value = mode === '2px'
+          ? (readRes.data >> 6) & 0x003F
+          : readRes.data & 0x003F;
+      return { error: false, value, raw: readRes.data };
   }
 
   // Alias wrapper for legacy calls

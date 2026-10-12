@@ -5,6 +5,7 @@ import { initSfiDemo, resizeSfiCanvases, updateSfiDomeKinematics } from './sfi_d
 import {
   computeTwistSignals,
   deriveTwistInputsFromPoints,
+  applyTwistCalibration,
   TWIST_CAL,
   getGainSel,
   setGainSel,
@@ -84,7 +85,7 @@ function hintForSerialError(raw) {
 // 2D Magnet & UI Elements
 const magnetDisk = document.getElementById('magnet-disk');
 const btnZeroMagnet = document.getElementById('btn-zero-magnet');
-const chkMagnetLockPos = document.getElementById('chk-magnet-lock-pos');
+const selXyTwistMode = document.getElementById('sel-xy-twist-mode');
 const joystickBase = document.getElementById('joystick-base');
 const joystickStick = document.getElementById('joystick-stick');
 
@@ -100,12 +101,26 @@ let currentDriverType = 'scpi';
 let scpiLock = Promise.resolve();
 let scpiWaiter = null;
 
+// Serial RX chatter (every line / prompt) costs real time in the hot sampling
+// loop, so it stays off unless you are debugging the wire protocol. Error and
+// warning paths still log unconditionally.
+const DEBUG_SERIAL_RX = false;
+
 const magnetOffsets = { x: 0, y: 0 };
 const latestRawMagnet = { x: 0, y: 0 };
+
+// The twist calibration panel is hosted inside view-magnet in the markup but is
+// meant to be reachable from the Thumbstick tab as well. Reparent it onto
+// #demo-jwt so it renders under whichever sub-view is active; every
+// [data-twist-toggle] button then shows/hides this single shared panel.
+const twistPanelEl = document.getElementById('twist-panel');
+const demoJwtEl = document.getElementById('demo-jwt');
+if (twistPanelEl && demoJwtEl) demoJwtEl.appendChild(twistPanelEl);
 
 const leds = [];
 const TOTAL_LEDS = 28;
 const ANGLE_STEP = 360 / TOTAL_LEDS;
+let lastLedKey = null;
 
 function isViewActive(id) {
   const el = document.getElementById(id);
@@ -116,6 +131,8 @@ function isViewActive(id) {
 window.addEventListener('DOMContentLoaded', () => {
   initSfiDemo();
   initJoystickLEDs();
+  initMagnetMotionMode();
+  initSerialPortEvents();
   startRadarLoop();
   initNvramControls();
   initGridReordering();
@@ -219,6 +236,11 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.target === 'view-3dplot' && window.Plotly) {
       Plotly.Plots.resize('plot-3d-container');
     }
+
+    // The Desmos calibration window & formula apply to the no-twist (XY) demo
+    // only; the twist demo keeps just the live alpha/beta readouts + Zero
+    // Position. Gate the shared panel's formula card to the active view.
+    updateTwistPanelGating();
   });
 });
 
@@ -229,6 +251,26 @@ function gridHalfPx() {
   return w / 2;
 }
 const magnetState = { emaX: 0, emaY: 0, emaAngle: 0, inited: false };
+let lastMagnetScaleKey = '';
+
+// Reviewer slide 4: beside "twist only", the twist demo also needs an "XY only"
+// option. One selector covers all three so the old self-contradictory
+// "Lock XY (twist only)" checkbox (locking XY is what *makes* it twist-only)
+// can go away:
+//   both   -> position and twist both track the magnet
+//   xy     -> position tracks, twist angle is held at its last value
+//   twist  -> twist tracks, position is pinned at the grid centre
+let magnetMotionMode = 'both';
+
+function initMagnetMotionMode() {
+  if (!selXyTwistMode) return;
+  magnetMotionMode = selXyTwistMode.value || 'both';
+  selXyTwistMode.addEventListener('change', () => {
+    magnetMotionMode = selXyTwistMode.value || 'both';
+    updateTwistPanelGating();
+  });
+  updateTwistPanelGating();
+}
 
 function resetMagnetTracking() {
   magnetState.inited = false;
@@ -237,6 +279,11 @@ function resetMagnetTracking() {
 
 function updateMagnetScaleLabels(mmRange) {
   const half = Math.round(gridHalfPx());
+  // The range is constant and the width only changes on resize, so skip the
+  // querySelectorAll + innerHTML rewrite when nothing actually changed.
+  const key = half + '|' + mmRange;
+  if (key === lastMagnetScaleKey) return;
+  lastMagnetScaleKey = key;
   const travelLbl = document.getElementById('magnet-travel-lbl');
   if (travelLbl) {
     travelLbl.innerHTML = `Sensing Grid: &plusmn;${mmRange.toFixed(1)} mm (&plusmn;${half} px). Disk positions on the grid and rotates with the twist angle.`;
@@ -258,14 +305,15 @@ btnZeroMagnet?.addEventListener('click', () => {
   appendLog(`[MAGNET] Zero Captured: Offset X=${magnetOffsets.x.toFixed(2)} mm, Y=${magnetOffsets.y.toFixed(2)} mm\n`, 'log-okprompt');
 });
 
-document.getElementById('btn-toggle-twist')?.addEventListener('click', () => {
-  const panel = document.getElementById('twist-panel');
-  const btn = document.getElementById('btn-toggle-twist');
-  if (panel) {
-    panel.classList.toggle('hidden');
-    if (btn) btn.classList.toggle('active', !panel.classList.contains('hidden'));
-    updateTwistUI(latestTwistPoints);
-  }
+document.querySelectorAll('[data-twist-toggle]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const panel = document.getElementById('twist-panel');
+    if (panel) {
+      panel.classList.toggle('hidden');
+      document.querySelectorAll('[data-twist-toggle]').forEach(b => b.classList.toggle('active', !panel.classList.contains('hidden')));
+      updateTwistUI(latestTwistPoints);
+    }
+  });
 });
 
 function updateMagnetUI(posX_mm, posY_mm, angleDeg) {
@@ -275,23 +323,30 @@ function updateMagnetUI(posX_mm, posY_mm, angleDeg) {
   let safeAngle = typeof angleDeg === 'number' && !isNaN(angleDeg) ? angleDeg : 0;
 
   const ALPHA = 0.4;
+  const posFrozen = magnetMotionMode === 'twist';
+  const angleFrozen = magnetMotionMode === 'xy';
+
   if (!magnetState.inited) {
     magnetState.emaX = safeX;
     magnetState.emaY = safeY;
     magnetState.emaAngle = safeAngle;
     magnetState.inited = true;
   } else {
-    magnetState.emaX += (safeX - magnetState.emaX) * ALPHA;
-    magnetState.emaY += (safeY - magnetState.emaY) * ALPHA;
-    const dA = ((safeAngle - magnetState.emaAngle + 540) % 360) - 180;
-    magnetState.emaAngle = ((magnetState.emaAngle + dA * ALPHA) % 360 + 360) % 360;
+    if (!posFrozen) {
+      magnetState.emaX += (safeX - magnetState.emaX) * ALPHA;
+      magnetState.emaY += (safeY - magnetState.emaY) * ALPHA;
+    }
+    if (!angleFrozen) {
+      const dA = ((safeAngle - magnetState.emaAngle + 540) % 360) - 180;
+      magnetState.emaAngle = ((magnetState.emaAngle + dA * ALPHA) % 360 + 360) % 360;
+    }
   }
 
   // Static grid: fixed +/-2.5 mm span. The scale never re-ranges, so a pure
   // rotation can't rescale the map and make the disk jump. Position motion is
   // EMA-smoothed and clamped at the grid edges; angle spins around the axis.
-  // "Lock XY" freezes position (angle-only spin) for twist demos.
-  const locked = chkMagnetLockPos ? chkMagnetLockPos.checked : false;
+  // "Twist only" freezes position (angle-only spin) for twist demos.
+  const locked = posFrozen;
   const mmRange = 2.5;
   const half = gridHalfPx();
   const pxPerMm = half / mmRange;
@@ -309,6 +364,7 @@ function updateMagnetUI(posX_mm, posY_mm, angleDeg) {
 
 // --- Twist Signal & Calibration UI ---
 let twistMode = '1px';
+let gainWriteTimer = null;
 
 function initTwistControls() {
   const modeSel = document.getElementById('sel-twist-mode');
@@ -316,17 +372,36 @@ function initTwistControls() {
   const unitLbl = document.getElementById('twist-unit-lbl');
   const calKeys = ['k1', 'k2', 'o11', 'o12', 'o21', 'o22'];
 
-  modeSel?.addEventListener('change', () => {
+  modeSel?.addEventListener('change', async () => {
     twistMode = modeSel.value;
     if (unitLbl) unitLbl.textContent = `Units: ${twistMode === '2px' ? 'mT/mm' : 'mT'}`;
+    // Restoring the mode's default electrical gain on the hardware is part of
+    // the switch (defaults are zeroed per user request: 1px -> 0, 2px -> 0).
+    // setSensorGain no-ops on the readback when
+    // no SCPI device is attached; readSensorGain then re-syncs the field to
+    // whatever the chip actually reports.
+    const modeDefault = getGainSel(twistMode);
     syncTwistGainField(gainInput);
+    if (!(await setSensorGain(modeDefault))) {
+      await readSensorGain();
+    }
     updateTwistUI(latestTwistPoints);
   });
 
-  gainInput?.addEventListener('change', () => {
-    const v = parseInt(gainInput.value, 10);
-    if (!isNaN(v)) setGainSel(twistMode, v);
+  // Live gain editing: the local table updates instantly, the register write is
+  // debounced so typing through the field doesn't saturate the SPI bus.
+  gainInput?.addEventListener('input', () => {
+    const v = Math.min(63, Math.max(0, parseInt(gainInput.value, 10) || 0));
+    setGainSel(twistMode, v);
     syncTwistGainField(gainInput);
+    clearTimeout(gainWriteTimer);
+    gainWriteTimer = setTimeout(() => setSensorGain(v), 300);
+  });
+
+  gainInput?.addEventListener('change', () => {
+    clearTimeout(gainWriteTimer);
+    const v = Math.min(63, Math.max(0, parseInt(gainInput.value, 10) || 0));
+    setSensorGain(v);
   });
 
   calKeys.forEach(key => {
@@ -335,6 +410,13 @@ function initTwistControls() {
       const v = parseFloat(el.value);
       if (!isNaN(v)) TWIST_CAL[key] = v;
     });
+    // Initialise the live math from the fields on load. TWIST_CAL otherwise
+    // keeps the module defaults until the first keystroke, so the numbers on
+    // screen and the numbers in the formula could disagree at startup.
+    if (el) {
+      const v = parseFloat(el.value);
+      if (!isNaN(v)) TWIST_CAL[key] = v;
+    }
   });
 
   syncTwistGainField(gainInput);
@@ -350,12 +432,79 @@ function syncTwistGainField(gainInput) {
   }
 }
 
+function setTwistGainReadback(value) {
+  const el = document.getElementById('twist-gain-readback');
+  if (!el) return;
+  if (typeof value === 'number' && !isNaN(value)) {
+    el.textContent = `Device confirmed: ${value} (0b${value.toString(2).padStart(6, '0')})`;
+    el.style.color = '#59FFB0';
+  } else {
+    el.textContent = 'Device: not read';
+    el.style.color = 'var(--color-ink-muted)';
+  }
+}
+
+// --- GAINSEL hardware write/read (SCPI only) ---
+// setSensorGain writes the current twistMode's gain field (reg 0x00 bits [5:0]
+// for 1px, [11:6] for 2px) through MLX90396_API.setGain, which performs the
+// unlock sequence and a readback verify. Without a connected SCPI device the
+// local table still updates and the readback reads "not read".
+async function setSensorGain(gainVal) {
+  const g = Math.min(63, Math.max(0, parseInt(gainVal, 10) || 0));
+  setGainSel(twistMode, g);
+  syncTwistGainField(document.getElementById('in-twist-gain'));
+
+  if (!activeDevice || currentDriverType !== 'scpi') {
+    setTwistGainReadback(null);
+    return false;
+  }
+
+  try {
+    appendLog(`[GAIN] Writing GAINSEL_${twistMode.toUpperCase()} = ${g} (0b${g.toString(2).padStart(6, '0')})...\n`, 'log-okprompt');
+    const res = await activeDevice.setGain(twistMode, g, false);
+    if (res.ok) {
+      setGainSel(twistMode, res.value);
+      syncTwistGainField(document.getElementById('in-twist-gain'));
+      setTwistGainReadback(res.value);
+      appendLog(`[GAIN] Verified ${res.value} on device.\n`, 'log-okprompt');
+    } else {
+      setTwistGainReadback(null);
+      appendLog(`[GAIN] Write/verify failed for ${g}.\n`, 'log-badprompt');
+    }
+    return res.ok;
+  } catch (err) {
+    appendLog(`[GAIN ERROR] ${err.message}\n`, 'log-badprompt');
+    setTwistGainReadback(null);
+    return false;
+  }
+}
+
+// readSensorGain confirms the chip's active gain field for the current twistMode
+// and adopts it into the local table if the device disagrees with the UI.
+async function readSensorGain() {
+  if (!activeDevice || currentDriverType !== 'scpi') {
+    setTwistGainReadback(null);
+    return null;
+  }
+  const res = await activeDevice.readGain(twistMode);
+  const v = res && !res.error ? res.value : null;
+  setTwistGainReadback(v);
+  if (v !== null && v !== getGainSel(twistMode)) {
+    setGainSel(twistMode, v);
+    syncTwistGainField(document.getElementById('in-twist-gain'));
+  }
+  return v;
+}
+
 const latestTwistPoints = [];
 
 function updateTwistUI(points) {
   const twistPanel = document.getElementById('twist-panel');
-  if (!isViewActive('view-magnet') || !twistPanel || twistPanel.classList.contains('hidden')) return;
+  const twistBedVisible = isViewActive('view-magnet') || isViewActive('view-joystick');
+  if (!twistBedVisible || !twistPanel || twistPanel.classList.contains('hidden')) return;
   if (!Array.isArray(points) || points.length < 4) return;
+
+  updateTwistPanelGating();
 
   latestTwistPoints.splice(0, latestTwistPoints.length, ...points);
 
@@ -376,6 +525,18 @@ function updateTwistUI(points) {
   setTxt('twist-beta-str', `${res.strengthBeta.toFixed(2)} ${unit}`);
 }
 
+// The Gain & Calibration Config card stays visible in every motion mode.
+// (It was briefly gated to "XY only" per reviewer slide 4, but the k/o
+// constants and GAINSEL must stay reachable while tuning, so the gate now
+// only ensures the card is shown, never hidden. Twist calibration itself is
+// still covered by Zero Position.)
+function updateTwistPanelGating() {
+  ['twist-config-card', 'twist-how-details'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('hidden');
+  });
+}
+
 // --- 3D Joystick UI ---
 function initJoystickLEDs() {
   if (!joystickBase || leds.length > 0) return;
@@ -391,7 +552,12 @@ function initJoystickLEDs() {
 function updateJoystickUI(x, y) {
   if (!joystickStick || !isViewActive('view-joystick')) return;
   const safeX = typeof x === 'number' && !isNaN(x) ? x : 0;
-  const safeY = typeof y === 'number' && !isNaN(y) ? y : 0;
+  // Sensor +Y is up — the same convention as updateMagnetUI, which negates it
+  // for the 2D disk. A CSS translateY percentage moves the knob *down* the
+  // screen, so flip once here rather than in three places: the knob, the LED
+  // ring and the radar trail all read safeY, so they stay consistent with each
+  // other and with the magnet view.
+  const safeY = (typeof y === 'number' && !isNaN(y) ? y : 0) * -1;
   
   const radius = Math.sqrt(safeX * safeX + safeY * safeY);
   let renderX = safeX;
@@ -405,15 +571,27 @@ function updateJoystickUI(x, y) {
   
   joystickStick.style.setProperty('--tx', renderX);
   joystickStick.style.setProperty('--ty', renderY);
-  leds.forEach(led => led.className = 'joystick__led');
 
-  pushRadarPoint(renderX, renderY);
-
-  if (radius > 5) { 
+  // The LED ring only needs DOM writes when the lit sector actually moves;
+  // resetting 28 classNames every loop iteration is pure layout churn.
+  let activeIndex = -1;
+  if (radius > 5) {
     let angleDeg = Math.atan2(safeY, safeX) * (180 / Math.PI);
     if (angleDeg < 0) angleDeg += 360;
-    let activeIndex = Math.round(angleDeg / ANGLE_STEP) % TOTAL_LEDS;
+    activeIndex = Math.round(angleDeg / ANGLE_STEP) % TOTAL_LEDS;
+  }
+  if (activeIndex === lastLedKey) return;
+  lastLedKey = activeIndex;
 
+  leds.forEach(led => led.className = 'joystick__led');
+
+  // The polar radar is NOT fed here: its vector comes from the angular formula
+  // applied to the 4-pixel averaged XYZ (pushRadarFromAvg in the demo loop), so
+  // the plot follows the calibrated tilt angles rather than this knob scale.
+  // Keeping the two feeds separate is what lets the radar show XY-tilt while the
+  // knob shows the raw averaged field.
+
+  if (activeIndex >= 0) {
     for (let i = -2; i <= 2; i++) {
       let targetIdx = (activeIndex + i + TOTAL_LEDS) % TOTAL_LEDS;
       if (leds[targetIdx]) {
@@ -425,104 +603,214 @@ function updateJoystickUI(x, y) {
   }
 }
 
-// --- 2D Radar Scope (shared Joystick data) ---
+// --- Sensor Diagnostics ---
+// Raw values only, straight from the three RM replies: nothing here is
+// averaged, offset-corrected or clamped, so this is the view to trust when the
+// knob looks wrong.
+const DIAG_STATUS_FN = { 3: 'Single', 2: 'Burst', 1: 'WOC', 0: 'Exit / Memory' };
+
+function diagText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+function diagState(id, text, tone) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('diagnostics-state--warn', tone === 'warn');
+  el.classList.toggle('diagnostics-state--bad', tone === 'bad');
+}
+
+// The status byte is split the way the part defines it: bits 7:6 the function
+// ID, bits 5:3 a measurement counter (meaningful in burst and WOC), then
+// ERROR, INFO/WARN and DRDY.
+function decodeStatus(s) {
+  if (typeof s !== 'number') return null;
+  const fn = (s >> 6) & 0x03;
+  return {
+    hex: '0x' + s.toString(16).toUpperCase().padStart(2, '0'),
+    fn: DIAG_STATUS_FN[fn] ?? 'Unknown',
+    fnBits: fn.toString(2).padStart(2, '0'),
+    counter: (s >> 3) & 0x07,
+    error: ((s >> 2) & 1) === 1,
+    warn: ((s >> 1) & 1) === 1,
+    drdy: (s & 1) === 1
+  };
+}
+
+function updateDiagnostics(frames, knob) {
+  if (!isViewActive('view-diagnostics')) return;
+
+  const res01 = frames?.res01, res23 = frames?.res23, resDiff = frames?.resDiff;
+
+  // --- Frame health ---
+  diagText('diag-source', currentDriverType === 'scpi' ? 'Live hardware (SCPI)' : 'Live hardware (Arduino)');
+  const st = decodeStatus(res01?.status);
+  if (st) {
+    diagText('diag-status', `${st.hex}  (${st.fnBits})`);
+    diagText('diag-fn', `${st.fn} · counter ${st.counter}`);
+    diagText('diag-drdy', st.drdy ? 'Ready' : 'Not ready');
+    diagText('diag-flags', `ERROR=${st.error ? 1 : 0}  WARN=${st.warn ? 1 : 0}`);
+    diagState('diag-health',
+      st.error ? 'Status ERROR set - the part rejected a command' :
+      !st.drdy ? 'DRDY clear - measurement not ready yet' :
+      st.warn ? 'WARN set - register 0x42 holds the detail' : 'Status clean',
+      st.error ? 'bad' : (!st.drdy || st.warn) ? 'warn' : null);
+  } else {
+    diagText('diag-status', '--');
+    diagText('diag-fn', '--');
+    diagText('diag-drdy', '--');
+    diagText('diag-flags', '--');
+    diagState('diag-health', 'No measurement received', 'bad');
+  }
+
+  const transfers = { '01': res01, '23': res23, 'diff': resDiff };
+  const crcLine = ['01', '23', 'diff'].map(k => {
+    const r = transfers[k];
+    if (!r) return `${k}:--`;
+    return `${k}:${r.error ? 'FAIL' : 'ok'}`;
+  }).join('   ');
+  diagText('diag-crc', crcLine);
+
+  // --- Absolute pixels ---
+  const pixelRows = [
+    ['diag-x0', res01?.x0], ['diag-y0', res01?.y0], ['diag-z0', res01?.z0],
+    ['diag-x1', res01?.x1], ['diag-y1', res01?.y1], ['diag-z1', res01?.z1],
+    ['diag-x2', res23?.x2], ['diag-y2', res23?.y2], ['diag-z2', res23?.z2],
+    ['diag-x3', res23?.x3], ['diag-y3', res23?.y3], ['diag-z3', res23?.z3]
+  ];
+  pixelRows.forEach(([id, v]) => diagText(id, typeof v === 'number' ? String(v) : '--'));
+
+  const finite = pixelRows.every(([, v]) => typeof v === 'number' && !isNaN(v));
+  if (finite) {
+    const vals = pixelRows.map(([, v]) => v);
+    const sum = (a, b) => a + b;
+    diagText('diag-avg-x', ((vals[0] + vals[3] + vals[6] + vals[9]) / 4).toFixed(2));
+    diagText('diag-avg-y', ((vals[1] + vals[4] + vals[7] + vals[10]) / 4).toFixed(2));
+    diagText('diag-avg-z', ((vals[2] + vals[5] + vals[8] + vals[11]) / 4).toFixed(2));
+    diagText('diag-peak', String(Math.max(...vals.map(Math.abs))));
+    diagState('diag-range',
+      Math.max(...vals.map(Math.abs)) >= 2040 ? 'ADC near full scale (2048)' : 'Within ADC range',
+      Math.max(...vals.map(Math.abs)) >= 2040 ? 'warn' : null);
+  } else {
+    diagText('diag-avg-x', '--');
+    diagText('diag-avg-y', '--');
+    diagText('diag-avg-z', '--');
+    diagText('diag-peak', '--');
+    diagState('diag-range', 'No measurement received', 'warn');
+  }
+
+  // --- Differential channels ---
+  const gradRows = [
+    ['diag-dx02', resDiff?.x02], ['diag-dy02', resDiff?.y02], ['diag-dz02', resDiff?.z02],
+    ['diag-dx13', resDiff?.x13], ['diag-dy13', resDiff?.y13], ['diag-dz13', resDiff?.z13]
+  ];
+  gradRows.forEach(([id, v]) => diagText(id, typeof v === 'number' ? String(v) : '--'));
+
+  // --- Knob output ---
+  diagText('diag-joy-src', 'Absolute field (avg X, Y)');
+  diagText('diag-joy-x', typeof knob?.joyX === 'number' ? knob.joyX.toFixed(2) : '--');
+  diagText('diag-joy-y', typeof knob?.joyY === 'number' ? knob.joyY.toFixed(2) : '--');
+  diagText('diag-joy-angle', typeof knob?.angleDeg === 'number' ? `${knob.angleDeg.toFixed(1)}°` : '--');
+  if (knob?.periodMs) diagText('diag-period', `${knob.periodMs} ms`);
+}
+
+// --- 2D Polar Radar (Voxdale-style field-vector scope) ---
+// Mirrors the Voxdale page's drawRadar: a reticle with 25% rings and +X/+Y
+// compass labels, a theme-coloured measured vector clamped to the rim and a
+// glowing head. +Y is UP, so the vector points the same way the joystick knob
+// does; it feeds on the same coordinates as the knob (absolute-field average),
+// so the radar and the joystick can never disagree on Y.
 const radarCanvas = document.getElementById('radar-canvas');
 const radarCtx = radarCanvas ? radarCanvas.getContext('2d') : null;
 const radarReadout = document.getElementById('radar-readout');
-const radarState = { x: 0, y: 0, trail: [] };
+const radarState = { x: 0, y: 0 };
+
+const RADAR_SCALE = 90; // tilt degrees at the rim
 
 function pushRadarPoint(x, y) {
-  if (Math.hypot(x, y) < 0.1) {
-    radarState.x = 0;
-    radarState.y = 0;
-    radarState.trail.length = 0;
-    return;
-  }
-  radarState.trail.push({ x, y });
-  if (radarState.trail.length > 40) radarState.trail.shift();
   radarState.x = x;
   radarState.y = y;
+}
+
+// Radar XY follows the calibrated tilt angles, with 90° as the neutral field.
+function pushRadarFromAvg(x, y, z) {
+  const bx = typeof x === 'number' && Number.isFinite(x) ? x : 0;
+  const by = typeof y === 'number' && Number.isFinite(y) ? y : 0;
+  const bz = typeof z === 'number' && Number.isFinite(z) ? z : 0;
+  const cal = applyTwistCalibration(bx, by, bz);
+  if (!Number.isFinite(cal.alphaDeg) || !Number.isFinite(cal.betaDeg)) {
+    pushRadarPoint(0, 0);
+    return;
+  }
+  const offset = {
+    x: (90 - cal.alphaDeg) / 90,
+    y: (90 - cal.betaDeg) / 90
+  };
+  pushRadarPoint(offset.x * RADAR_SCALE, offset.y * RADAR_SCALE);
 }
 
 function drawRadar() {
   if (!radarCtx || !isViewActive('view-joystick')) return;
 
   const { canvas } = radarCtx;
-  const size = canvas.width;
-  const cx = size / 2, cy = size / 2;
-  const R = size / 2 - 26;
+  const w = canvas.width;
+  const h = canvas.height;
+  const cx = w / 2, cy = h / 2;
+  const R = Math.min(cx, cy) - 25;
   const ctx = radarCtx;
 
-  ctx.clearRect(0, 0, size, size);
+  ctx.clearRect(0, 0, w, h);
 
-  ctx.fillStyle = '#02050f';
+  // Reticle: dark disc, rings every 25 %, crosshair.
+  ctx.fillStyle = '#030816';
   ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
 
-  [0.25, 0.5, 0.75, 1].forEach(f => {
-    ctx.beginPath();
-    ctx.arc(cx, cy, R * f, 0, Math.PI * 2);
-    ctx.strokeStyle = f === 1 ? 'rgba(101,187,169,0.5)' : 'rgba(101,187,169,0.18)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  });
-
-  ctx.strokeStyle = 'rgba(101,187,169,0.15)';
+  ctx.strokeStyle = '#1e293b';
+  ctx.lineWidth = 1;
+  for (let r = 0.25; r <= 1.0; r += 0.25) {
+    ctx.beginPath(); ctx.arc(cx, cy, R * r, 0, Math.PI * 2); ctx.stroke();
+  }
   ctx.beginPath();
   ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
   ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
   ctx.stroke();
 
-  ctx.fillStyle = 'rgba(169,184,201,0.65)';
+  ctx.fillStyle = '#64748b';
   ctx.font = '10px monospace';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('0°', cx + R + 14, cy);
-  ctx.fillText('90°', cx, cy - R - 13);
-  ctx.fillText('180°', cx - R - 14, cy);
-  ctx.fillText('270°', cx, cy + R + 13);
+  ctx.fillText('0° (+X)', cx + R - 18, cy - 6);
+  ctx.fillText('90° (+Y)', cx, cy - R + 14);
+  ctx.fillText('180° (-X)', cx - R + 24, cy - 6);
+  ctx.fillText('270° (-Y)', cx, cy + R - 8);
 
-  radarState.trail.forEach((p, i) => {
-    const px = cx + (p.x / 50) * R;
-    const py = cy + (p.y / 50) * R;
-    ctx.fillStyle = `rgba(101,187,169,${0.15 + (i / radarState.trail.length) * 0.45})`;
-    ctx.beginPath(); ctx.arc(px, py, 1.6, 0, Math.PI * 2); ctx.fill();
-  });
+  // Measured vector (solid line), boundary-clamped to the rim, +Y up.
+  const dist = Math.hypot(radarState.x, radarState.y);
+  const clamp = dist > 0 ? Math.min(dist, RADAR_SCALE) / dist : 1;
+  const bx = cx + ((radarState.x * clamp) / RADAR_SCALE) * R;
+  const by = cy - ((radarState.y * clamp) / RADAR_SCALE) * R;
+  const range = Math.min(RADAR_SCALE, dist);
 
-  const bx = cx + (radarState.x / 50) * R;
-  const by = cy + (radarState.y / 50) * R;
-  const range = Math.min(50, Math.hypot(radarState.x, radarState.y));
-
-  const gradVec = ctx.createLinearGradient(cx, cy, bx, by);
-  gradVec.addColorStop(0, 'rgba(181,235,220,0.15)');
-  gradVec.addColorStop(1, 'rgba(101,187,169,0.95)');
-  ctx.strokeStyle = gradVec;
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#65BBA9';
+  ctx.lineWidth = 2.5;
   ctx.beginPath();
   ctx.moveTo(cx, cy);
   ctx.lineTo(bx, by);
   ctx.stroke();
 
-  ctx.fillStyle = 'rgba(169,184,201,0.85)';
-  ctx.font = '11px monospace';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'bottom';
-  ctx.fillText(`${((range / 50) * 100).toFixed(0)}%`, bx + 10, by - 6);
-
-  if (range > 1) {
-    ctx.save();
-    ctx.shadowColor = '#65BBA9';
-    ctx.shadowBlur = 14;
-    ctx.fillStyle = '#65BBA9';
-    ctx.beginPath(); ctx.arc(bx, by, 4, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
-    ctx.strokeStyle = 'rgba(101,187,169,0.5)';
-    ctx.beginPath(); ctx.arc(bx, by, 9, 0, Math.PI * 2); ctx.stroke();
-  }
+  ctx.save();
+  ctx.shadowColor = '#65BBA9';
+  ctx.shadowBlur = 10;
+  ctx.fillStyle = '#65BBA9';
+  ctx.beginPath(); ctx.arc(bx, by, 5.5, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
 
   if (radarReadout) {
-    const azRaw = Math.atan2(-radarState.y, radarState.x) * (180 / Math.PI);
+    const azRaw = Math.atan2(radarState.y, radarState.x) * (180 / Math.PI);
     const az = azRaw < 0 ? azRaw + 360 : azRaw;
-    radarReadout.textContent = `Azimuth: ${az.toFixed(1)}° | Range: ${((range / 50) * 100).toFixed(0)}%`;
+    radarReadout.textContent = `Azimuth: ${az.toFixed(1)}° | Range: ${((range / RADAR_SCALE) * 100).toFixed(0)}%`;
   }
 }
 
@@ -552,7 +840,7 @@ function processRx(text) {
     if (char === '\n' || char === '\r') {
       if (rxBuffer.trim() !== '') {
         const line = rxBuffer.trim();
-        console.log('[RX LINE]', line);
+        if (DEBUG_SERIAL_RX) console.log('[RX LINE]', line);
         if (currentDriverType === 'arduino' && activeDevice) {
           activeDevice.processLine(line);
         } else {
@@ -565,7 +853,7 @@ function processRx(text) {
       if (currentDriverType === 'scpi') {
         if (rxBuffer.endsWith('(OK)>') || rxBuffer.endsWith('(ERR)>') || rxBuffer.endsWith('(E2BIG)>') || rxBuffer.endsWith('(ERANGE)>')) {
           const line = rxBuffer.trim();
-          console.log('[RX PROMPT]', line);
+          if (DEBUG_SERIAL_RX) console.log('[RX PROMPT]', line);
           handlePrompt(line);
           rxBuffer = '';
         }
@@ -580,8 +868,8 @@ function handlePrompt(line) {
     if (dataPart.includes(':SPI') || dataPart.includes(',') || dataPart.includes('0x')) {
       lastDataLine = dataPart;
     }
-    if (dataPart) appendLog(dataPart + '\n', 'log-rx');
-    appendLog('(OK)>\n', 'log-okprompt');
+    if (dataPart) { if (DEBUG_SERIAL_RX) appendLog(dataPart + '\n', 'log-rx'); }
+    if (DEBUG_SERIAL_RX) appendLog('(OK)>\n', 'log-okprompt');
     
     if (scpiWaiter) {
       clearTimeout(scpiWaiter.timeoutId);
@@ -722,22 +1010,92 @@ async function connectSerial() {
   }
 }
 
-async function disconnectSerial() {
-  isReading = false;
-  isDemoRunning = false;
-  if (reader) { await reader.cancel(); reader.releaseLock(); }
-  if (writer) { await writer.close(); writer.releaseLock(); }
-  if (readableStreamClosed) await readableStreamClosed.catch(() => {});
-  if (writableStreamClosed) await writableStreamClosed.catch(() => {});
-  if (port) await port.close();
-  
-  port = null; reader = null; writer = null; activeDevice = null;
-  setUIConnected(false);
-  setDemoStatus('Idle', false);
-  updateJoystickUI(0, 0);
-  updateMagnetUI(0, 0);
-  appendLog('[SYSTEM] Port closed.\n', 'log-badprompt');
+let disconnectInFlight = false;
+
+async function disconnectSerial(reason = 'manual') {
+  // Re-entrant guard: the unplug listener and the Connect/Disconnect button can
+  // both fire, and a double teardown would close an already-closed port.
+  if (disconnectInFlight) return;
+  disconnectInFlight = true;
+
+  try {
+    isReading = false;
+    isDemoRunning = false;
+
+    // Fail any in-flight SCPI query first. Its 2500 ms timeout would otherwise
+    // still be pending against a port that no longer exists, holding the demo
+    // loop's `scpiLock` and keeping the retry loop alive after teardown.
+    if (scpiWaiter) {
+      clearTimeout(scpiWaiter.timeoutId);
+      const waiter = scpiWaiter;
+      scpiWaiter = null;
+      waiter.reject(new Error('Port closed'));
+      if (waiter.release) waiter.release();
+    }
+    scpiLock = Promise.resolve();
+
+    // Every teardown step is guarded: once the board is yanked out,
+    // reader.cancel()/writer.close()/port.close() reject with NetworkError, and
+    // an unguarded await aborts this function *before* the UI is reset - which
+    // is what used to leave the button stuck reading "Disconnect".
+    try { if (reader) { await reader.cancel(); reader.releaseLock(); } } catch (_) { /* stream already gone */ }
+    try { if (writer) { await writer.close(); writer.releaseLock(); } } catch (_) { /* stream already gone */ }
+    if (readableStreamClosed) await readableStreamClosed.catch(() => {});
+    if (writableStreamClosed) await writableStreamClosed.catch(() => {});
+    try { if (port) await port.close(); } catch (_) { /* port already gone */ }
+
+    port = null; reader = null; writer = null; activeDevice = null;
+    readableStreamClosed = null; writableStreamClosed = null;
+    rxBuffer = '';
+    lastDataLine = '';
+
+    // Drop stale live state so the UI recentres instead of freezing at the last
+    // reading: re-seed the disk smoother, home the radar needle, clear the twist
+    // readouts.
+    magnetState.inited = false;
+    radarState.x = 0; radarState.y = 0;
+    latestTwistPoints.length = 0;
+
+    setUIConnected(false);
+    setDemoStatus('Idle', false);
+    // Keep the emulator reachable after a disconnect (Start stays enabled and
+    // Stop is retired) - otherwise the built-in demo is only usable once per
+    // page load.
+    if (btnStartDemo) btnStartDemo.disabled = false;
+    if (btnStopDemo) btnStopDemo.disabled = true;
+    updateJoystickUI(0, 0);
+    updateMagnetUI(0, 0);
+
+    appendLog(`[SYSTEM] Port closed${reason === 'unplugged' ? ' (device removed)' : ''}.\n`, 'log-badprompt');
+  } finally {
+    disconnectInFlight = false;
+  }
 }
+
+// The board can be pulled out mid-stream. navigator.serial reports that on its
+// own `disconnect` event; without this listener the UI keeps claiming
+// "Connected" and the demo loop spins on a dead port, retrying every 150 ms.
+function initSerialPortEvents() {
+  if (!navigator.serial || typeof navigator.serial.addEventListener !== 'function') return;
+
+  navigator.serial.addEventListener('disconnect', (event) => {
+    // Only tear down when the port that vanished is the one we opened.
+    if (!port || event.target !== port) return;
+    appendLog('[SYSTEM] Serial device disconnected.\n', 'log-badprompt');
+    disconnectSerial('unplugged');
+  });
+
+  navigator.serial.addEventListener('connect', () => {
+    appendLog('[SYSTEM] Serial device available - press Connect USB.\n', 'log-okprompt');
+  });
+}
+
+// Best effort on tab close: without it the OS keeps the CDC port claimed, so the
+// next page load cannot open it until the browser releases it.
+window.addEventListener('beforeunload', () => {
+  if (!port) return;
+  try { port.close(); } catch (_) { /* nothing left to close */ }
+});
 
 // --- Live Unified Demo Loop ---
 async function runJoystickDemo() {
@@ -748,6 +1106,7 @@ async function runJoystickDemo() {
 
   if (isConnected && activeDevice) {
     try {
+      readSensorGain().catch(() => {});
       appendLog('[SYSTEM] Starting Live Demo...\n', 'log-okprompt');
 
       if (currentDriverType === 'scpi') {
@@ -774,18 +1133,34 @@ async function runJoystickDemo() {
       while (isDemoRunning) {
         try {
           let posX_mm = 0, posY_mm = 0, angleDeg = 0;
+          const loopT0 = performance.now();
+          let frames = null;
           let rawX = 0, rawY = 0, rawZ = 0;
+          let joyX = 0, joyY = 0;
 
           if (currentDriverType === 'scpi') {
             await activeDevice.sm(0xFC000); 
-            await new Promise(r => setTimeout(r, 15)); 
+            await new Promise(r => setTimeout(r, 2)); 
             const res01 = await activeDevice.rm(false, 0xFC000); 
             
             await activeDevice.sm(0x03F00); 
-            await new Promise(r => setTimeout(r, 15)); 
+            await new Promise(r => setTimeout(r, 2)); 
             const res23 = await activeDevice.rm(false, 0x03F00); 
 
-            if (!res01.error && !res23.error) {
+            // The chip's dedicated differential channels. Mask 0x000FC covers
+            // all six of them (X02, Y02, Z02, X13, Y13, Z13, bits 7..2), which
+            // is still a legal 6-channel measurement, so they arrive in one
+            // transfer for the price the old four-channel mask already cost.
+            // These feed the diagnostics tab and the 2px twist readouts.
+            // A third transfer cannot be avoided: 12 absolute + 6 gradient is 18
+            // channels and the part allows 6 per measurement. 2 ms matches what
+            // the voxdale app uses, to keep the loop period down.
+            await activeDevice.sm(0x000FC); 
+            await new Promise(r => setTimeout(r, 2)); 
+            const resDiff = await activeDevice.rm(false, 0x000FC); 
+            frames = { res01, res23, resDiff };
+
+            if (!res01.error && !res23.error && !resDiff.error) {
               const avgX = (res01.x0 + res01.x1 + res23.x2 + res23.x3) / 4;
               const avgY = (res01.y0 + res01.y1 + res23.y2 + res23.y3) / 4;
               const avgZ = (res01.z0 + res01.z1 + res23.z2 + res23.z3) / 4;
@@ -805,6 +1180,14 @@ async function runJoystickDemo() {
               posY_mm = latestRawMagnet.y - magnetOffsets.y;
               rawX = avgX; rawY = avgY; rawZ = avgZ;
 
+              // Knob coordinates come from the 4-pixel absolute average only
+              // (the gradient/field position-source toggle was removed).
+              joyX = avgX / 5;
+              joyY = avgY / 5;
+
+              // Radar XY from the angular formula on the averaged XYZ.
+              pushRadarFromAvg(avgX, avgY, avgZ);
+
               updateTwistUI([
                 { x: res01.x0, y: res01.y0, z: res01.z0 },
                 { x: res01.x1, y: res01.y1, z: res01.z1 },
@@ -821,6 +1204,10 @@ async function runJoystickDemo() {
               posY_mm = latestRawMagnet.y - magnetOffsets.y;
               angleDeg = sample.angleDeg;
               rawX = sample.rawX; rawY = sample.rawY; rawZ = sample.rawZ;
+              // The Arduino frame carries no Δ channels, so the gradient source
+              // is unavailable here and the knob stays on the absolute field.
+              joyX = sample.rawX / 20; joyY = sample.rawY / 20;
+              pushRadarFromAvg(rawX, rawY, rawZ);
 
               if (sample.points && sample.points.length === 4) {
                 updateTwistUI(sample.points);
@@ -830,13 +1217,18 @@ async function runJoystickDemo() {
 
           // Live UI Updates (Placed INSIDE loop after data is read)
           updateMagnetUI(posX_mm, posY_mm, angleDeg);
-          updateJoystickUI(rawX / 20, rawY / 20); 
+          updateJoystickUI(joyX, joyY); 
           update3DVectorPlot(rawX, rawY, rawZ);
+
+          updateDiagnostics(frames, {
+            joyX, joyY, angleDeg,
+            periodMs: Math.round(performance.now() - loopT0 + (currentDriverType === 'scpi' ? 10 : 25))
+          });
           
           // Send real normalized telemetry directly to the SFI Dome
           updateSfiDomeKinematics(rawX / 1000, rawY / 1000, rawZ / 1000);
 
-          await new Promise(r => setTimeout(r, currentDriverType === 'scpi' ? 50 : 25));
+          await new Promise(r => setTimeout(r, currentDriverType === 'scpi' ? 10 : 25));
         } catch (loopErr) {
           console.warn('[DEMO LOOP WARNING]', loopErr);
           await new Promise(r => setTimeout(r, 150));
@@ -860,6 +1252,7 @@ async function runJoystickDemo() {
 
       updateMagnetUI(emulatedX, emulatedY, emulatedAngle);
       updateJoystickUI(emulatedX * 20, emulatedY * 20);
+      pushRadarFromAvg(emulatedX * 20, emulatedY * 20, 20);
       update3DVectorPlot(Math.cos(angle) * 500, Math.sin(angle) * 500, 200);
 
       // Synthetic 4-pixel twist field (rotating around Z, constant bias on Z)
@@ -986,6 +1379,9 @@ btnStopDemo?.addEventListener('click', () => {
 // --- 3D Vector Plot Setup ---
 const MAX_TRAIL_POINTS = 60;
 const history3D = { x: [], y: [], z: [] };
+// Plotly.react on a 3D scatter costs tens of ms; the trail history still
+// accumulates every loop, but the re-render is capped at ~10 Hz.
+let lastPlotReactMs = 0;
 
 const layout3D = {
   autosize: true, margin: { l: 0, r: 0, b: 0, t: 0 },
@@ -1019,6 +1415,10 @@ export function update3DVectorPlot(rx, ry, rz) {
   }
 
   if (!document.getElementById('plot-3d-container') || !isViewActive('view-3dplot')) return;
+
+  const nowMs = performance.now();
+  if (nowMs - lastPlotReactMs < 100) return;
+  lastPlotReactMs = nowMs;
 
   Plotly.react('plot-3d-container', [
     traceOrigin,

@@ -39,19 +39,19 @@ export class MLX90396_API {
       
       await new Promise(r => setTimeout(r, 2));
       await this.query(`${prefix}:CS0 1`);
-      
-      if (!response) return Array(miso_len).fill(0);
-      
-      response = response.replace(scpiCmd, '').trim();
-      const tokens = response.match(/0x[0-9a-fA-F]+|[0-9a-fA-F]+/g) || [];
-      const rxArray = tokens.map(tok => parseInt(tok, 16));
 
-      if (rxArray.length >= mosi_data.length + miso_len) {
-        return rxArray.slice(mosi_data.length, mosi_data.length + miso_len);
-      } else if (rxArray.length >= miso_len) {
-        return rxArray.slice(-miso_len);
+      if (!response) return Array(miso_len).fill(0);
+
+      const stripped = response.replace(scpiCmd, '').trim();
+      const tokens = stripped.match(/0x[0-9a-fA-F]+|[0-9a-fA-F]+/g) || [];
+      const rx = tokens.map(tok => parseInt(tok, 16));
+
+      if (rx.length >= mosi_data.length + miso_len) {
+          return rx.slice(mosi_data.length, mosi_data.length + miso_len);
       }
-      
+      if (rx.length >= miso_len) {
+          return rx.slice(-miso_len);
+      }
       return Array(miso_len).fill(0);
   }
 
@@ -96,11 +96,15 @@ export class MLX90396_API {
   }
 
   _checkMaskLimit(data_mask) {
+      // The part measures at most 6 channels per SM/SB/SWOC/RM, and MI6 is the
+      // warning flag for over-asking. The reference firmware counts every bit
+      // set in the mask, including vdd, so a mask that mixes vdd with 6 axes is
+      // rejected here rather than being sent and refused by the part.
       let count = 0;
-      let temp_mask = data_mask & 0xFFFFFC; 
+      let temp_mask = data_mask;
       while (temp_mask) {
           temp_mask &= (temp_mask - 1);
-          if (++count > 6) return true; 
+          if (++count > 6) return true;
       }
       return false;
   }
@@ -220,20 +224,22 @@ export class MLX90396_API {
       
       let result = { raw: miso };
       let offset = 1; 
-      
+
       if (temp) {
-          result.t = this._s16((miso[offset] << 8) | miso[offset + 1]);
+          const w = (miso[offset] << 8) | miso[offset + 1];
+          result.t = this._s16(w);
           offset += 2;
       }
       
       for (let key of activeKeys) {
-          result[key] = this._s16((miso[offset] << 8) | miso[offset + 1]);
+          const w = (miso[offset] << 8) | miso[offset + 1];
+          result[key] = this._s16(w);
           offset += 2;
       }
       
       result.error = !this._verify_crc(miso.slice(0, offset), miso[offset]);
       result.status = miso[0];
-      
+
       return result;
   }
 
@@ -270,6 +276,16 @@ export class MLX90396_API {
           await this.hs();
       }
       return true;
+  }
+
+  /**
+   * Reads back NV_GAINSEL_1PX (reg 0x00 bits [5:0]) for UI confirmation.
+   * @returns {{error: boolean, value: (number|null), raw: (number|null)}}
+   */
+  async readGain1Px() {
+      const readRes = await this.rr(0x00);
+      if (readRes.error) return { error: true, value: null, raw: null };
+      return { error: false, value: readRes.data & 0x003F, raw: readRes.data };
   }
 }
 

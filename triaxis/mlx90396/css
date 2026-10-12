@@ -80,7 +80,7 @@
       background: radial-gradient(at 50% 75%, #f2f2f2 0%, #d9d9d9 100%);
       position: absolute; z-index: 2; height: 50%; width: 50%; border-radius: 50%;
       top: 50%; left: 50%; margin: -25% -25%;
-      transition: transform 100ms ease, box-shadow 100ms ease;
+      transition: transform 50ms ease, box-shadow 50ms ease;
       
       transform: translate(calc(var(--tx, 0) * 1%), calc(var(--ty, 0) * 1%)) 
                  rotateX(calc(var(--ty, 0) * 0.5deg)) 

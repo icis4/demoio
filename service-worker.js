@@ -28,6 +28,7 @@ const SHELL = [
   "./pressure/LICENSE",
   "./triaxis/",
   "./triaxis/index.html",
+  "./triaxis/angle_calib.js",
   "./triaxis/mlx90396-2.html",
   "./triaxis/mlx90396/",
   "./triaxis/mlx90396/index.html",

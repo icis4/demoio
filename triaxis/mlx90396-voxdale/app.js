@@ -7,11 +7,12 @@ import {
   clampCoilDwellS,
   resizeSfiCanvases, 
   updateSfiDomeKinematics, 
+  updateSfiHardwareTelemetry,
+  setDifferentialFormula,
   setHardwareCoilCallback, 
   resetPlotLines,
   setSfiHardwareTracking,
   setCalibrationParams,
-  resetCalibrationParams,
   getCalibrationParams
 } from './sfi_demo.js';
 // DOM Elements
@@ -54,6 +55,7 @@ window.addEventListener('DOMContentLoaded', () => {
   initCoilControls();
   initSfiDemo();
   initTabNavigation();
+  initSerialPortEvents();
   window.addEventListener('resize', resizeSfiCanvases);
   window.addEventListener('pagehide', releaseCoilOnUnload);
 });
@@ -454,24 +456,77 @@ async function connectSerial() {
   }
 }
 
-async function disconnectSerial() {
-  isDemoRunning = false;
-  // Before the streams go away, so the shut-off can still be sent and confirmed.
-  await releaseCoilBeforeDisconnect();
-  isReading = false;
-  if (reader) { await reader.cancel(); reader.releaseLock(); }
-  if (writer) { await writer.close(); writer.releaseLock(); }
-  if (readableStreamClosed) await readableStreamClosed.catch(() => {});
-  if (writableStreamClosed) await writableStreamClosed.catch(() => {});
-  if (port) await port.close();
+let disconnectInFlight = false;
 
-  port = null; reader = null; writer = null; activeDevice = null;
-  setSfiHardwareTracking(false);
-  setUIConnected(false);
-  btnStartDemo.disabled = false;
-  btnStopDemo.disabled = true;
-  appendLog('[SYSTEM] Port closed.\n', 'log-badprompt');
+async function disconnectSerial(reason = 'manual') {
+  // Guard against the unplug listener and the button both firing at once.
+  if (disconnectInFlight) return;
+  disconnectInFlight = true;
+
+  try {
+    isDemoRunning = false;
+    // Before the streams go away, so the shut-off can still be sent and confirmed.
+    await releaseCoilBeforeDisconnect();
+    isReading = false;
+
+    // Fail any in-flight SCPI query so the demo loop stops waiting on a promise
+    // a closed port can no longer answer.
+    if (scpiWaiter) {
+      clearTimeout(scpiWaiter.timeoutId);
+      const waiter = scpiWaiter;
+      scpiWaiter = null;
+      waiter.reject(new Error('Port closed'));
+      if (waiter.release) waiter.release();
+    }
+    scpiLock = Promise.resolve();
+
+    // Guarded: after an unplug these reject with NetworkError, and an unguarded
+    // await would abort teardown before the UI is reset - leaving the button
+    // stuck on "Disconnect".
+    try { if (reader) { await reader.cancel(); reader.releaseLock(); } } catch (_) { /* stream already gone */ }
+    try { if (writer) { await writer.close(); writer.releaseLock(); } } catch (_) { /* stream already gone */ }
+    if (readableStreamClosed) await readableStreamClosed.catch(() => {});
+    if (writableStreamClosed) await writableStreamClosed.catch(() => {});
+    try { if (port) await port.close(); } catch (_) { /* port already gone */ }
+
+    port = null; reader = null; writer = null; activeDevice = null;
+    readableStreamClosed = null; writableStreamClosed = null;
+    rxBuffer = '';
+    lastDataLine = '';
+
+    setSfiHardwareTracking(false);
+    setUIConnected(false);
+    btnStartDemo.disabled = false;
+    btnStopDemo.disabled = true;
+    appendLog(`[SYSTEM] Port closed${reason === 'unplugged' ? ' (device removed)' : ''}.\n`, 'log-badprompt');
+  } finally {
+    disconnectInFlight = false;
+  }
 }
+
+// The board can be pulled out mid-stream. navigator.serial reports that on its
+// own `disconnect` event; without this the UI keeps claiming "Connected" and
+// the demo loop keeps retrying a dead port every 150 ms.
+function initSerialPortEvents() {
+  if (!navigator.serial || typeof navigator.serial.addEventListener !== 'function') return;
+
+  navigator.serial.addEventListener('disconnect', (event) => {
+    if (!port || event.target !== port) return;
+    appendLog('[SYSTEM] Serial device disconnected.\n', 'log-badprompt');
+    disconnectSerial('unplugged');
+  });
+
+  navigator.serial.addEventListener('connect', () => {
+    appendLog('[SYSTEM] Serial device available - press Connect USB.\n', 'log-okprompt');
+  });
+}
+
+// Best effort on tab close so the OS/CDC port is released promptly. The coil is
+// NOT handled here: `pagehide` -> releaseCoilOnUnload already writes the pin low
+// synchronously, which is the part that actually matters on unload.
+window.addEventListener('beforeunload', () => {
+  if (port) { try { port.close(); } catch (_) { /* nothing left to close */ } }
+});
 
 // --- EXACT UNCHANGED ORIGINAL LIVE STREAMING LOOP ---
 async function runJoystickDemo() {
@@ -490,7 +545,7 @@ async function runJoystickDemo() {
         if (prefix.includes('SPI2') || prefix === ':SPI2') {
           console.log('[INIT] Configuring Melexis IO SPI2 Header Connection...');
           await scpiQuery(`${prefix}:Init 0`);
-          await scpiQuery(`${prefix}:SET:CS0 0`);
+          // await scpiQuery(`${prefix}:SET:CS0 0`);
           await scpiQuery(":A3:GPIO:INIT:OUT 0");
         } else {
           console.log('[INIT] Configuring Melexis IO Cable Connection...');
@@ -503,6 +558,13 @@ async function runJoystickDemo() {
 
       const K_ROT_X = 0.10, K_ROT_Y = 0.10;
       const SCALE_X = 0.02, SCALE_Y = 0.02;
+      // Live absolute-pixel LSB are normalized to joystick throw by this
+      // divisor (then clamped to ±1 in updateSfiDomeKinematics). 1000 == the
+      // original throw (≈12° for a typical stick sweep); raise it (e.g. 2000)
+      // for a softer response at full tilt.
+      const DOME_LIVE_LSB_SCALE = 500;
+      let diagPeriodMs = null;
+      let diagCyclePrev = null;
 
       while (isDemoRunning) {
         try {
@@ -553,6 +615,13 @@ async function runJoystickDemo() {
               p0Raw = { x: res01.x0, y: res01.y0, z: res01.z0 };
               diffRaw = { x: rawGradX, y: rawGradY, z: rawGradZx, bzY: rawGradZy };
             }
+
+            if (diagCyclePrev !== null) {
+              const cycleMs = performance.now() - diagCyclePrev;
+              diagPeriodMs = diagPeriodMs === null ? cycleMs : diagPeriodMs * 0.8 + cycleMs * 0.2;
+            }
+            diagCyclePrev = performance.now();
+            updateDiagnosticsFrame(res01, res23, resDiff, diagPeriodMs);
           } else {
             const sample = await activeDevice.getSample();
             if (!sample.error) {
@@ -571,7 +640,16 @@ async function runJoystickDemo() {
           // A valid sample takes the dome seamlessly from its idle pattern to hardware tracking.
           if (hasLiveSample) {
             setSfiHardwareTracking(true);
-            updateSfiDomeKinematics(rawX / 1000, rawY / 1000, rawZ / 1000, { p0Raw, diffRaw });
+            if (currentDriverType === 'scpi') {
+              updateSfiHardwareTelemetry({ p0Raw, diffRaw, hasDifferential: true });
+            } else {
+              updateSfiDomeKinematics(
+                rawX / DOME_LIVE_LSB_SCALE,
+                rawY / DOME_LIVE_LSB_SCALE,
+                rawZ / DOME_LIVE_LSB_SCALE,
+                { p0Raw, diffRaw, hasDifferential: false }
+              );
+            }
           }
 
           await new Promise(r => setTimeout(r, currentDriverType === 'scpi' ? 10 : 25));
@@ -679,10 +757,8 @@ btnGainToggle?.addEventListener('click', async () => {
 
   if (success) {
     isHighGain = !isHighGain;
-    btnGainToggle.textContent = isHighGain ? 'Gain 1px: 3x (219)' : 'Gain 1px: 1x (72)';
-    btnGainToggle.className = isHighGain 
-      ? 'ds-button ds-button--warning ds-button--sm' 
-      : 'ds-button ds-button--secondary ds-button--sm';
+    inVoxGain.value = targetGain;
+    syncVoxGainField();
   }
   btnGainToggle.disabled = false;
 });
@@ -701,6 +777,11 @@ const calInputs = {
   o22: document.getElementById('cal-o22')
 };
 
+const angleFormula = document.getElementById('sel-angle-formula');
+angleFormula?.addEventListener('change', () => {
+  setDifferentialFormula(angleFormula.value);
+});
+
 // Toggle drawer visibility
 btnCalibToggle?.addEventListener('click', () => {
   panelCalibration?.classList.toggle('hidden');
@@ -715,13 +796,216 @@ Object.entries(calInputs).forEach(([key, inputEl]) => {
       setCalibrationParams({ [key]: val });
     }
   });
+  // Initialise the live engine from the fields on load, so the numbers on
+  // screen and the numbers in the formula can never disagree at startup.
+  if (inputEl) {
+    const val = parseFloat(inputEl.value);
+    if (!isNaN(val)) setCalibrationParams({ [key]: val });
+  }
 });
 
-// Reset calibration inputs to default values
+// Reset calibration inputs to zero (the page default)
 btnCalibReset?.addEventListener('click', () => {
-  const defs = resetCalibrationParams();
-  Object.entries(defs).forEach(([k, val]) => {
-    if (calInputs[k]) calInputs[k].value = val.toFixed(k.startsWith('k') ? 2 : 3);
+  const zeros = { k1: 0, k2: 0, o11: 0, o12: 0, o21: 0, o22: 0 };
+  setCalibrationParams(zeros);
+  Object.entries(zeros).forEach(([k, val]) => {
+    if (calInputs[k]) calInputs[k].value = val;
   });
-  appendLog('[CALIBRATION] Reset parameters to default (K=1.0, Ortho=0.0).\n', 'log-okprompt');
+  appendLog('[CALIBRATION] Reset parameters to zero (K=0.0, Ortho=0.0).\n', 'log-okprompt');
 });
+
+// --- 3. GAINSEL FIELD (thumbstick-style, 1px) ---
+const inVoxGain = document.getElementById('in-vox-gain');
+const voxGainHint = document.getElementById('vox-gain-hint');
+const voxGainReadback = document.getElementById('vox-gain-readback');
+let gainWriteTimer = null;
+
+function syncVoxGainToggle() {
+  const g = Math.min(63, Math.max(0, parseInt(inVoxGain?.value, 10) || 0));
+  if (g === 37) {
+    isHighGain = true;
+    btnGainToggle.textContent = 'Gain 1px: 3x (219)';
+    btnGainToggle.className = 'ds-button ds-button--warning ds-button--sm';
+  } else if (g === 9) {
+    isHighGain = false;
+    btnGainToggle.textContent = 'Gain 1px: 1x (72)';
+    btnGainToggle.className = 'ds-button ds-button--secondary ds-button--sm';
+  } else {
+    btnGainToggle.textContent = `Gain 1px: ${g}`;
+    btnGainToggle.className = 'ds-button ds-button--secondary ds-button--sm';
+  }
+}
+
+function syncVoxGainField() {
+  if (!inVoxGain) return;
+  const g = Math.min(63, Math.max(0, parseInt(inVoxGain.value, 10) || 0));
+  inVoxGain.value = g;
+  if (voxGainHint) {
+    let expected = '';
+    if (g === 37) expected = ' → ~219';
+    else if (g === 9) expected = ' → ~72';
+    voxGainHint.textContent = `1px gain = ${g} (0b${g.toString(2).padStart(6, '0')})${expected}`;
+  }
+  syncVoxGainToggle();
+}
+
+function setVoxGainReadback(value) {
+  if (!voxGainReadback) return;
+  if (typeof value === 'number' && !isNaN(value)) {
+    voxGainReadback.textContent = `Device confirmed: ${value} (0b${value.toString(2).padStart(6, '0')})`;
+    voxGainReadback.style.color = '#59FFB0';
+  } else {
+    voxGainReadback.textContent = 'Device: not read';
+    voxGainReadback.style.color = 'var(--color-ink-muted)';
+  }
+}
+
+async function setVoxGain(gainVal, persist = false) {
+  const g = Math.min(63, Math.max(0, parseInt(gainVal, 10) || 0));
+  inVoxGain.value = g;
+  syncVoxGainField();
+
+  if (!isConnected || currentDriverType !== 'scpi') {
+    setVoxGainReadback(null);
+    return false;
+  }
+
+  try {
+    appendLog(`[GAIN] Writing GAINSEL_1PX = ${g} (0b${g.toString(2).padStart(6, '0')})...\n`, 'log-okprompt');
+    const ok = await activeDevice.setGain1Px(g, persist);
+    if (ok) {
+      const rb = await activeDevice.readGain1Px();
+      const v = rb && !rb.error ? rb.value : null;
+      setVoxGainReadback(v);
+      appendLog(v !== null && v === g ? `[GAIN] Verified ${v} on device.\n` : '[GAIN] Write/verify returned no readback.\n', v !== null && v === g ? 'log-okprompt' : 'log-badprompt');
+      return true;
+    }
+    setVoxGainReadback(null);
+    appendLog(`[GAIN] Write/verify failed for ${g}.\n`, 'log-badprompt');
+    return false;
+  } catch (err) {
+    appendLog(`[GAIN ERROR] ${err.message}\n`, 'log-badprompt');
+    setVoxGainReadback(null);
+    return false;
+  }
+}
+
+window.setVoxGain = setVoxGain;
+
+inVoxGain?.addEventListener('input', () => {
+  const g = Math.min(63, Math.max(0, parseInt(inVoxGain.value, 10) || 0));
+  syncVoxGainField();
+  clearTimeout(gainWriteTimer);
+  gainWriteTimer = setTimeout(() => setVoxGain(g), 300);
+});
+
+inVoxGain?.addEventListener('change', () => {
+  clearTimeout(gainWriteTimer);
+  const g = Math.min(63, Math.max(0, parseInt(inVoxGain.value, 10) || 0));
+  setVoxGain(g);
+});
+
+syncVoxGainField();
+
+// --- 4. SENSOR DIAGNOSTICS (thumbstick-style frame health + raw LSB) ---
+// Mirrors the MLX90396 thumbstick diagnostics: status byte decode, per-transfer
+// CRC line, raw 12-bit pixels, the four 2px gradient channels and the loop period.
+const DIAG_STATUS_FN = { 3: 'Single', 2: 'Burst', 1: 'WOC', 0: 'Exit / Memory' };
+
+function decodeStatus(s) {
+  if (typeof s !== 'number') return null;
+  const fn = (s >> 6) & 0x03;
+  return {
+    hex: '0x' + s.toString(16).toUpperCase().padStart(2, '0'),
+    fn: DIAG_STATUS_FN[fn] ?? 'Unknown',
+    fnBits: fn.toString(2).padStart(2, '0'),
+    counter: (s >> 3) & 0x07,
+    error: ((s >> 2) & 1) === 1,
+    warn: ((s >> 1) & 1) === 1,
+    drdy: (s & 1) === 1
+  };
+}
+
+function diagText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+function diagState(id, text, tone) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('diagnostics-state--warn', tone === 'warn');
+  el.classList.toggle('diagnostics-state--bad', tone === 'bad');
+}
+
+function updateDiagnosticsFrame(res01, res23, resDiff, periodMs) {
+  const tab = document.getElementById('tab-diagnostics');
+  if (tab && !tab.classList.contains('active')) return;
+
+  diagText('diag-source', 'Live hardware (SCPI)');
+
+  const st = decodeStatus(res01?.status);
+  if (st) {
+    diagText('diag-status', `${st.hex}  (${st.fnBits})`);
+    diagText('diag-fn', `${st.fn} · counter ${st.counter}`);
+    diagText('diag-drdy', st.drdy ? 'Ready' : 'Not ready');
+    diagText('diag-flags', `ERROR=${st.error ? 1 : 0}  WARN=${st.warn ? 1 : 0}`);
+    diagState('diag-health',
+      st.error ? 'Status ERROR set - the part rejected a command' :
+      !st.drdy ? 'DRDY clear - measurement not ready yet' :
+      st.warn ? 'WARN set - register 0x42 holds the detail' : 'Status clean',
+      st.error ? 'bad' : (!st.drdy || st.warn) ? 'warn' : null);
+  } else {
+    diagText('diag-status', '--');
+    diagText('diag-fn', '--');
+    diagText('diag-drdy', '--');
+    diagText('diag-flags', '--');
+    diagState('diag-health', 'No measurement received', 'bad');
+  }
+
+  const transfers = { '01': res01, '23': res23, '2px': resDiff };
+  diagText('diag-crc', ['01', '23', '2px'].map(k => {
+    const r = transfers[k];
+    if (!r) return `${k}:--`;
+    return `${k}:${r.error ? 'FAIL' : 'ok'}`;
+  }).join('   '));
+
+  if (typeof periodMs === 'number') {
+    diagText('diag-period', `${periodMs.toFixed(0)} ms`);
+  } else {
+    diagText('diag-period', '--');
+  }
+
+  const pixelRows = [
+    ['diag-x0', res01?.x0], ['diag-y0', res01?.y0], ['diag-z0', res01?.z0],
+    ['diag-x1', res01?.x1], ['diag-y1', res01?.y1], ['diag-z1', res01?.z1],
+    ['diag-x2', res23?.x2], ['diag-y2', res23?.y2], ['diag-z2', res23?.z2],
+    ['diag-x3', res23?.x3], ['diag-y3', res23?.y3], ['diag-z3', res23?.z3]
+  ];
+  pixelRows.forEach(([id, v]) => diagText(id, typeof v === 'number' ? String(v) : '--'));
+
+  const finite = pixelRows.every(([, v]) => typeof v === 'number' && !isNaN(v));
+  if (finite) {
+    const vals = pixelRows.map(([, v]) => v);
+    diagText('diag-avg-x', ((vals[0] + vals[3] + vals[6] + vals[9]) / 4).toFixed(2));
+    diagText('diag-avg-y', ((vals[1] + vals[4] + vals[7] + vals[10]) / 4).toFixed(2));
+    diagText('diag-avg-z', ((vals[2] + vals[5] + vals[8] + vals[11]) / 4).toFixed(2));
+    diagText('diag-peak', String(Math.max(...vals.map(Math.abs))));
+    diagState('diag-range',
+      Math.max(...vals.map(Math.abs)) >= 2040 ? 'ADC near full scale (2048)' : 'Within ADC range',
+      Math.max(...vals.map(Math.abs)) >= 2040 ? 'warn' : null);
+  } else {
+    diagText('diag-avg-x', '--');
+    diagText('diag-avg-y', '--');
+    diagText('diag-avg-z', '--');
+    diagText('diag-peak', '--');
+    diagState('diag-range', 'No measurement received', 'warn');
+  }
+
+  const gradRows = [
+    ['diag-dx02', resDiff?.x02], ['diag-dz02', resDiff?.z02],
+    ['diag-dy13', resDiff?.y13], ['diag-dz13', resDiff?.z13]
+  ];
+  gradRows.forEach(([id, v]) => diagText(id, typeof v === 'number' ? String(v) : '--'));
+}

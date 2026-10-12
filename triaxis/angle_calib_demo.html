@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MLX90396 angle calibration — live demo</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1e27; --line:#2c3444; --txt:#dfe6f0; --dim:#8a93a5; --accent:#4cc2ff; --ok:#3ddc84; --bad:#ff5f6d; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:24px; background:var(--bg); color:var(--txt); font:14px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; }
+  h1 { font-size:16px; margin:0 0 4px; }
+  p.sub { color:var(--dim); margin:0 0 20px; font-size:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .row { display:grid; grid-template-columns:auto 1fr auto; gap:8px 12px; align-items:center; margin-bottom:8px; font-size:12px; }
+  .row > label { color:var(--dim); min-width:64px; }
+  .row > input[type=range] { width:100%; accent-color:var(--accent); }
+  .row > output { color:var(--accent); min-width:56px; text-align:right; }
+  .col { display:flex; gap:16px; }
+  .col > .card { flex:1; min-width:0; }
+  input[type=number] { background:#0d0f14; border:1px solid var(--line); color:var(--txt); border-radius:6px; padding:6px 8px; width:100%; font:inherit; }
+  select, button { background:#0d0f14; border:1px solid var(--line); color:var(--txt); border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  .grid { display:grid; gap:10px; }
+  .grid.mode1px { grid-template-columns:repeat(3,1fr); }
+  .grid.mode2px { grid-template-columns:repeat(4,1fr); }
+  .grid > div > label { display:block; color:var(--dim); font-size:11px; margin-bottom:4px; }
+  .kv { display:flex; flex-wrap:wrap; gap:8px 24px; font-size:12px; }
+  .kv b { color:var(--accent); }
+  .kv .k { color:var(--dim); }
+  #banner { display:none; margin-top:10px; padding:8px 10px; border-radius:6px; border:1px solid var(--bad); color:var(--bad); font-size:12px; }
+  #banner.on { display:block; }
+  #summary { transition:opacity .1s; }
+  .badval { color:var(--bad) !important; }
+  canvas { width:100%; height:120px; display:block; }
+  .gauge-title { color:var(--dim); font-size:11px; margin-bottom:2px; }
+  .hint { color:var(--dim); font-size:11px; margin-top:8px; }
+</style>
+</head>
+<body>
+  <h1>MLX90396 &alpha;/&beta; calibration — angle_calib.js live demo</h1>
+  <p class="sub">Drag the six calibration sliders and edit the raw readings; the angles re-render on every change through <code>createCalibrator().set()</code>. Non-finite readings are trapped (<code>valid:false</code>), never crash.</p>
+
+  <div class="card">
+    <div class="row">
+      <label>Mode</label>
+      <select id="mode" title="1px = single-pixel B field (mT); 2px = differential gradients (mT/mm)">
+        <option value="1px">1px — {Bx, By, Bz} (Thumbstick)</option>
+        <option value="2px">2px — {dBxdx, dBzdx, dBydy, dBzdy} (Voxdale)</option>
+      </select>
+      <button id="reset" title="Restore default calibration params">Reset calib</button>
+    </div>
+
+    <div class="row">
+      <label>k&#8321;</label><input type="range" id="k1" min="0" max="4" step="0.05" value="1"><output id="k1o">1.00</output>
+      <label>o&#8321;&#8321;</label><input type="range" id="o11" min="-1" max="1" step="0.01" value="0"><output id="o11o">0.00</output>
+      <label>o&#8321;&#8322;</label><input type="range" id="o12" min="-1" max="1" step="0.01" value="0"><output id="o12o">0.00</output>
+      <label>k&#8322;</label><input type="range" id="k2" min="0" max="4" step="0.05" value="1"><output id="k2o">1.00</output>
+      <label>o&#8322;&#8321;</label><input type="range" id="o21" min="-1" max="1" step="0.01" value="0"><output id="o21o">0.00</output>
+      <label>o&#8322;&#8322;</label><input type="range" id="o22" min="-1" max="1" step="0.01" value="0"><output id="o22o">0.00</output>
+    </div>
+
+    <div class="grid mode1px" id="sig1px">
+      <div><label>Bx (mT)</label><input type="number" id="Bx" step="any" maxlength="12" value=""></div>
+      <div><label>By (mT)</label><input type="number" id="By" step="any" maxlength="12" value=""></div>
+      <div><label>Bz (mT)</label><input type="number" id="Bz" step="any" maxlength="12" value=""></div>
+    </div>
+    <div class="grid mode2px" id="sig2px" style="display:none">
+      <div><label>d&#8203;Bx/dx (mT/mm)</label><input type="number" id="dBxdx" step="any" value=""></div>
+      <div><label>d&#8203;Bz/dx (mT/mm)</label><input type="number" id="dBzdx" step="any" value=""></div>
+      <div><label>d&#8203;By/dy (mT/mm)</label><input type="number" id="dBydy" step="any" value=""></div>
+      <div><label>d&#8203;Bz/dy (mT/mm)</label><input type="number" id="dBzdy" step="any" value=""></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label>Stab</label>
+      <button id="corrupt" title="Inject NaN into Bz / dBzdy to demonstrate the guard">Corrupt a reading (NaN)</button>
+      <button id="clean"  title="Restore all readings to finite values">Clear corruption</button>
+    </div>
+    <div id="banner">&#9888;&nbsp; Reading rejected: non-finite sample (NaN / Infinity). Angles kept as NaN, <code>valid:false</code>. No exception thrown.</div>
+  </div>
+
+  <div class="col">
+    <div class="card">
+      <div class="gauge-title">Alpha — &alpha; (deg)</div>
+      <canvas id="gAlpha" width="600" height="120"></canvas>
+    </div>
+    <div class="card">
+      <div class="gauge-title">Beta — &beta; (deg)</div>
+      <canvas id="gBeta" width="600" height="120"></canvas>
+    </div>
+  </div>
+
+  <div class="card">
+    <div id="summary" class="kv"></div>
+    <div class="hint">Default calibration: k&#8321;=k&#8322;=1, all o&middot;&middot;=0 &rarr; every reading with zero Z-component yields &alpha;=&beta;=0&#176;. Set k&#8321;=1.5 with Bz=By=1, Bx=2 to feel the Desmos K-factor lane: &alpha;=&nbsp;atan2(&radic;(1&#178;+(1.5&middot;1)&#178;),&nbsp;2). Parameters and formulas match Desmos calculator <code>usvd0znwuh</code> and the Voxdale <code>sfi_demo.js</code> engine.</div>
+  </div>
+
+<script type="module">
+  import { DEFAULT_CALIBRATION_PARAMS, calculate1pxAngles, calculate2pxAngles, createCalibrator } from './angle_calib.js';
+
+  const $ = id => document.getElementById(id);
+  const modeEl = $('mode');
+
+  const calibrator = createCalibrator(DEFAULT_CALIBRATION_PARAMS, () => render());
+  const SLIDERS = ['k1', 'o11', 'o12', 'k2', 'o21', 'o22'];
+  const READING_FIELDS = ['Bx', 'By', 'Bz', 'dBxdx', 'dBzdx', 'dBydy', 'dBzdy'];
+
+  for (const id of SLIDERS) {
+    $(id).addEventListener('input', () => {
+      $(id + 'o').textContent = Number($(id).value).toFixed(2);
+      calibrator.set({ [id]: Number($(id).value) });
+    });
+  }
+
+  $('#reset').addEventListener('click', () => {
+    for (const id of SLIDERS) {
+      const v = DEFAULT_CALIBRATION_PARAMS[id];
+      $(id).value = v;
+      $(id + 'o').textContent = Number(v).toFixed(2);
+    }
+    calibrator.reset();
+  });
+
+  modeEl.addEventListener('change', () => {
+    $('sig1px').style.display = modeEl.value === '1px' ? 'grid' : 'none';
+    $('sig2px').style.display = modeEl.value === '2px' ? 'grid' : 'none';
+    render();
+  });
+
+  // Corrupt/repair demo: prove the valid:false guard swallows NaN silently.
+  $('#corrupt').addEventListener('click', () => { (modeEl.value === '1px' ? $('Bz') : $('dBzdy')).value = 'NaN'; render(); });
+  $('#clean').addEventListener('click', () => { READING_FIELDS.forEach(id => { if ($(id).value === 'NaN') $(id).value = ''; }); render(); });
+  READING_FIELDS.forEach(id => $(id).addEventListener('input', render));
+
+  function read1px() {
+    const v = id => Number($(id).value);
+    return { Bx: v('Bx'), By: v('By'), Bz: v('Bz') };
+  }
+  function read2px() {
+    const v = id => Number($(id).value);
+    return { dBxdx: v('dBxdx'), dBzdx: v('dBzdx'), dBydy: v('dBydy'), dBzdy: v('dBzdy') };
+  }
+
+  const fmt = n => Number.isFinite(n) ? n.toFixed(3) : '&mdash;';
+
+  function render() {
+    const r = modeEl.value === '1px' ? calculate1pxAngles(read1px(), calibrator.params)
+                                     : calculate2pxAngles(read2px(), calibrator.params);
+
+    $('banner').classList.toggle('on', !r.valid);
+
+    const label = f => `<span class="k">${f}</span> <b>${fmt(r[f])}</b>`;
+    $('summary').innerHTML = [
+      `<span><b>${r.valid ? '' : 'INVALID — '}${r.mode}</b></span>`,
+      label('alphaDeg') + '&#176;', label('betaDeg') + '&#176;',
+      label('alphaRad'), label('betaRad'),
+      label('alphaStrength'), label('betaStrength'), label('signalStrength')
+    ].join('');
+
+    const signames = r.alphaSignal ? Object.keys(r.alphaSignal).map(k => `${k}: ${fmt(r.alphaSignal[k])}`).join(', ') : '';
+    $('summary').insertAdjacentHTML('beforeend', `<span class="k">alpha pair</span> <b>${signames}</b>`);
+
+    drawGauge('gAlpha', r.alphaDeg, r.valid);
+    drawGauge('gBeta', r.betaDeg, r.valid);
+  }
+
+  function drawGauge(canvasId, angleDeg, valid) {
+    const c = $(canvasId), cx = c.getContext('2d');
+    const W = c.width, H = c.height, M = 12, midY = H / 2;
+    const left = M, right = W - M;
+    cx.clearRect(0, 0, W, H);
+    cx.strokeStyle = '#2c3444'; cx.fillStyle = '#dfe6f0'; cx.font = '10px ui-monospace, monospace';
+    for (let d = -180; d <= 180; d += 30) {
+      const x = left + (d + 180) / 360 * (right - left);
+      cx.beginPath(); cx.moveTo(x, midY - 4); cx.lineTo(x, midY + 8); cx.stroke();
+      cx.fillText(d + '°', x - 8, midY - 9);
+    }
+    if (!valid || !Number.isFinite(angleDeg)) {
+      cx.fillStyle = '#ff5f6d';
+      cx.fillText('invalid sample — no angle', (left + right) / 2 - 60, midY + 4);
+      return;
+    }
+    const clamped = Math.max(-180, Math.min(180, angleDeg));
+    const x = left + (clamped + 180) / 360 * (right - left);
+    cx.strokeStyle = '#4cc2ff'; cx.lineWidth = 2;
+    cx.beginPath(); cx.moveTo(x, midY - 14); cx.lineTo(x, midY + 16); cx.stroke();
+  }
+
+  render();
+</script>
+</body>
+</html>

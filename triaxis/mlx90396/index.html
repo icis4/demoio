@@ -24,6 +24,15 @@
       align-items: center;
     }
 
+    /* The home link lives above the panel, lined up with its left edge, so the
+       stack has to carry the panel width rather than the body. */
+    .page {
+      width: min(920px, 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
     .app-shell {
       width: min(920px, 100%);
       background: var(--color-canvas);
@@ -32,6 +41,27 @@
       padding: 32px;
       box-shadow: var(--shadow-md);
     }
+
+    /* Same pill as the Triaxis section page and the other subpages: arrow plus
+       the section name, back to triaxis/index.html. */
+    .home-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: var(--space-3);
+      padding: 4px 10px 4px 6px;
+      border-radius: var(--radius-sm);
+      color: var(--color-ink-muted);
+      font-family: var(--font-body);
+      font-size: var(--font-size-xs);
+      font-weight: 500;
+      text-decoration: none;
+      transition: color var(--duration-fast) var(--ease-out),
+                  background var(--duration-fast) var(--ease-out);
+    }
+    .home-link svg { width: 14px; height: 14px; flex-shrink: 0; }
+    .home-link:hover { color: var(--color-ink); background: var(--color-surface); }
+    .home-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 
     .header-row {
       display: flex;
@@ -212,7 +242,7 @@
       background: radial-gradient(at 50% 75%, #f2f2f2 0%, #d9d9d9 100%);
       position: absolute; z-index: 2; height: 50%; width: 50%; border-radius: 50%;
       top: 50%; left: 50%; margin: -25% -25%;
-      transition: transform 100ms ease, box-shadow 100ms ease;
+      transition: transform 50ms ease, box-shadow 50ms ease;
       transform: translate(calc(var(--tx, 0) * 1%), calc(var(--ty, 0) * 1%)) 
                  rotateX(calc(var(--ty, 0) * 0.5deg)) 
                  rotateY(calc(var(--tx, 0) * -0.5deg));
@@ -265,7 +295,7 @@
     }
     .magnet-disk {
       width: 200px; height: 200px; border-radius: 50%;
-      background: linear-gradient(to right, #2452D1 50%, #D13434 50%); 
+      background: linear-gradient(to right, #D13434 50%, #2452D1 50%); 
       position: absolute; top: 50%; left: 50%; margin-top: -100px; margin-left: -100px;
       display: flex; align-items: center; justify-content: center;
       transform-origin: 50% 50%; box-sizing: border-box; border: 4px solid #1A1F26;
@@ -283,10 +313,87 @@
     }
     .arrow-icon { width: 28px; height: 28px; fill: currentColor; }
 
+    .diagnostics-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: var(--space-4);
+    }
+
+    .diagnostics-card {
+      border: 1.5px solid var(--color-border);
+      border-radius: var(--radius-md);
+      background: var(--color-surface);
+      padding: var(--space-4);
+    }
+
+    .diagnostics-card h3 {
+      margin: 0 0 var(--space-2);
+      font-family: var(--font-display);
+      font-size: var(--font-size-sm);
+      color: var(--color-accent);
+    }
+
+    .diagnostics-card p {
+      margin: 0;
+      color: var(--color-ink-muted);
+      font-size: var(--font-size-xs);
+      line-height: 1.55;
+    }
+
+    .diagnostics-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: var(--font-size-xs);
+    }
+
+    .diagnostics-table th,
+    .diagnostics-table td {
+      padding: 8px 0;
+      border-bottom: 1px solid var(--color-border);
+      text-align: left;
+    }
+
+    .diagnostics-table th {
+      color: var(--color-ink-muted);
+      font-weight: 600;
+    }
+
+    .diagnostics-table td:last-child,
+    .diagnostics-table th:last-child {
+      text-align: right;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .diagnostics-state {
+      display: inline-flex;
+      margin-top: var(--space-2);
+      padding: 4px 8px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-sm);
+      color: var(--color-accent);
+      font-size: var(--font-size-xs);
+    }
+
+    .diagnostics-state--warn { color: var(--color-warning); border-color: var(--color-warning); }
+    .diagnostics-state--bad { color: var(--color-danger); border-color: var(--color-danger); }
+
+    @media (max-width: 900px) { .diagnostics-grid { grid-template-columns: 1fr; } }
+
     .hidden { display: none !important; }
   </style>
 </head>
 <body>
+  <div class="page">
+    <a class="home-link" href="../index.html">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 12H5M12 19l-7-7 7-7"/>
+      </svg>
+      Triaxis
+    </a>
+
   <main class="app-shell">
 
     <!-- TOP: MAIN DEMO TAB -->
@@ -314,26 +421,30 @@
     <div id="demo-jwt" class="demo-view active">
       <div class="ds-tabs" style="width: 100%; margin-bottom: 24px;">
         <div class="ds-tabs__list">
-          <button class="ds-tabs__tab ds-tabs__tab--active tab-btn" data-target="view-joystick">Thumbstick</button>
-          <button class="ds-tabs__tab tab-btn" data-target="view-magnet">Thumbstick with twist</button>
+          <button class="ds-tabs__tab ds-tabs__tab--active tab-btn" data-target="view-magnet">Thumbstick with twist</button>
+          <button class="ds-tabs__tab tab-btn" data-target="view-joystick">Thumbstick</button>
+          <button class="ds-tabs__tab tab-btn" data-target="view-diagnostics">Sensor Diagnostics</button>
         </div>
       </div>
 
       <!-- SUB-VIEW: 2D MAGNET PLANE -->
-      <div id="view-magnet" class="view">
+      <div id="view-magnet" class="view active">
         <div class="ds-card ds-card--pad-md" style="width: 100%;">
           <div style="display: flex; justify-content: space-evenly; align-items: center; margin-bottom: 0px;">
             <div>
               <h3 style="margin: 0; font-size: var(--font-size-md);">Diametrical Magnet Orientation</h3>
               <p id="magnet-travel-lbl" style="margin: 4px 0 0 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
-                Travel Area: &plusmn;2.5 mm (&plusmn;170 px). South Pole (Red) tracks magnetic orientation.
+                Travel Area: &plusmn;2.5 mm (&plusmn;170 px). North Pole (Red) tracks magnetic orientation.
               </p>
             </div>
             <button id="btn-zero-magnet" class="ds-button ds-button--secondary ds-button--sm">Zero Position</button>
-            <button id="btn-toggle-twist" class="ds-button ds-button--secondary ds-button--sm">Signal &amp; Calibration</button>
-            <label style="display: flex; align-items: center; gap: 6px; font-size: var(--font-size-sm); color: var(--color-ink-muted); user-select: none;">
-              <input type="checkbox" id="chk-magnet-lock-pos" /> Lock XY (twist only)
-            </label>
+            <select id="sel-xy-twist-mode" class="ds-field__input"
+                    style="width: auto; min-height: 2rem; padding: 0.35rem 0.75rem; font-size: var(--font-size-sm);"
+                    title="XY + Twist / XY only / Twist only">
+              <option value="both" selected>XY + Twist</option>
+              <option value="xy">XY only</option>
+              <option value="twist">Twist only</option>
+            </select>
           </div>
           
           <div class="magnet-plane">
@@ -433,24 +544,27 @@
           </div>
         </div>
 
-        <div class="ds-card ds-card--pad-md" style="width: 100%;">
+        <div id="twist-config-card" class="ds-card ds-card--pad-md" style="width: 100%;">
           <h3 style="margin: 0 0 12px 0; font-size: var(--font-size-md);">Gain &amp; Calibration Config</h3>
           <div style="display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start;">
             <div class="ds-field" style="width: 220px; margin-bottom: 0;">
               <label class="ds-field__label" for="in-twist-gain">GAINSEL (electrical gain)</label>
-              <input id="in-twist-gain" type="number" min="0" max="63" step="1" class="ds-field__input" value="37" />
+              <input id="in-twist-gain" type="number" min="0" max="63" step="1" class="ds-field__input" value="0" />
               <small id="twist-gain-hint" style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
-                1px gain = 37 (0b100101) &rarr; ~219
+                1px gain = 0 (0b000000) &rarr; ~219
+              </small>
+              <small id="twist-gain-readback" style="display: block; margin-top: 2px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+                Device: not read
               </small>
             </div>
             <div style="display: grid; grid-template-columns: repeat(3, 80px); gap: 10px;">
               <div class="ds-field" style="margin-bottom: 0;">
                 <label class="ds-field__label" for="cal-k1">k1</label>
-                <input id="cal-k1" type="number" step="any" class="ds-field__input" value="1" />
+                <input id="cal-k1" type="number" step="any" class="ds-field__input" value="0" />
               </div>
               <div class="ds-field" style="margin-bottom: 0;">
                 <label class="ds-field__label" for="cal-k2">k2</label>
-                <input id="cal-k2" type="number" step="any" class="ds-field__input" value="1" />
+                <input id="cal-k2" type="number" step="any" class="ds-field__input" value="0" />
               </div>
               <div class="ds-field" style="margin-bottom: 0;">
                 <label class="ds-field__label" for="cal-o11">o11</label>
@@ -476,12 +590,53 @@
             Angles in degrees; calibration constants update live.
           </p>
         </div>
+
+        <details id="twist-how-details" style="margin-top: 12px; background: var(--color-surface-raised); border: 1px solid var(--color-border); border-radius: 8px; padding: 10px 12px;">
+          <summary style="cursor: pointer; font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--color-ink);">
+            How the &alpha;/&beta; calibration works here
+          </summary>
+          <div style="margin-top: 8px; font-size: var(--font-size-xs); color: var(--color-ink-muted); line-height: 1.7;">
+            <p>
+              The raw readouts are plain <code>atan2</code> over the magnet reply. The calibrated ones run the
+              same Desmos model as the Voxdale page &mdash; the shared <code>angle_calib.js</code> module.
+              The formula above rewrites the &alpha; and &beta; angles so each of them sees two components:
+              an in-plane (tangential) one X/Y and a perpendicular Z one, with the cross-axis mixing
+              scaled out by k and the orthogonality terms.
+            </p>
+            <p><b>What feeds the formula (signal mapping by mode):</b></p>
+            <ul style="margin: 4px 0; padding-left: 18px;">
+              <li>
+                <b>1px mode</b> (units: mT) &mdash; pixel 0&rsquo;s absolute field:
+                x1 = B<sub>x</sub>, y1 = B<sub>y</sub>, z1 = B<sub>z</sub>.
+                &alpha; lives in the X&ndash;Z plane, &beta; in the Y&ndash;Z plane.
+              </li>
+              <li>
+                <b>2px mode</b> (units: mT/mm) &mdash; the differential channels between adjacent pixels:
+                x1 = X<sub>02</sub>, y1 = Y<sub>13</sub>, and z1 = Z<sub>02</sub> for &alpha; /
+                Z<sub>13</sub> for &beta;. Here the &ldquo;companion&rdquo; inside a1&rsquo;s square root is the
+                perpendicular gradient, so tilts along one axis are measured against the opposite pair&rsquo;s
+                gradient channel.
+              </li>
+            </ul>
+            <p><b>The six constants:</b></p>
+            <ul style="margin: 4px 0; padding-left: 18px;">
+              <li><b>k1, k2</b> &mdash; K-factors. Scale the cross-axis component feeding each angle: 1.0 keeps it as measured, &gt;1 amplifies it, &lt;1 attenuates it. Use these when one axis reads stronger/weaker than the geometry really is (gain trim).</li>
+              <li><b>o11, o12</b> &mdash; &alpha; orthogonality terms; <b>o21, o22</b> &mdash; &beta; orthogonality terms. Each subtracts the Z feedthrough from an in-plane axis (lower term, o12/o22, acting on x1/y1) or the in-plane feedthrough from the Z leg (upper term, o11/o21, acting inside the square root). Non-zero values cancel mounting or sensitivity crosstalk.</li>
+            </ul>
+            <p><b>Identity = raw.</b> With k = 1 and every o = 0 the calibrated readout is the pure
+            <code>atan2</code> (no cross-axis mixing), which keeps the two columns equal until you enter
+            constants. Values normalize live; non-finite inputs never break the loop.</p>
+          </div>
+        </details>
         </div>
 
       </div>
 
       <!-- SUB-VIEW: 3D JOYSTICK -->
-      <div id="view-joystick" class="view active">
+      <div id="view-joystick" class="view">
+        <div style="display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px;">
+          <button id="btn-toggle-twist-joy" class="ds-button ds-button--secondary ds-button--sm" type="button" data-twist-toggle>Signal &amp; Calibration</button>
+        </div>
         <div class="joystick-wrapper">
           <div class="joystick" id="joystick-base">
             <div class="joystick__zero"></div>
@@ -492,10 +647,90 @@
 
         <div style="display: flex; justify-content: center; margin-top: 20px;">
           <div style="text-align: center;">
-            <div style="font-size: 11px; font-weight: 800; text-transform: uppercase; color: var(--color-ink-muted); margin-bottom: 8px;">Radar Scope</div>
+            <div style="font-size: 11px; font-weight: 800; text-transform: uppercase; color: var(--color-ink-muted); margin-bottom: 8px;">Polar Radar</div>
             <canvas id="radar-canvas" width="340" height="340" style="display: block;"></canvas>
             <div id="radar-readout" style="margin-top: 8px; font-size: 11px; font-family: ui-monospace, Consolas, monospace; color: var(--color-ink-muted);">Azimuth: 0.0° | Range: 0.0%</div>
           </div>
+        </div>
+      </div>
+
+      <!-- SUB-VIEW: SENSOR DIAGNOSTICS -->
+      <div id="view-diagnostics" class="view">
+        <div class="diagnostics-grid">
+
+          <section class="diagnostics-card">
+            <h3>Frame Health</h3>
+            <p>Everything on this tab is the unmodified reply from the three transfers the loop issues each cycle: <code>0xFC000</code> and <code>0x03F00</code> for the twelve absolute pixels, <code>0x000FC</code> for the six differential channels. Nothing is averaged, scaled or clamped.</p>
+            <table class="diagnostics-table">
+              <tbody>
+                <tr><th>Source</th><td id="diag-source">--</td></tr>
+                <tr><th>Status byte</th><td id="diag-status">--</td></tr>
+                <tr><th>Function</th><td id="diag-fn">--</td></tr>
+                <tr><th>Data ready</th><td id="diag-drdy">--</td></tr>
+                <tr><th>Flags</th><td id="diag-flags">--</td></tr>
+                <tr><th>CRC</th><td id="diag-crc">--</td></tr>
+                <tr><th>Loop period</th><td id="diag-period">--</td></tr>
+              </tbody>
+            </table>
+            <span id="diag-health" class="diagnostics-state">Waiting for a measurement</span>
+          </section>
+
+          <section class="diagnostics-card">
+            <h3>Absolute Pixels &mdash; raw LSB</h3>
+            <p>Signed 12-bit counts, full scale &plusmn;2048. The averages are the four-pixel means the thumbstick knob reads from.</p>
+            <table class="diagnostics-table">
+              <thead><tr><th>Channel</th><th>Count</th></tr></thead>
+              <tbody>
+                <tr><td>X0</td><td id="diag-x0">--</td></tr>
+                <tr><td>Y0</td><td id="diag-y0">--</td></tr>
+                <tr><td>Z0</td><td id="diag-z0">--</td></tr>
+                <tr><td>X1</td><td id="diag-x1">--</td></tr>
+                <tr><td>Y1</td><td id="diag-y1">--</td></tr>
+                <tr><td>Z1</td><td id="diag-z1">--</td></tr>
+                <tr><td>X2</td><td id="diag-x2">--</td></tr>
+                <tr><td>Y2</td><td id="diag-y2">--</td></tr>
+                <tr><td>Z2</td><td id="diag-z2">--</td></tr>
+                <tr><td>X3</td><td id="diag-x3">--</td></tr>
+                <tr><td>Y3</td><td id="diag-y3">--</td></tr>
+                <tr><td>Z3</td><td id="diag-z3">--</td></tr>
+                <tr><th>Average X</th><td id="diag-avg-x">--</td></tr>
+                <tr><th>Average Y</th><td id="diag-avg-y">--</td></tr>
+                <tr><th>Average Z</th><td id="diag-avg-z">--</td></tr>
+                <tr><th>Peak |count|</th><td id="diag-peak">--</td></tr>
+              </tbody>
+            </table>
+            <span id="diag-range" class="diagnostics-state">Waiting for a measurement</span>
+          </section>
+
+          <section class="diagnostics-card">
+            <h3>Differential Channels &mdash; raw LSB</h3>
+            <p>The chip's own inter-pixel measurements, read in a single transfer. They populate this tab only &mdash; the thumbstick knob is driven by the 4-pixel absolute average again, so there is no gradient/field source switch anymore.</p>
+            <table class="diagnostics-table">
+              <thead><tr><th>Channel</th><th>Count</th></tr></thead>
+              <tbody>
+                <tr><td>X02</td><td id="diag-dx02">--</td></tr>
+                <tr><td>Y02</td><td id="diag-dy02">--</td></tr>
+                <tr><td>Z02</td><td id="diag-dz02">--</td></tr>
+                <tr><td>X13</td><td id="diag-dx13">--</td></tr>
+                <tr><td>Y13</td><td id="diag-dy13">--</td></tr>
+                <tr><td>Z13</td><td id="diag-dz13">--</td></tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="diagnostics-card">
+            <h3>Knob Output</h3>
+            <p>What the thumbstick tab is drawing, after the 4-pixel absolute average and the joystick scale are applied.</p>
+            <table class="diagnostics-table">
+              <tbody>
+                <tr><th>Position source</th><td id="diag-joy-src">Absolute field (avg X, Y)</td></tr>
+                <tr><th>Knob X</th><td id="diag-joy-x">--</td></tr>
+                <tr><th>Knob Y</th><td id="diag-joy-y">--</td></tr>
+                <tr><th>Angle</th><td id="diag-joy-angle">--</td></tr>
+              </tbody>
+            </table>
+          </section>
+
         </div>
       </div>
 
@@ -625,7 +860,8 @@
     </div>
 
   </main>
-  
+  </div>
+
   <script type="module" src="help.js"></script>
   <script type="module" src="app.js"></script>
 </body>

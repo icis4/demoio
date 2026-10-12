@@ -1,0 +1,670 @@
+﻿<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MLX90396 Multi-Demo Platform</title>
+  
+  <!-- Plotly + Three.js & OrbitControls -->
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  
+  <link rel="stylesheet" href="webdesign.css" />
+
+  <style>
+    body {
+      background-image: url('resources/background.jpg');
+      background-size: cover;
+      background-position: center;
+      background-attachment: fixed;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* The home link lives above the panel, lined up with its left edge, so the
+       stack has to carry the panel width rather than the body. */
+    .page {
+      width: min(920px, 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .app-shell {
+      width: min(920px, 100%);
+      background: var(--color-canvas);
+      border: 1.5px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: 32px;
+      box-shadow: var(--shadow-md);
+    }
+
+    /* Same pill as the Triaxis section page and the other subpages: arrow plus
+       the section name, back to triaxis/index.html. */
+    .home-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: var(--space-3);
+      padding: 4px 10px 4px 6px;
+      border-radius: var(--radius-sm);
+      color: var(--color-ink-muted);
+      font-family: var(--font-body);
+      font-size: var(--font-size-xs);
+      font-weight: 500;
+      text-decoration: none;
+      transition: color var(--duration-fast) var(--ease-out),
+                  background var(--duration-fast) var(--ease-out);
+    }
+    .home-link svg { width: 14px; height: 14px; flex-shrink: 0; }
+    .home-link:hover { color: var(--color-ink); background: var(--color-surface); }
+    .home-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+    .header-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      border-bottom: 1.5px solid var(--color-border);
+      padding-bottom: 16px;
+    }
+
+    .demo-controls {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .demo-menu-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      background: var(--color-surface, #111827);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: 10px 16px;
+      margin-bottom: 16px;
+    }
+    .demo-status {
+      font-size: 11px;
+      color: var(--color-ink-muted);
+      font-family: ui-monospace, Consolas, monospace;
+      margin-left: 8px;
+      border: 1px solid var(--color-border);
+      padding: 4px 10px;
+      border-radius: var(--radius-sm, 4px);
+      background: var(--color-surface, #111827);
+    }
+    .demo-status.active { color: var(--color-accent); }
+
+    /* --- HELP MODAL --- */
+    /* `minmax(0, 1fr)` on the body row plus `min-height: 0` are both required:
+       a grid item defaults to `min-height: auto`, so without them the body
+       refuses to shrink below its content height and the modal clips it. */
+    .ds-modal--wide {
+      width: min(100%, 56rem);
+      max-height: min(88vh, 60rem);
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+    .ds-modal--wide .ds-modal__body {
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding-right: 6px;
+    }
+    .help-body { font-size: var(--font-size-sm); }
+    .help-body h1 {
+      font-family: var(--font-display); font-size: var(--font-size-lg);
+      margin: 0 0 var(--space-3) 0; color: var(--color-ink);
+    }
+    .help-body h2 {
+      font-family: var(--font-display); font-size: var(--font-size-md);
+      margin: var(--space-4) 0 var(--space-2) 0; color: var(--color-accent);
+      padding-bottom: 4px; border-bottom: 1px solid var(--color-border);
+    }
+    .help-body h3 { font-size: var(--font-size-sm); margin: var(--space-3) 0 6px 0; color: var(--color-ink); }
+    .help-body p { margin: 0 0 var(--space-2) 0; }
+    .help-body ul, .help-body ol { margin: 0 0 var(--space-2) 0; padding-left: 1.35em; }
+    .help-body li { margin-bottom: 4px; }
+    .help-body strong { color: var(--color-ink); }
+    .help-body code {
+      font-family: ui-monospace, Consolas, monospace; font-size: 0.92em;
+      background: var(--color-code-bg); color: var(--color-accent);
+      padding: 1px 4px; border-radius: 3px;
+    }
+    .help-body hr { border: 0; border-top: 1px solid var(--color-border); margin: var(--space-4) 0; }
+    .help-body a { color: var(--color-accent); }
+    .help-body em { color: var(--color-ink-muted); }
+    .help-loading, .help-error {
+      padding: var(--space-3); border-radius: var(--radius-sm);
+      border: 1px solid var(--color-border); background: var(--color-surface);
+      font-size: var(--font-size-sm);
+    }
+    .help-error { border-color: var(--color-danger); color: var(--color-danger); }
+    .help-error code {
+      display: block; margin-top: 8px; color: var(--color-ink-muted);
+      background: none; padding: 0; word-break: break-all;
+    }
+
+    /* Top-Level Demo & Sub-Tab View Switching */
+    .demo-view { display: none; }
+    .demo-view.active { display: block; }
+    .view { display: none; }
+    .view.active { display: block; }
+
+    /* --- SFI STYLING --- */
+    .sfi-controls-bar {
+      display: flex; justify-content: space-between; align-items: center;
+      background: var(--color-surface, #111827); padding: 10px 16px; border-radius: var(--radius-md);
+      border: 1px solid var(--color-border); margin-bottom: 16px; flex-wrap: wrap; gap: 10px;
+    }
+    .sfi-dashboard-grid {
+      display: flex;
+      justify-content: center;
+      width: 100%;
+      margin-bottom: 16px;
+    }
+    .sfi-dome-card {
+      width: 100%;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    #canvas3d-container {
+      width: 100%; height: 500px; border-radius: 8px; overflow: hidden;
+      background: #ffffff; position: relative; cursor: grab;
+    }
+    #canvas3d-container:active { cursor: grabbing; }
+    .hint-overlay {
+      position: absolute; bottom: 8px; left: 8px; background: rgba(0,0,0,0.85);
+      padding: 4px 10px; border-radius: 4px; font-size: 11px; color: #ffffff; pointer-events: none;
+    }
+    .battle-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
+    @media (max-width: 768px) { .battle-grid { grid-template-columns: 1fr; } }
+    .battle-box { background: #070d1d; border: 1px solid var(--color-border); border-radius: 8px; padding: 12px; text-align: center; }
+    .battle-box.fail { border-color: #ff3366; }
+    .battle-box.pass { border-color: #00ff88; }
+    .plot3d-canvas { width: 100%; height: 260px; border-radius: 6px; margin-top: 8px; background: #01040d; }
+    .data-readout { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; font-size: 11px; font-family: monospace; }
+    .data-cell { background: #111a2e; padding: 6px; border-radius: 4px; }
+    .data-label { color: var(--color-ink-muted); font-size: 9px; }
+
+    /* --- DRAG AND DROP REORDERING STYLES --- */
+    .draggable-card {
+      cursor: grab;
+      user-select: none;
+      transition: transform 0.15s ease, opacity 0.15s ease, border-color 0.15s ease;
+    }
+    .draggable-card:active {
+      cursor: grabbing;
+    }
+    .draggable-card.is-dragging {
+      opacity: 0.35;
+      transform: scale(0.97);
+      border: 1.5px dashed var(--color-accent, #00d2ff) !important;
+    }
+    .drag-handle {
+      cursor: grab;
+      font-size: 12px;
+      color: var(--color-ink-muted);
+      margin-right: 6px;
+      user-select: none;
+    }
+
+    /* --- 3D JOYSTICK --- */
+    .joystick-wrapper {
+      display: flex; justify-content: center; align-items: center; 
+      padding: 60px; min-height: 380px; position: relative;
+    }
+    .joystick {
+      background: radial-gradient(at 75% 75%, #f2f2f2 0%, #d9d9d9 100%);
+      box-shadow: 0 -5px 5px rgba(255, 255, 255, 0.1), 0 5px 5px rgba(255, 255, 255, 0.05), 
+                  inset 0 5px 5px rgba(0, 0, 0, 0.02), inset 0 -5px 5px rgba(255, 255, 255, 0.05);
+      position: relative; height: 200px; width: 200px; border-radius: 50%;
+    }
+    .joystick__ball {
+      background: radial-gradient(at 25% 25%, #f2f2f2 0%, #d9d9d9 100%);
+      position: absolute; height: 70%; width: 70%; border-radius: 50%;
+      top: 50%; left: 50%; transform: translate(-50%, -50%);
+      transform-style: preserve-3d; perspective: 1000px;
+      box-shadow: inset -5px -10px 40px rgba(0, 0, 0, 0.05), inset 0px 0px 10px rgba(0, 0, 0, 0.3), 
+                  inset 0px 0px 5px rgba(0, 0, 0, 0.5), inset 0px 0px 3px 1px rgba(0, 0, 0, 0.51), 
+                  0px 0px 10px rgba(0, 0, 0, 0.3);
+    }
+    .joystick__zero {
+      position: absolute; z-index: 4; height: 30%; width: 30%; border-radius: 50%;
+      top: 50%; left: 50%; transform: translate(-50%, -50%);
+    }
+    .joystick__stick {
+      background: radial-gradient(at 50% 75%, #f2f2f2 0%, #d9d9d9 100%);
+      position: absolute; z-index: 2; height: 50%; width: 50%; border-radius: 50%;
+      top: 50%; left: 50%; margin: -25% -25%;
+      transition: transform 100ms ease, box-shadow 100ms ease;
+      transform: translate(calc(var(--tx, 0) * 1%), calc(var(--ty, 0) * 1%)) 
+                 rotateX(calc(var(--ty, 0) * 0.5deg)) 
+                 rotateY(calc(var(--tx, 0) * -0.5deg));
+      box-shadow: inset calc(var(--tx, 0) * 0.25px) calc(var(--ty, 0) * 0.25px) 10px rgba(255, 255, 255, 0.3),
+                  inset calc(var(--tx, 0) * -0.25px) calc(var(--ty, 0) * -0.25px) 10px rgba(0, 0, 0, 0.15),
+                  0 2px 10px -5px rgba(0, 0, 0, 0.7),
+                  0 4px 20px -10px rgba(0, 0, 0, 0.2),
+                  calc(var(--ty, 0) * 0.5px) 0 40px -20px rgba(0, 0, 0, 0.2),
+                  calc(var(--ty, 0) * -0.5px) 50px 40px -20px rgba(0, 0, 0, 0.2);
+    }
+    .joystick__stick:before {
+      content: ''; background: #fff; position: absolute; top: 10px; left: 49px;
+      width: 3px; height: 3px; border-radius: 50%;
+      box-shadow: 0 2px 3px #000, 39px 40px #fff, 39px 42px 3px #000, 0px 80px #fff, 
+                  0px 82px 3px #000, -39px 40px #fff, -39px 42px 3px #000;
+      opacity: 0.15;
+    }
+    .joystick__stick:after {
+      content: ''; position: absolute; top: 50%; left: 50%; width: 50%; height: 50%;
+      margin: -25% -25%; border-radius: 50%;
+      box-shadow: calc(var(--tx, 0) * -0.25px) calc(var(--ty, 0) * -0.25px) 20px -10px rgba(0,0,0,0.8);
+      filter: blur(5px); opacity: 0.4;
+    }
+    .joystick__led {
+      position: absolute; top: -40px; left: 50%; width: 4px; height: 4px;
+      border-radius: 50%; background: rgba(0, 0, 0, 0.7);
+      transform-origin: 0 140px; transition: background 150ms ease, box-shadow 150ms ease;
+    }
+    .led-active { background: var(--color-warning); box-shadow: 0 0 5px var(--color-warning); }
+    .led-low-1 { background: #EEA320; box-shadow: 0 0 5px #F2B630; }
+    .led-low-2 { background: #EEA320; box-shadow: 0 0 5px #FCDA4F; }
+
+    /* --- 2D SQUARE KNOB MECHANICS --- */
+    .magnet-plane {
+      position: relative; width: 100%; height: 700px;
+      background: rgba(0, 0, 0, 0); display: flex; justify-content: center; align-items: center;
+      margin: 0; border-radius: 8px; color: white; font-family: sans-serif;
+      overflow: hidden;
+    }
+    .magnet-sensor {
+      width: min(88%, 700px); aspect-ratio: 1 / 1; max-height: 100%; max-width: 100%;
+      background: #0B2C40; border-radius: 6px;
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4); overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+    }
+    .sensor-grid {
+      width: 100%; height: 100%; position: absolute; top: 0; left: 0;
+      pointer-events: none; user-select: none;
+    }
+    .magnet-disk {
+      width: 200px; height: 200px; border-radius: 50%;
+      /* Red = North, blue = South, per the usual magnet-diagram convention
+         (Honeywell AN-199 and the Melexis application notes). North is on the
+         left so the split still matches the N/S labels below. */
+      background: linear-gradient(to right, #D13434 50%, #2452D1 50%); 
+      position: absolute; top: 50%; left: 50%; margin-top: -100px; margin-left: -100px;
+      display: flex; align-items: center; justify-content: center;
+      transform-origin: 50% 50%; box-sizing: border-box; border: 4px solid #1A1F26;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.6), inset 0 0 0 3px rgba(255,255,255,0.2);
+      z-index: 10; opacity: 0.8;
+    }
+    .magnet-pole {
+      flex: 1; text-align: center; font-weight: 800; font-size: 2.3rem;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.6); user-select: none; pointer-events: none;
+    }
+    .magnet-arrow {
+      position: absolute; color: rgba(255, 255, 255, 0.7); font-weight: 700;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-size: 0.95rem; user-select: none; pointer-events: none; z-index: 5;
+    }
+    .arrow-icon { width: 28px; height: 28px; fill: currentColor; }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <a class="home-link" href="../index.html">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 12H5M12 19l-7-7 7-7"/>
+      </svg>
+      Triaxis
+    </a>
+
+  <main class="app-shell">
+
+    <!-- TOP: MAIN DEMO TAB -->
+    <div class="header-row">
+      <div class="ds-tabs" style="width: 100%;">
+        <div class="ds-tabs__list">
+          <button class="ds-tabs__tab ds-tabs__tab--active demo-tab-btn" data-target="demo-jwt">EVB90396 Demo UI</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- DEMO CONTROL MENU (GROUPED UNDER THE TAB) -->
+    <div class="demo-menu-bar">
+      <div class="demo-controls">
+        <button id="btn-start-demo" class="ds-button ds-button--primary ds-button--md">Start</button>
+        <button id="btn-stop-demo" class="ds-button ds-button--secondary ds-button--md" disabled>Stop</button>
+        <span id="demo-status" class="demo-status">Idle</span>
+      </div>
+      <div style="display: flex; gap: 12px; align-items: center;">
+        <button id="btn-connect" class="ds-button ds-button--primary ds-button--md">Connect USB</button>
+        <button id="btn-open-help" class="ds-button ds-button--secondary ds-button--md">Help</button>
+      </div>
+    </div>
+
+    <div id="demo-jwt" class="demo-view active">
+      <div class="ds-tabs" style="width: 100%; margin-bottom: 24px;">
+        <div class="ds-tabs__list">
+          <button class="ds-tabs__tab ds-tabs__tab--active tab-btn" data-target="view-magnet">Thumbstick with twist</button>
+          <button class="ds-tabs__tab tab-btn" data-target="view-joystick">Thumbstick</button>
+          <button class="ds-tabs__tab tab-btn" data-target="view-calib">Calibration</button>
+        </div>
+      </div>
+
+      <!-- SUB-VIEW: 2D MAGNET PLANE -->
+      <div id="view-magnet" class="view active">
+        <div class="ds-card ds-card--pad-md" style="width: 100%;">
+          <div style="display: flex; justify-content: space-evenly; align-items: center; margin-bottom: 0px;">
+            <div>
+              <h3 style="margin: 0; font-size: var(--font-size-md);">Diametrical Magnet Orientation</h3>
+              <p id="magnet-travel-lbl" style="margin: 4px 0 0 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+                Travel Area: &plusmn;2.5 mm (&plusmn;170 px). North Pole (Red) tracks magnetic orientation.
+              </p>
+            </div>
+            <button id="btn-zero-magnet" class="ds-button ds-button--secondary ds-button--sm">Zero Position</button>
+            <label style="display: flex; align-items: center; gap: 6px; font-size: var(--font-size-sm); color: var(--color-ink-muted); user-select: none;">
+              Motion
+              <select id="sel-magnet-mode" class="ds-field__input" style="width: auto; min-height: 1.8rem; padding: 2px 8px;">
+                <option value="both" selected>XY + Twist</option>
+                <option value="xy">XY only</option>
+                <option value="twist">Twist only</option>
+              </select>
+            </label>
+          </div>
+          
+          <div class="magnet-plane">
+            <div class="magnet-arrow" style="top: 12px;"><svg class="arrow-icon" viewBox="0 0 24 24"><path d="M12 2L4 10h5v12h6V10h5z"/></svg><span>+Y</span></div>
+            <div class="magnet-arrow" style="bottom: 12px;"><span>-Y</span><svg class="arrow-icon" viewBox="0 0 24 24" style="transform: rotate(180deg);"><path d="M12 2L4 10h5v12h6V10h5z"/></svg></div>
+            <div class="magnet-arrow" style="left: 12px; flex-direction: row;"><svg class="arrow-icon" viewBox="0 0 24 24" style="transform: rotate(-90deg); margin-right: 4px;"><path d="M12 2L4 10h5v12h6V10h5z"/></svg><span>-X</span></div>
+            <div class="magnet-arrow" style="right: 12px; flex-direction: row;"><span>+X</span><svg class="arrow-icon" viewBox="0 0 24 24" style="transform: rotate(90deg); margin-left: 4px;"><path d="M12 2L4 10h5v12h6V10h5z"/></svg></div>
+
+            <div class="magnet-sensor">
+              <svg class="sensor-grid" viewBox="-75 -75 150 150">
+                <defs>
+                  <pattern id="grid-1mm" width="30" height="30" patternUnits="userSpaceOnUse" x="0" y="0">
+                    <path d="M 30 0 L 0 0 0 30" fill="none" stroke="rgba(255, 255, 255, 0.09)" stroke-width="1" />
+                  </pattern>
+                </defs>
+                <rect x="-75" y="-75" width="150" height="150" fill="url(#grid-1mm)" />
+                <line x1="-75" y1="0" x2="75" y2="0" stroke="rgba(255, 255, 255, 0.35)" stroke-width="1.2" />
+                <line x1="0" y1="-75" x2="0" y2="75" stroke="rgba(255, 255, 255, 0.35)" stroke-width="1.2" />
+                <line x1="-60" y1="-4" x2="-60" y2="4" stroke="rgba(255, 255, 255, 0.7)" stroke-width="1.2" />
+                <line x1="-45" y1="-3" x2="-45" y2="3" stroke="rgba(255, 255, 255, 0.5)" stroke-width="1" />
+                <line x1="-30" y1="-3" x2="-30" y2="3" stroke="rgba(255, 255, 255, 0.7)" stroke-width="1.2" />
+                <line x1="30" y1="-3" x2="30" y2="3" stroke="rgba(255, 255, 255, 0.7)" stroke-width="1.2" />
+                <line x1="45" y1="-3" x2="45" y2="3" stroke="rgba(255, 255, 255, 0.5)" stroke-width="1" />
+                <line x1="60" y1="-4" x2="60" y2="4" stroke="rgba(255, 255, 255, 0.7)" stroke-width="1.2" />
+                <line x1="-4" y1="-60" x2="4" y2="-60" stroke="rgba(255, 255, 255, 0.7)" stroke-width="1.2" />
+                <line x1="-3" y1="-45" x2="3" y2="-45" stroke="rgba(255, 255, 255, 0.5)" stroke-width="1" />
+                <line x1="-3" y1="-30" x2="3" y2="-30" stroke="rgba(255, 255, 255, 0.7)" stroke-width="1.2" />
+                <line x1="-3" y1="30" x2="3" y2="30" stroke="rgba(255, 255, 255, 0.7)" stroke-width="1.2" />
+                <line x1="-3" y1="45" x2="3" y2="45" stroke="rgba(255, 255, 255, 0.5)" stroke-width="1" />
+                <line x1="-4" y1="60" x2="4" y2="60" stroke="rgba(255, 255, 255, 0.7)" stroke-width="1.2" />
+                <text class="grid-tick" data-mm="-2" x="-60" y="13" fill="rgba(255, 255, 255, 0.65)" font-size="8" text-anchor="middle" font-family="monospace">-2</text>
+                <text class="grid-tick" data-mm="-1.5" x="-45" y="13" fill="rgba(255, 255, 255, 0.45)" font-size="7" text-anchor="middle" font-family="monospace">-1.5</text>
+                <text class="grid-tick" data-mm="-1" x="-30" y="13" fill="rgba(255, 255, 255, 0.65)" font-size="8" text-anchor="middle" font-family="monospace">-1</text>
+                <text class="grid-tick" data-mm="1" x="30" y="13" fill="rgba(255, 255, 255, 0.65)" font-size="8" text-anchor="middle" font-family="monospace">+1</text>
+                <text class="grid-tick" data-mm="1.5" x="45" y="13" fill="rgba(255, 255, 255, 0.45)" font-size="7" text-anchor="middle" font-family="monospace">+1.5</text>
+                <text class="grid-tick" data-mm="2" x="60" y="13" fill="rgba(255, 255, 255, 0.65)" font-size="8" text-anchor="middle" font-family="monospace">+2</text>
+                <text class="grid-tick" data-mm="2" x="6" y="-60" fill="rgba(255, 255, 255, 0.65)" font-size="8" dominant-baseline="middle" font-family="monospace">+2</text>
+                <text class="grid-tick" data-mm="1.5" x="6" y="-45" fill="rgba(255, 255, 255, 0.45)" font-size="7" dominant-baseline="middle" font-family="monospace">+1.5</text>
+                <text class="grid-tick" data-mm="1" x="6" y="-30" fill="rgba(255, 255, 255, 0.65)" font-size="8" dominant-baseline="middle" font-family="monospace">+1</text>
+                <text class="grid-tick" data-mm="-1" x="6" y="30" fill="rgba(255, 255, 255, 0.65)" font-size="8" dominant-baseline="middle" font-family="monospace">-1</text>
+                <text class="grid-tick" data-mm="-1.5" x="6" y="45" fill="rgba(255, 255, 255, 0.45)" font-size="7" dominant-baseline="middle" font-family="monospace">-1.5</text>
+                <text class="grid-tick" data-mm="-2" x="6" y="60" fill="rgba(255, 255, 255, 0.65)" font-size="8" dominant-baseline="middle" font-family="monospace">-2</text>
+                <text class="grid-tick" data-mm="-2.5" x="-70" y="-66" fill="#59FFB0" font-size="7.5" font-weight="bold" text-anchor="start" dominant-baseline="hanging" font-family="monospace">-2.5</text>
+                <text class="grid-tick" data-mm="2.5" x="70" y="-66" fill="#59FFB0" font-size="7.5" font-weight="bold" text-anchor="end" dominant-baseline="hanging" font-family="monospace">+2.5</text>
+                <text class="grid-tick" data-mm="-2.5" x="-70" y="66" fill="#59FFB0" font-size="7.5" font-weight="bold" text-anchor="start" dominant-baseline="hanging" font-family="monospace">-2.5</text>
+                <text class="grid-tick" data-mm="2.5" x="70" y="66" fill="#59FFB0" font-size="7.5" font-weight="bold" text-anchor="end" dominant-baseline="hanging" font-family="monospace">+2.5</text>
+              </svg>
+            </div>
+            
+            <div class="magnet-disk" id="magnet-disk">
+              <div class="magnet-pole">N</div>
+              <div class="magnet-pole">S</div>
+            </div>
+          </div>
+        </div>
+        </div>
+      <!-- SUB-VIEW: 3D JOYSTICK -->
+      <div id="view-joystick" class="view">
+        <div class="joystick-wrapper">
+          <div class="joystick" id="joystick-base">
+            <div class="joystick__zero"></div>
+            <div class="joystick__stick" id="joystick-stick"></div>
+            <div class="joystick__ball"></div>
+          </div>
+        </div>
+        <div style="display: flex; justify-content: center; margin-top: 20px;">
+          <div style="text-align: center;">
+            <div style="font-size: 11px; font-weight: 800; text-transform: uppercase; color: var(--color-ink-muted); margin-bottom: 8px;">Radar Scope</div>
+            <canvas id="radar-canvas" width="340" height="340" style="display: block;"></canvas>
+            <div id="radar-readout" style="margin-top: 8px; font-size: 11px; font-family: ui-monospace, Consolas, monospace; color: var(--color-ink-muted);">X: 0.0 | Y: 0.0</div>
+          </div>
+        </div>
+      </div>
+      <!-- SUB-VIEW: CALIBRATION -->
+      <!-- The a1/b1 cross-axis model consumes RAW per-pixel Bx/By/Bz, so it lives here
+           with the raw-field Thumbstick path rather than in the twist demo, whose
+           Arduino frame stream only carries computed XY position + angle. -->
+      <div id="view-calib" class="view">
+        <div class="ds-card ds-card--pad-md" style="width: 100%; margin-bottom: 16px;">
+          <h3 style="margin: 0 0 6px 0; font-size: var(--font-size-md);">Twist Angle Calibration</h3>
+          <p style="margin: 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+            Corrects the cross-axis and Z-feedthrough error in the &alpha;/&beta; angles. The model needs the
+            four raw pixels (Bx, By, Bz each), so it works on the SCPI bridge and in emulation.
+          </p>
+          <p id="calib-source-note" style="margin: 8px 0 0 0; font-size: var(--font-size-xs); color: var(--color-warning);">
+            Source: waiting for raw per-pixel field data.
+          </p>
+        </div>
+
+        <div class="ds-card ds-card--pad-md" style="width: 100%; margin-bottom: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <div>
+              <h3 style="margin: 0; font-size: var(--font-size-md);">Signal</h3>
+              <p style="margin: 4px 0 0 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+                Live &alpha;/&beta; angles and field strengths from the raw pixels.
+                <span id="twist-unit-lbl">Units: mT</span>
+              </p>
+            </div>
+            <select id="sel-twist-mode" class="ds-field__input" style="width: auto; display: inline-block; min-height: 1.8rem; padding: 2px 8px;">
+              <option value="1px" selected>1px mode (single pixel Â· mT)</option>
+              <option value="2px">2px mode (differential Â· mT/mm)</option>
+            </select>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
+            <div class="battle-box">
+              <div style="font-size: 10px; text-transform: uppercase; color: var(--color-ink-muted); margin-bottom: 4px;">Alpha (calibrated)</div>
+              <div id="twist-alpha" style="font-size: 1.3rem; font-weight: 700; color: #59FFB0; font-family: ui-monospace, Consolas, monospace;">--.-&deg;</div>
+            </div>
+            <div class="battle-box">
+              <div style="font-size: 10px; text-transform: uppercase; color: var(--color-ink-muted); margin-bottom: 4px;">Beta (calibrated)</div>
+              <div id="twist-beta" style="font-size: 1.3rem; font-weight: 700; color: #59FFB0; font-family: ui-monospace, Consolas, monospace;">--.-&deg;</div>
+            </div>
+            <div class="battle-box">
+              <div style="font-size: 10px; text-transform: uppercase; color: var(--color-ink-muted); margin-bottom: 4px;">Alpha (raw)</div>
+              <div id="twist-alpha-raw" style="font-size: 1.1rem; font-weight: 600; color: var(--color-ink-muted); font-family: ui-monospace, Consolas, monospace;">--.-&deg;</div>
+            </div>
+            <div class="battle-box">
+              <div style="font-size: 10px; text-transform: uppercase; color: var(--color-ink-muted); margin-bottom: 4px;">Beta (raw)</div>
+              <div id="twist-beta-raw" style="font-size: 1.1rem; font-weight: 600; color: var(--color-ink-muted); font-family: ui-monospace, Consolas, monospace;">--.-&deg;</div>
+            </div>
+            <div class="battle-box">
+              <div style="font-size: 10px; text-transform: uppercase; color: var(--color-ink-muted); margin-bottom: 4px;">Alpha Strength</div>
+              <div id="twist-alpha-str" style="font-size: 1.1rem; font-weight: 700; color: #00d2ff; font-family: ui-monospace, Consolas, monospace;">--.-</div>
+            </div>
+            <div class="battle-box">
+              <div style="font-size: 10px; text-transform: uppercase; color: var(--color-ink-muted); margin-bottom: 4px;">Beta Strength</div>
+              <div id="twist-beta-str" style="font-size: 1.1rem; font-weight: 700; color: #00d2ff; font-family: ui-monospace, Consolas, monospace;">--.-</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ds-card ds-card--pad-md" style="width: 100%;">
+          <h3 style="margin: 0 0 12px 0; font-size: var(--font-size-md);">Gain &amp; Calibration Config</h3>
+          <div style="display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start;">
+            <div class="ds-field" style="width: 220px; margin-bottom: 0;">
+              <label class="ds-field__label" for="in-twist-gain">GAINSEL (electrical gain)</label>
+              <input id="in-twist-gain" type="number" min="0" max="63" step="1" class="ds-field__input" value="37" />
+              <small id="twist-gain-hint" style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+                1px gain = 37 (0b100101) &rarr; ~219
+              </small>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(3, 80px); gap: 10px;">
+              <div class="ds-field" style="margin-bottom: 0;">
+                <label class="ds-field__label" for="cal-k1">k1</label>
+                <input id="cal-k1" type="number" step="any" class="ds-field__input" value="1" />
+              </div>
+              <div class="ds-field" style="margin-bottom: 0;">
+                <label class="ds-field__label" for="cal-k2">k2</label>
+                <input id="cal-k2" type="number" step="any" class="ds-field__input" value="1" />
+              </div>
+              <div class="ds-field" style="margin-bottom: 0;">
+                <label class="ds-field__label" for="cal-o11">o11</label>
+                <input id="cal-o11" type="number" step="any" class="ds-field__input" value="0" />
+              </div>
+              <div class="ds-field" style="margin-bottom: 0;">
+                <label class="ds-field__label" for="cal-o12">o12</label>
+                <input id="cal-o12" type="number" step="any" class="ds-field__input" value="0" />
+              </div>
+              <div class="ds-field" style="margin-bottom: 0;">
+                <label class="ds-field__label" for="cal-o21">o21</label>
+                <input id="cal-o21" type="number" step="any" class="ds-field__input" value="0" />
+              </div>
+              <div class="ds-field" style="margin-bottom: 0;">
+                <label class="ds-field__label" for="cal-o22">o22</label>
+                <input id="cal-o22" type="number" step="any" class="ds-field__input" value="0" />
+              </div>
+            </div>
+          </div>
+          <p style="margin: 12px 0 0 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+            a1 = atan2( &radic;(z1&sup2; + (k1&middot;(y1 &minus; o11&middot;z1))&sup2;), (x1 &minus; o12&middot;z1) )<br/>
+            b1 = atan2( &radic;(z1&sup2; + (k2&middot;(x1 &minus; o21&middot;z1))&sup2;), (y1 &minus; o22&middot;z1) )<br/>
+            Angles in degrees; calibration constants update live.
+          </p>
+        </div>
+      </div>
+    </div>
+    <!-- /demo-jwt -->
+
+    <!-- HELP MODAL -->
+    <div id="help-modal" class="ds-modal-root hidden">
+      <div class="ds-modal__backdrop" id="help-backdrop"></div>
+      <div class="ds-modal ds-modal--wide" role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
+        <div class="ds-modal__header">
+          <h3 class="ds-modal__title" id="help-modal-title">Help</h3>
+          <button id="btn-close-help" class="ds-modal__close" aria-label="Close help">&#10005;</button>
+        </div>
+        <div class="ds-modal__body">
+          <div id="help-body" class="help-body">
+            <div class="help-loading">Loading joystick_help_readme.md&hellip;</div>
+          </div>
+        </div>
+        <div class="ds-modal__footer">
+          <span style="font-size: var(--font-size-xs); color: var(--color-ink-muted); align-self: center;">
+            Source: joystick_help_readme.md
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- POLYMORPHIC HARDWARE CONNECT MODAL -->
+    <div id="connect-modal" class="ds-modal-root hidden">
+      <div class="ds-modal__backdrop"></div>
+      <div class="ds-modal">
+        <div class="ds-modal__header">
+          <h3 class="ds-modal__title">Hardware Connection</h3>
+          <button id="btn-close-modal" class="ds-modal__close">âœ•</button>
+        </div>
+        <div class="ds-modal__body">
+          <div class="ds-field" style="width: 100%; margin-bottom: 12px;">
+            <label class="ds-field__label" for="sel-driver-type">Target Device Driver</label>
+            <select id="sel-driver-type" class="ds-field__input">
+              <option value="scpi" selected>SCPI Bridge (MLX90396 SPI API)</option>
+              <option value="arduino">Direct Arduino Telemetry (Frame Stream)</option>
+            </select>
+          </div>
+
+          <div class="ds-field" style="width: 100%; margin-bottom: 12px;">
+            <label class="ds-field__label" for="sel-baud-rate">Serial Baud Rate</label>
+            <select id="sel-baud-rate" class="ds-field__input">
+              <option value="115200" selected>115200</option>
+              <option value="230400">230400</option>
+              <option value="500000">500000</option>  
+              <option value="9600">9600</option>
+            </select>
+          </div>
+
+          <div class="ds-field" id="wrap-conn-type" style="width: 100%; margin-bottom: 16px;">
+            <label class="ds-field__label" for="sel-conn-type">SPI Bus Type (SCPI Mode)</label>
+            <select id="sel-conn-type" class="ds-field__input">
+              <option value=":SPI">Cable Connection (:SPI)</option>
+              <option value=":SPI2">Header Connection (:SPI2)</option>
+            </select>
+          </div>
+          <p style="margin: 0; font-size: var(--font-size-sm); color: var(--color-ink-muted);">
+            Choose your device driver and configuration before requesting the Web Serial COM port.
+          </p>
+          <div class="ds-field" style="width: 100%; margin: 16px 0 0 0;">
+            <label class="ds-field__label">Browser-Authorized Ports</label>
+            <div id="port-guide" style="font-size: 12px; color: var(--color-ink-muted); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 4px; padding: 8px 10px; font-family: ui-monospace, Consolas, monospace;"></div>
+            <p style="margin: 8px 0 0 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+              The Chrome picker lists every serial device Windows detects (no device filtering). If yours is missing: install its USB driver, unplug &amp; replug, reboot, and close apps holding the port (Arduino IDE Serial Monitor, vendor tools).
+            </p>
+          </div>
+          <div id="connect-error" class="hidden" style="margin-top: 14px; padding: 10px 12px; font-size: var(--font-size-sm); color: var(--color-danger); background: rgba(255, 90, 90, 0.08); border: 1px solid var(--color-danger); border-radius: 4px;"></div>
+        </div>
+        <div class="ds-modal__footer">
+          <button id="btn-modal-connect" class="ds-button ds-button--primary ds-button--full">Open Serial Port</button>
+        </div>
+      </div>
+    </div>
+  </main>
+  </div>
+
+  <script type="module" src="help.js"></script>
+  <script type="module" src="app.js"></script>
+<script>
+window.__e=[];
+window.addEventListener('error',ev=>window.__e.push('ERR '+ev.message));
+window.addEventListener('unhandledrejection',ev=>window.__e.push('REJ '+(ev.reason&&ev.reason.message||ev.reason)));
+window.addEventListener('load',async()=>{
+ const s=ms=>new Promise(r=>setTimeout(r,ms)); await s(800);
+ const o={};
+ const vis=id=>{const e=document.getElementById(id); if(!e) return 'ABSENT'; const r=e.getBoundingClientRect(); return (r.width>0&&r.height>0)?'visible':'hidden';};
+ o.initialTabs=[...document.querySelectorAll('.tab-btn')].map(b=>b.dataset.target+':'+(b.classList.contains('ds-tabs__tab--active')?'ACTIVE':'-'));
+ o.viewsBefore=['view-magnet','view-joystick','view-calib'].map(v=>v+'='+vis(v));
+ o.parentOf={};
+ for (const v of ['view-magnet','view-joystick','view-calib']) o.parentOf[v]=document.getElementById(v).parentElement.id||document.getElementById(v).parentElement.className;
+ document.getElementById('btn-start-demo').click();
+ await s(700);
+ o.radarDuringEmu=document.getElementById('radar-readout').textContent;
+ const jt=(document.getElementById('joystick-stick').style.getPropertyValue('--tx')||'')+' / '+(document.getElementById('joystick-stick').style.getPropertyValue('--ty')||'');
+ o.stickTransform=jt;
+ o.magnetDisk=document.getElementById('magnet-disk').style.transform;
+ // switch to each tab
+ o.after=[];
+ for (const t of ['view-joystick','view-calib','view-magnet']) {
+   document.querySelector('.tab-btn[data-target="'+t+'"]').click();
+   await s(250);
+   o.after.push(t+' -> '+['view-magnet','view-joystick','view-calib'].map(v=>v.split('-')[1]+':'+vis(v)).join(' '));
+ }
+ o.calibText={a:document.getElementById('twist-alpha').textContent,note:document.getElementById('calib-source-note').textContent.slice(0,60)};
+ o.errs=window.__e;
+ console.log('PROBE_JSON '+JSON.stringify(o));
+});
+</script>
+</body>
+</html>

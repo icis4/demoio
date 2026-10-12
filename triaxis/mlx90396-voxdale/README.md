@@ -65,7 +65,10 @@ WebSerial API (115200 Baud)
 MLX90396-WebUI/
 ├── index.html        # Main HTML structure, styles, SVG assets, and view tabs
 ├── app.js            # Main application controller, UI event bindings, WebSerial manager
+├── sfi_demo.js       # 3D dome + radar visuals; re-exports the α/β calibration engine
 ├── mlx_api.js        # MLX90396 device class, command builder, and CRC-8 calculator
+├── ../angle_calib.js # Shared Desmos calibration engine (calculate1px/2px, defaults,
+│                     # setCalibrationParams) — one source of truth, also used by the Thumbstick page
 └── resources/
     └── background.jpg# UI background image asset
 ```

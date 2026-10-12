@@ -9,7 +9,16 @@
  *  2px mode (units: mT/mm): X02 (dBx/dx), Z02 (dBz/dx), Y13 (dBy/dy), Z13 (dBz/dy)
  *     alpha = atan2(Z02, X02)             strength = sqrt(Z02^2 + X02^2)
  *     beta  = atan2(Z13, Y13)             strength = sqrt(Z13^2 + Y13^2)
+ *
+ *  The calibrated (Desmos) angles are computed by the shared ../angle_calib.js
+ *  module so the thumbstick and the Voxdale page run one and the same engine.
  */
+
+import {
+  DEFAULT_CALIBRATION_PARAMS as CALIB_DEFAULTS,
+  normalizeParams,
+  calculateDesmosAngles
+} from '../angle_calib.js';
 
 const toDeg = (rad) => (rad * 180) / Math.PI;
 
@@ -46,15 +55,12 @@ export function calcTwist2px({ X02, Z02, Y13, Z13 }) {
 // --- Calibration (Desmos model, rad -> deg) ---
 //   a1 = atan2( sqrt( z1^2 + (k1 * (y1 - o11 * z1))^2 ), (x1 - o12 * z1) )
 //   b1 = atan2( sqrt( z1^2 + (k2 * (x1 - o21 * z1))^2 ), (y1 - o22 * z1) )
-export const TWIST_CAL = {
-  k1: 1, k2: 1,
-  o11: 0, o12: 0,
-  o21: 0, o22: 0,
-};
+// Live params follow the module's defaults; normalizeParams drops NaN input.
+export const TWIST_CAL = { ...CALIB_DEFAULTS };
 
 export function applyTwistCalibration(x, y, z) {
-  const { k1, k2, o11, o12, o21, o22 } = TWIST_CAL;
-  const isIdentity = k1 === 1 && k2 === 1 && o11 === 0 && o12 === 0 && o21 === 0 && o22 === 0;
+  const p = normalizeParams(TWIST_CAL);
+  const isIdentity = p.k1 === 1 && p.k2 === 1 && p.o11 === 0 && p.o12 === 0 && p.o21 === 0 && p.o22 === 0;
   if (isIdentity) {
     // Vanilla mode: identity calibration is a true no-op, so the calibrated
     // readout equals the pure atan2 (no tangential cross-axis mixing) until
@@ -68,20 +74,8 @@ export function applyTwistCalibration(x, y, z) {
       betaDeg: toDeg(b1),
     };
   }
-  const a1 = Math.atan2(
-    Math.hypot(z, k1 * (y - o11 * z)),
-    x - o12 * z
-  );
-  const b1 = Math.atan2(
-    Math.hypot(z, k2 * (x - o21 * z)),
-    y - o22 * z
-  );
-  return {
-    alphaRad: a1,
-    betaRad: b1,
-    alphaDeg: toDeg(a1),
-    betaDeg: toDeg(b1),
-  };
+  // Non-identity: delegate the Desmos model to the shared angle_calib.js module.
+  return calculateDesmosAngles(x, y, z, p);
 }
 
 // Combined pipeline: raw alpha/beta + strengths for the selected mode, then
@@ -129,14 +123,18 @@ export function deriveTwistInputsFromPoints(points) {
 }
 
 // --- Gain Configuration (MLX90396 GAINSEL register) ---
-// Twisted demo gain: electrical gain scaled ~72 -> ~219.
-// GAINSEL_1PX was 9 (0b001001); now 37 (0b100101).
+// Defaults are zeroed per user request so the page opens with the electrical
+// gain at minimum. NOTE: switching 1px<->2px mode writes the table value below
+// to the chip, and typing in the gain field writes it (debounced); starting
+// the live demo re-reads the chip and adopts whatever it actually holds. If
+// live readings look dead after a mode switch, type the trimmed gain back in
+// (the previous production trim was 37/0b100101 for 1px, 9/0b001001 for 2px).
 // TODO(hw-trim): during the physical Arduino hardware validation session,
 // adjust this literal to the final trimmed value and confirm bits against
 // the GAINSEL register table in the MLX90396 datasheet before flashing.
 export const GAINSEL = {
-  '1px': 0b100101, // 37 — boosted electrical gain (~219) for the twist demo
-  '2px': 0b001001, // 9  — stock 1px-style gain, kept off until trim
+  '1px': 0b000000, // 0 — user-requested zero start (was 37, ~219)
+  '2px': 0b000000, // 0 — user-requested zero start (was 9, ~72)
 };
 
 export function setGainSel(mode, value) {

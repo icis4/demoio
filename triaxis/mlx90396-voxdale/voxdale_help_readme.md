@@ -20,9 +20,9 @@ These sit in the controls bar below the top bar, separate from **Connect USB** a
 
 - **Stray Field Coil (5 mT)** — Toggles the simulated external uniform stray field that aims to interfere with the MLX90396's raw data readings. The purpose of the operation is to demonstrate that an external magnetic field does not alter the sensor's work.
 
-- **pulse (seconds)** — Pulse width for the coil injection, 0.5–60 s, default 5.
+- **pulse (seconds)** — Pulse width for the coil injection, 0.5–60 s, default 5. The coil is a *timed pulse, never a latch*: clicking **Stray Field Coil** energises it and counts the dwell down to 0, then releases the pin. Clicking again while a pulse is running aborts it early instead of queueing a second one.
 
-- **Gain 1px: 1x (72)** — Writes `GAINSEL_1PX` to the chip (SCPI only): toggles between gain 37 (→ ~219, shown as "3x") and gain 9 (→ ~72, "1x").
+- **Gain 1px: 1x (72)** — Writes `GAINSEL_1PX` to the chip (SCPI only): toggles between gain 9 (→ ~72, "1x") and gain 37 (→ ~219, "3x"). The gain literally re-ranges the chip's internal amplifier; the number in parentheses is the resulting full-scale count for the standard Bx channel.
 
 - **Clear Trajectories** — Clears the plotted 3D field traces (streaming continues).
 
@@ -32,16 +32,20 @@ These sit in the controls bar below the top bar, separate from **Connect USB** a
 
 ## Tabs
 
-- **Live Telemetry & Battle Matrix** — Shows signal meters, magnitude gauges, the two 3D field plots (legacy mT and differential mT/mm, each with magnet head + trace), and the two polar radar plots. Each radar carries θ, α and β readouts.
+- **Live Telemetry & Battle Matrix** — Shows signal meters, magnitude gauges, the two 3D field plots (legacy mT and differential mT/mm, each with magnet head + trace), and the two radar plots. Each radar carries a field-strength readout (|B| for standard 3D Hall, |∇B| for differential), which flags **weak** or **no magnet** below 8/2 mT (standard) and 3/1 mT/mm (differential), plus α/β. Differential angles default to the reviewed normal formula `ATAN2(X02, Z02)` / `ATAN2(Y13, Z13)`; select Enhanced in Calibration Tuning to apply the optional cross-axis formula. The selected formula feeds the differential readout, radar, and live gimbal.
 
-- **Idle / Auto-Pattern & Dome Kinematics** — The CAD GLB dome scene. The stick pivots ~11° where it exits the dome; drag the knob to observe from different angles, scroll to zoom. Camera pan/rotate is disabled ("Fixed XYZ view").
+- **Idle / Auto-Pattern & Dome Kinematics** — The CAD GLB dome scene. In SCPI mode the gimbal follows the differential X02/Z02 and Y13/Z13 angles, not the absolute-field X/Y average. **Zero Position** captures current differential α/β as neutral; Tilt X/Y show commanded movement relative to this reference (bounded to ±90°). The magnet holder pivots around the assembly coordinate-zero at a fixed radius. Drag the knob to inspect it and scroll to zoom. Camera pan/rotate is disabled ("Fixed XYZ view"). **Press** reads **PUSHED** when `sqrt(Z02² + Z13²)` reaches ~20 mT/mm.
 
-- **Sensor Diagnostics** — Explains legacy vs differential signals and shows live range/stability watch values.
+- **Sensor Diagnostics** — Mirrors the MLX90396 thumbstick diagnostics: a Frame Health card (source, decoded status byte, per-transfer CRC, averaged loop period), raw signed 12-bit LSB tables for the twelve absolute pixels and the four 2px gradient channels (X02, Z02, Y13, Z13, mask `0x000AC`), and a Dome Output card (tilt X/Y and press state). Frame-level cards populate while the SCPI stream runs; in simulation they stay at `--`.
 
 ## Calibration panel (hidden by default)
 
 Not a tab — a drawer toggled by the **Calibration Tuning** button, which sits in the controls bar but renders inside the "Live Telemetry & Battle Matrix" section.
 
-- **Reset Defaults** — Restores K-factors to 1.0 and orthogonality to 0.0.
+- **GAINSEL (electrical gain)** — Same control as the Thumbstick page: 0–63 numeric field. The hint shows the 6-bit value (starts at 0 = `0b000000`). Over SCPI the value is written to `GAINSEL_1PX` (reg 0x00 bits [5:0]) with the unlock sequence + readback verify, then confirmed in the **Device confirmed** line; without hardware it stays local ("Device: not read"). Typing applies instantly with a 300 ms debounce; pressing Enter writes immediately. The **Gain 1px** button in the controls bar toggles 9 ↔ 37 and stays in sync with this field.
 
-- **k1/k2/o11/o12/o21/o22 inputs** — Live Desmos calibration: K-factors scale axis strength, orthogonality terms compensate cross-axis/Z feedthrough. Values apply instantly as you type.
+- **Reset Defaults** — Resets all six constants to 0.
+
+- **Differential angle formula** — Defaults to the reviewed normal formula `ATAN2(X02, Z02)` / `ATAN2(Y13, Z13)`. Select **Enhanced** to use the cross-axis formula shown in the panel.
+
+- **k1/k2/o11/o12/o21/o22 inputs** — Enhanced formula parameters: α uses `sqrt(X02² + (k1·(Z13 − o11·X02))²)` over `Z02 − o12·X02`; β uses `sqrt(Y13² + (k2·(Z02 − o21·Y13))²)` over `Z13 − o22·Y13`. The selected formula feeds the radars, readouts and live gimbal.

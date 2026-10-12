@@ -93,11 +93,12 @@ browser DevTools console (there is no on-screen terminal window).
 - **28-LED radial ring** — 360°/28 ≈ 12.86° per LED. The LED nearest the vector **angle**
   lights `led-active` with a ±2-LED falloff (`led-low-1`, `led-low-2`). Active only when the
   deviation from center is > 5 units.
-- **Radar Scope** (canvas) — polar blips plot the vector trail (last 40 points), plus a
-  gradient vector line from center, a live dot (with glow) when off-center, concentric
-  range rings, and compass labels. Readout: `Azimuth · Range`, where
-  `Azimuth = atan2(-y, x)` (0° at +X, increasing counter-clockwise per the canvas
-  y-down convention) and range is reported as % of 50.
+- **Polar Radar** (canvas) — a Voxdale-style field-vector scope: dark reticle with 25% rings
+  and a crosshair, compass labels `0° (+X)` / `90° (+Y)` / `180° (-X)` / `270° (-Y)`, and a
+  theme-coloured measured vector (glowing head) clamped to the rim. **+Y is up**, matching
+  the joystick knob, because it is fed the same absolute-field coordinates. Readout:
+  `Azimuth · Range`, where `Azimuth = atan2(y, x)` (0° at +X, 90° at +Y, CCW) and range is
+  the vector magnitude as % of 50 (the knob rim).
 
 ---
 
@@ -126,15 +127,22 @@ browser DevTools console (there is no on-screen terminal window).
 **Controls**
 - **Zero Position** — captures the current raw position as the offset
   (`magnetOffsets.x/y`); the disk recentres. Reported over console.
-- **Lock XY (twist only)** — freezes `transX/transY` at center while the angle keeps
-  rotating. Use this to demonstrate a pure twist around the magnet axis, isolating rotation
-  from position. The internal EMA keeps tracking, so unchecking never snaps.
+- **Motion mode** — one selector for all three demo cases (reviewer slide 4 asked for an
+  "XY only" option beside twist-only). `XY + Twist` (default) tracks position and twist;
+  `XY only` tracks position and holds the twist angle at its last value; `Twist only` pins
+  `transX/transY` at center so the disk only spins, isolating rotation from position. The
+  internal EMA keeps tracking in every mode, so switching back never snaps. It replaces the
+  old `Lock XY (twist only)` checkbox, whose label was self-contradictory (locking XY is
+  what makes it twist-only).
 - **Signal & Calibration** — toggles the `#twist-panel` with live readouts and calibration
-  inputs (below).
+  inputs (below). Available from the **Thumbstick** tab; the panel is one shared element
+  reparented under `#demo-jwt` at load. (The duplicate button on the **Thumbstick with twist**
+  tab was removed — reviewer slide 4 puts twist calibration under *Zero Position* instead.)
 
 ### Twist panel — live signal
 
-Six readouts (updating only while the Twist tab is active and the panel is open):
+Six readouts (updating while the panel is open on either the Thumbstick or the
+Thumbstick-with-twist tab):
 
 1. **Alpha (calibrated)** — Desmos-calibrated twist angle about the X axis, degrees.
 2. **Beta (calibrated)** — Desmos-calibrated twist angle about the Y axis, degrees.
@@ -155,9 +163,15 @@ Six readouts (updating only while the Twist tab is active and the panel is open)
 ### Twist panel — gain & calibration config
 
 - **GAINSEL (electrical gain)** — 0–63 register value, applied per mode through
-  `twist_api.js` `setGainSel`. Defaults: `1px = 37 (0b100101)` (boosted gain ≈ 219),
-  `2px = 9 (0b001001)` (kept stock until hardware trim). The hint text shows the current
-  value and its 6-bit pattern live.
+  `twist_api.js` `setGainSel`. Defaults are zeroed per user request: `1px = 0`, `2px = 0`
+  (previous production trim was `1px = 37 (0b100101)` ≈ 219, `2px = 9 (0b001001)`).
+  The hint text shows the current value and its 6-bit pattern live.
+  - **Hardware write (SCPI only)** — `setGainSel` is the local table; the field below it,
+    `Device confirmed: …`, is a readback of register `0x00` bits `[5:0]`/`[11:6]` via
+    `MLX90396_API.setGain`/`readGain` (unlock `0x43=0x9952, 0x44=0x84DE`, field write,
+    readback verify). Editing the field is debounced (~300 ms) and writes in real time;
+    switching the mode selector restores that mode's default (`1px → 0`, `2px → 0`) on the
+    chip. Without an SCPI device the value stays local and the readback shows `not read`.
 - **Calibration constants** `k1, k2, o11, o12, o21, o22` — edited live; every change
   re-renders the readouts immediately. They feed the Desmos cross-axis model:
 
@@ -195,11 +209,16 @@ Per loop iteration (~50 ms):
    (`x2,y2,z2,x3,y3,z3`).
 3. Averages of the four pixels become `avgX, avgY, avgZ`.
 4. `angleDeg = atan2(-avgY, avgX)` (sign convention tuned for the demo orientation).
-5. Position is derived from **gradients** with crosstalk removal:
+5. `sm(0x000FC)` + 2 ms settle → `rm(false, 0x000FC)` reads the six differential
+   channels (X02 … Z13). They populate the **Diagnostics** tab only; the thumbstick
+   knob no longer consumes them (see 7).
+6. Magnet disk position is derived from **gradients** with crosstalk removal:
    `rawGradX = ((x1+x2) − (x0+x3))/2`, `rawGradY = ((y0+y1) − (y3+y2))/2`,
    `cleanGradX = rawGradX − avgX·K_ROT_X`, `cleanGradY = rawGradY − avgY·K_ROT_Y`
    (`K_ROT = 0.10`), finishing with `mm = cleanGrad · SCALE` (`SCALE = 0.02`).
-6. All four pixels are passed to `updateTwistUI` for the Twist panel.
+7. The thumbstick knob reads the 4-pixel absolute average only:
+   `joyX = avgX / 20`, `joyY = avgY / 20` (gradient/field source toggle removed).
+8. All four pixels are passed to `updateTwistUI` for the Twist panel.
 
 ### Arduino path (`arduino`)
 The 15-field frame is parsed by `Arduino_API.parseLine`:
@@ -253,7 +272,8 @@ Both remain functional if a future tab navigator is added; they are simply not r
 |---|---|
 | `index.html` | Structure, inline app CSS, SVG grid assets, modal, sub-views. |
 | `app.js` | Controller: serial manager, SCPI wait/route, demo loop, all three views' renderers, tab routing, modal logic. |
-| `twist_api.js` | Single source of truth for Twist math: 1px/2px `atan2`, Desmos calibration, GAINSEL table. |
+| `twist_api.js` | Twist-specific layer: 1px/2px raw `atan2`, signal → formula mapping, GAINSEL table; delegates the Desmos calibration to `../angle_calib.js`. |
+| `../angle_calib.js` | Shared α/β calibration engine (Desmos model). One source of truth, also used by the Voxdale page. |
 | `mlx_api.js` | `MLX90396_API`: SPI command builder, CRC-8 (poly 0x2F) verify, register read/write, measurement mask handling. |
 | `arduino_api.js` | `Arduino_API`: 15-/6-field frame parser, latest-sample store. |
 | `sfi_demo.js` | Standalone SFI dome visual + `updateSfiDomeKinematics` (fed raw X/Y/Z, normalized to ±1). |

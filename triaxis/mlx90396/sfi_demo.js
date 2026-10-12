@@ -280,7 +280,7 @@ function animate() {
     // Magnetic Math
     let trueBx = joyX * 18.0;
     let trueBy = joyY * 18.0;
-    let trueBz = 22.0 + joyZ * 10.0;
+    let trueBz =  22.0 + joyZ * 10.0;
 
     let pSignals = [
       { bx: trueBx + trueBy * 0.2, by: trueBy - 5.0, bz: trueBz },
