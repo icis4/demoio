@@ -576,17 +576,17 @@ async function runJoystickDemo() {
           let hasLiveSample = false;
 
           if (currentDriverType === 'scpi') {
-            await activeDevice.sm(0xFC000); 
-            await new Promise(r => setTimeout(r, 2)); 
-            const res01 = await activeDevice.rm(false, 0xFC000); 
+            await activeDevice.sm(0xFC000);
+            await activeDevice.awaitReady();
+            const res01 = await activeDevice.rm(false, 0xFC000);
             
-            await activeDevice.sm(0x03F00); 
-            await new Promise(r => setTimeout(r, 2)); 
-            const res23 = await activeDevice.rm(false, 0x03F00); 
+            await activeDevice.sm(0x03F00);
+            await activeDevice.awaitReady();
+            const res23 = await activeDevice.rm(false, 0x03F00);
 
             // Request the dedicated 2px channels: X02, Z02, Y13 and Z13.
             await activeDevice.sm(0x000AC);
-            await new Promise(r => setTimeout(r, 2));
+            await activeDevice.awaitReady();
             const resDiff = await activeDevice.rm(false, 0x000AC);
 
             if (!res01.error && !res23.error && !resDiff.error) {

@@ -906,7 +906,7 @@ export function initSfiDemo() {
             : null);
 
         drawRadar(radarCtxStd, displayStdBx, displayStdBy, radarTargetStd, '#ef4444', 'LEGACY 3D HALL', 28.0);
-        drawAngleRadar(radarCtxMlx, dispAlpha, dispBeta, radarTargetMlx, '#10b981', 'MLX90396 SFI · α×β');
+        drawAngleRadar(radarCtxMlx, dispAlpha, dispBeta, radarTargetMlx, '#10b981');
       }
     } else if (activeTab === 'tab-idle' && mainSceneObj) {
       controls.update();
@@ -1055,7 +1055,7 @@ function drawRadar(ctx, curX, curY, target, themeColor, label, maxScale = 28.0) 
 }
 
 // The frame centre is α/β = 90°; a 90° change reaches the radar rim.
-function drawAngleRadar(ctx, alphaDeg, betaDeg, target, themeColor, label) {
+function drawAngleRadar(ctx, alphaDeg, betaDeg, target, themeColor) {
   if (!ctx || !ctx.canvas) return;
   const w = ctx.canvas.width;
   const h = ctx.canvas.height;
@@ -1135,11 +1135,6 @@ function drawAngleRadar(ctx, alphaDeg, betaDeg, target, themeColor, label) {
     ctx.fill();
     ctx.shadowBlur = 0;
   }
-
-  ctx.fillStyle = themeColor;
-  ctx.font = '10px monospace';
-  ctx.textAlign = 'left';
-  ctx.fillText(label, 6, 12);
 }
 
 // Shared floor height for the 3D field plots: the grid, the axis triad and the

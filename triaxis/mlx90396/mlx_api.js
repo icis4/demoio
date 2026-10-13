@@ -15,6 +15,10 @@ export class MLX90396_API {
       SWOC: 0x20,     // Start WOC
       SM: 0x30,       // Start Single Measurement
       RM_NO_TEMP: 0x40, // Read Measurement (No Temp)
+      // Datasheet table 27 encodes the temperature request at bit 3
+      // (0b0100 T000 = 0x48), but the hardware-verified reference implementation
+      // drives bit 0 (0x41) and that is what works on the bench. Only 0x41 is
+      // confirmed here - verify on the part before relying on temperature.
       RM_TEMP: 0x41   // Read Measurement (With Temp)
   };
 
@@ -97,9 +101,9 @@ export class MLX90396_API {
 
   _checkMaskLimit(data_mask) {
       // The part measures at most 6 channels per SM/SB/SWOC/RM, and MI6 is the
-      // warning flag for over-asking. Only bits 2..21 select measurement
-      // channels, so reserved bit 0 and the supply bit are excluded from the
-      // budget check instead of triggering a refusal.
+      // warning flag for over-asking. The mask is 20 bits (0..19); only bits
+      // 2..19 select measurement channels, so reserved bit 0 and the supply bit
+      // (bit 1) are excluded from the budget check instead of refusing.
       let count = 0;
       let temp_mask = data_mask & 0xFFFFFC;
       while (temp_mask) {
@@ -250,9 +254,15 @@ export class MLX90396_API {
   async rmStatus() {
       const mosi = [MLX90396_API.Mlx90396Command.RM_NO_TEMP, 0];
       mosi[1] = this._crc_2f(mosi.slice(0, 1));
-      const miso = await this._send_spi(mosi, 2);
-      if (!miso || miso.length < 2) return { ok: false, status: 0 };
-      return { ok: this._verify_crc(miso.slice(0, 1), miso[1]), status: miso[0] };
+      // Read the status byte only. The RM reply is status, then the selected
+      // channel words, then ONE CRC over the whole frame - so the byte after the
+      // status is DATA, not a CRC. Verifying against it always failed, which
+      // stopped awaitReady() from ever observing DRDY and made every poll burn
+      // its full deadline. A lone status byte carries no CRC of its own; the
+      // reference page polls it exactly this way (exchange(1, [CMD_RM])).
+      const miso = await this._send_spi(mosi, 1);
+      if (!miso || miso.length < 1) return { ok: false, status: 0 };
+      return { ok: true, status: miso[0] };
   }
 
   // Wait for conversion-complete after SM: polls the status byte about every
