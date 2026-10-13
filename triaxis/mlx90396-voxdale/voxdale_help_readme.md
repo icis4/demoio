@@ -22,7 +22,7 @@ These sit in the controls bar below the top bar, separate from **Connect USB** a
 
 - **pulse (seconds)** — Pulse width for the coil injection, 0.5–60 s, default 5. The coil is a *timed pulse, never a latch*: clicking **Stray Field Coil** energises it and counts the dwell down to 0, then releases the pin. Clicking again while a pulse is running aborts it early instead of queueing a second one.
 
-- **Gain 1px: 1x (72)** — Writes `GAINSEL_1PX` to the chip (SCPI only): toggles between gain 9 (→ ~72, "1x") and gain 37 (→ ~219, "3x"). The gain literally re-ranges the chip's internal amplifier; the number in parentheses is the resulting full-scale count for the standard Bx channel.
+- **Gain 1px preset** (in the Calibration Tuning panel) — Writes `GAINSEL_1PX` to the chip (SCPI only) and offers just two presets: **1x** (gain 9 → ~72) and **3x** (gain 37 → ~219). The gain literally re-ranges the chip's internal amplifier; the number in parentheses is the resulting full-scale count for the standard Bx channel.
 
 - **Clear Trajectories** — Clears the plotted 3D field traces (streaming continues).
 
@@ -34,7 +34,7 @@ These sit in the controls bar below the top bar, separate from **Connect USB** a
 
 - **Live Telemetry & Battle Matrix** — Shows signal meters, magnitude gauges, the two 3D field plots (legacy mT and differential mT/mm, each with magnet head + trace), and the two radar plots. Each radar carries a field-strength readout (|B| for standard 3D Hall, |∇B| for differential), which flags **weak** or **no magnet** below 8/2 mT (standard) and 3/1 mT/mm (differential), plus α/β. Differential angles default to the reviewed normal formula `ATAN2(X02, Z02)` / `ATAN2(Y13, Z13)`; select Enhanced in Calibration Tuning to apply the optional cross-axis formula. The selected formula feeds the differential readout, radar, and live gimbal.
 
-- **Idle / Auto-Pattern & Dome Kinematics** — The CAD GLB dome scene. In SCPI mode the gimbal follows the differential X02/Z02 and Y13/Z13 angles, not the absolute-field X/Y average. **Zero Position** captures current differential α/β as neutral; Tilt X/Y show commanded movement relative to this reference (bounded to ±90°). The magnet holder pivots around the assembly coordinate-zero at a fixed radius. Drag the knob to inspect it and scroll to zoom. Camera pan/rotate is disabled ("Fixed XYZ view"). **Press** reads **PUSHED** when `sqrt(Z02² + Z13²)` reaches ~20 mT/mm.
+- **Idle / Auto-Pattern & Dome Kinematics** — The CAD GLB dome scene. In SCPI mode the gimbal follows the differential X02/Z02 and Y13/Z13 angles, not the absolute-field X/Y average. **Zero Position** captures current differential α/β as neutral; Tilt X/Y show commanded movement relative to this reference (bounded to ±90°). The stick gimbals about the middle of the sensor board (the blue EVB90396 PCB under the magnet), so it leans over the chip rather than swinging around the ball joint. Drag the knob to inspect it and scroll to zoom. Camera pan/rotate is disabled ("Fixed XYZ view"). **Press** reads **PUSHED** when `sqrt(Z02² + Z13²)` reaches ~20 mT/mm.
 
 - **Sensor Diagnostics** — Mirrors the MLX90396 thumbstick diagnostics: a Frame Health card (source, decoded status byte, per-transfer CRC, averaged loop period), raw signed 12-bit LSB tables for the twelve absolute pixels and the four 2px gradient channels (X02, Z02, Y13, Z13, mask `0x000AC`), and a Dome Output card (tilt X/Y and press state). Frame-level cards populate while the SCPI stream runs; in simulation they stay at `--`.
 
@@ -42,7 +42,7 @@ These sit in the controls bar below the top bar, separate from **Connect USB** a
 
 Not a tab — a drawer toggled by the **Calibration Tuning** button, which sits in the controls bar but renders inside the "Live Telemetry & Battle Matrix" section.
 
-- **GAINSEL (electrical gain)** — Same control as the Thumbstick page: 0–63 numeric field. The hint shows the 6-bit value (starts at 0 = `0b000000`). Over SCPI the value is written to `GAINSEL_1PX` (reg 0x00 bits [5:0]) with the unlock sequence + readback verify, then confirmed in the **Device confirmed** line; without hardware it stays local ("Device: not read"). Typing applies instantly with a 300 ms debounce; pressing Enter writes immediately. The **Gain 1px** button in the controls bar toggles 9 ↔ 37 and stays in sync with this field.
+- **GAINSEL (electrical gain)** — Same control as the Thumbstick page: two presets only, **1x** (gain 9) and **3x** (gain 37), no free numeric entry. The hint shows the selected 6-bit value (e.g. `0b001001`). Over SCPI the value is written to `GAINSEL_1PX` (reg 0x00 bits [5:0]) with the unlock sequence + readback verify, then confirmed in the **Device confirmed** line; without hardware it stays local ("Device: not read"). The control lives in this Calibration Tuning panel next to the k/o constants.
 
 - **Reset Defaults** — Restores K-factors to 1.0 and orthogonality to 0.0.
 

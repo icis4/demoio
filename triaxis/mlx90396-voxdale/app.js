@@ -740,31 +740,7 @@ export async function apply1PxGainBoost(targetGain = 37, persist = false) {
 // Global hook for developer console or button triggers
 window.apply1PxGainBoost = apply1PxGainBoost;
 
-// --- 1. BAA ELECTRICAL GAIN TOGGLE (9 <-> 37) ---
-const btnGainToggle = document.getElementById('btn-gain-toggle');
-let isHighGain = false;
-
-btnGainToggle?.addEventListener('click', async () => {
-  if (!isConnected || currentDriverType !== 'scpi') {
-    appendLog('[GAIN ERROR] Connect hardware via SCPI first to configure registers.\n', 'log-badprompt');
-    return;
-  }
-
-  btnGainToggle.disabled = true;
-  const targetGain = isHighGain ? 9 : 37;
-
-  appendLog(`[BAA GAIN] Sending unlock sequence & writing GAINSEL_1PX = ${targetGain}...\n`, 'log-okprompt');
-  const success = await apply1PxGainBoost(targetGain, false);
-
-  if (success) {
-    isHighGain = !isHighGain;
-    inVoxGain.value = targetGain;
-    syncVoxGainField();
-  }
-  btnGainToggle.disabled = false;
-});
-
-// --- 2. CALIBRATION PANEL & LIVE TUNING ---
+// --- 1. CALIBRATION PANEL & LIVE TUNING ---
 const btnCalibToggle = document.getElementById('btn-calib-toggle');
 const panelCalibration = document.getElementById('panel-calibration');
 const btnCalibReset = document.getElementById('btn-calib-reset');
@@ -814,39 +790,30 @@ btnCalibReset?.addEventListener('click', () => {
   appendLog('[CALIBRATION] Reset parameters to default (K=1.0, Ortho=0.0).\n', 'log-okprompt');
 });
 
-// --- 3. GAINSEL FIELD (thumbstick-style, 1px) ---
-const inVoxGain = document.getElementById('in-vox-gain');
+// --- 2. GAINSEL PRESET (1x / 3x) ---
+// Two factory trims only; no free numeric entry. The control lives in the
+// Calibration Tuning drawer alongside the k/o constants.
+const VOX_GAIN_PRESETS = { 9: '1x', 37: '3x' };
+const VOX_GAIN_COUNTS = { 9: '~72', 37: '~219' };
+const voxGainSeg = document.getElementById('vox-gain-seg');
 const voxGainHint = document.getElementById('vox-gain-hint');
 const voxGainReadback = document.getElementById('vox-gain-readback');
-let gainWriteTimer = null;
+let voxGain = 9;
 
-function syncVoxGainToggle() {
-  const g = Math.min(63, Math.max(0, parseInt(inVoxGain?.value, 10) || 0));
-  if (g === 37) {
-    isHighGain = true;
-    btnGainToggle.textContent = 'Gain 1px: 3x (219)';
-    btnGainToggle.className = 'ds-button ds-button--warning ds-button--sm';
-  } else if (g === 9) {
-    isHighGain = false;
-    btnGainToggle.textContent = 'Gain 1px: 1x (72)';
-    btnGainToggle.className = 'ds-button ds-button--secondary ds-button--sm';
-  } else {
-    btnGainToggle.textContent = `Gain 1px: ${g}`;
-    btnGainToggle.className = 'ds-button ds-button--secondary ds-button--sm';
+function syncVoxGainControl() {
+  if (voxGainSeg) {
+    voxGainSeg.querySelectorAll('button[data-gain]').forEach((btn) => {
+      const on = parseInt(btn.dataset.gain, 10) === voxGain;
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.className = on
+        ? 'ds-button ds-button--primary ds-button--sm'
+        : 'ds-button ds-button--secondary ds-button--sm';
+    });
   }
-}
-
-function syncVoxGainField() {
-  if (!inVoxGain) return;
-  const g = Math.min(63, Math.max(0, parseInt(inVoxGain.value, 10) || 0));
-  inVoxGain.value = g;
   if (voxGainHint) {
-    let expected = '';
-    if (g === 37) expected = ' → ~219';
-    else if (g === 9) expected = ' → ~72';
-    voxGainHint.textContent = `1px gain = ${g} (0b${g.toString(2).padStart(6, '0')})${expected}`;
+    const counts = VOX_GAIN_COUNTS[voxGain] ? ` → ${VOX_GAIN_COUNTS[voxGain]}` : '';
+    voxGainHint.textContent = `1px gain = ${voxGain} (0b${voxGain.toString(2).padStart(6, '0')})${counts}`;
   }
-  syncVoxGainToggle();
 }
 
 function setVoxGainReadback(value) {
@@ -861,9 +828,10 @@ function setVoxGainReadback(value) {
 }
 
 async function setVoxGain(gainVal, persist = false) {
-  const g = Math.min(63, Math.max(0, parseInt(gainVal, 10) || 0));
-  inVoxGain.value = g;
-  syncVoxGainField();
+  const requested = parseInt(gainVal, 10);
+  const g = Object.prototype.hasOwnProperty.call(VOX_GAIN_PRESETS, requested) ? requested : voxGain;
+  voxGain = g;
+  syncVoxGainControl();
 
   if (!isConnected || currentDriverType !== 'scpi') {
     setVoxGainReadback(null);
@@ -892,22 +860,13 @@ async function setVoxGain(gainVal, persist = false) {
 
 window.setVoxGain = setVoxGain;
 
-inVoxGain?.addEventListener('input', () => {
-  const g = Math.min(63, Math.max(0, parseInt(inVoxGain.value, 10) || 0));
-  syncVoxGainField();
-  clearTimeout(gainWriteTimer);
-  gainWriteTimer = setTimeout(() => setVoxGain(g), 300);
+voxGainSeg?.querySelectorAll('button[data-gain]').forEach((btn) => {
+  btn.addEventListener('click', () => setVoxGain(parseInt(btn.dataset.gain, 10)));
 });
 
-inVoxGain?.addEventListener('change', () => {
-  clearTimeout(gainWriteTimer);
-  const g = Math.min(63, Math.max(0, parseInt(inVoxGain.value, 10) || 0));
-  setVoxGain(g);
-});
+syncVoxGainControl();
 
-syncVoxGainField();
-
-// --- 4. SENSOR DIAGNOSTICS (thumbstick-style frame health + raw LSB) ---
+// --- 3. SENSOR DIAGNOSTICS (thumbstick-style frame health + raw LSB) ---
 // Mirrors the MLX90396 thumbstick diagnostics: status byte decode, per-transfer
 // CRC line, raw 12-bit pixels, the four 2px gradient channels and the loop period.
 const DIAG_STATUS_FN = { 3: 'Single', 2: 'Burst', 1: 'WOC', 0: 'Exit / Memory' };

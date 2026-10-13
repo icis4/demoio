@@ -115,18 +115,16 @@ export function deriveTwistInputsFromPoints(points) {
 }
 
 // --- Gain Configuration (MLX90396 GAINSEL register) ---
-// Defaults are zeroed per user request so the page opens with the electrical
-// gain at minimum. NOTE: switching 1px<->2px mode writes the table value below
-// to the chip, and typing in the gain field writes it (debounced); starting
-// the live demo re-reads the chip and adopts whatever it actually holds. If
-// live readings look dead after a mode switch, type the trimmed gain back in
-// (the previous production trim was 37/0b100101 for 1px, 9/0b001001 for 2px).
+// The UI exposes just the two factory presets (1x = 9, 3x = 37); this table
+// holds the selection per mode. Switching 1px<->2px re-syncs the display and
+// starting the live demo re-reads the chip and adopts whatever it actually
+// holds. NOTE: the mode switch does not push this table value to the chip.
 // TODO(hw-trim): during the physical Arduino hardware validation session,
-// adjust this literal to the final trimmed value and confirm bits against
-// the GAINSEL register table in the MLX90396 datasheet before flashing.
+// confirm the preset bits against the GAINSEL register table in the MLX90396
+// datasheet before flashing.
 export const GAINSEL = {
-  '1px': 0b000000, // 0 — user-requested zero start (was 37, ~219)
-  '2px': 0b000000, // 0 — user-requested zero start (was 9, ~72)
+  '1px': 0b001001, // 9 — 1x preset (~72)
+  '2px': 0b001001, // 9 — 1x preset (~72)
 };
 
 export function setGainSel(mode, value) {

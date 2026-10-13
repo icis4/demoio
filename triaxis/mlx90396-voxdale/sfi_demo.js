@@ -161,10 +161,6 @@ let mlxPlot = null;
 let joyAssemblyRef = null;
 let joyRestPosition = new THREE.Vector3();
 let joyPivotPoint = new THREE.Vector3();
-let joyTipMarker = null;
-let joyTrailMesh = null;
-let joyTrailHistory = [];
-const tmpVec = new THREE.Vector3();
 
 let radarCanvasStd = null, radarCtxStd = null;
 let radarCanvasMlx = null, radarCtxMlx = null;
@@ -465,7 +461,7 @@ export function initSfiDemo() {
   const hemiLight = new THREE.HemisphereLight(0xb0d0ff, 0x334455, 0.6);
   scene.add(hemiLight);
 
-  const MODEL_URL = 'resources/CAD-MLX90396_Demo.glb';
+  const MODEL_URL = 'resources/1317-500-JoystickDemonstratorMLX90396.glb';
   const DOME_WORLD_RADIUS = 5.2;
 
   const joyAssembly = new THREE.Group();
@@ -521,33 +517,48 @@ export function initSfiDemo() {
 
       // Reparent the moving joystick parts (as whole top-level nodes) into the
       // animated assembly group. Moving whole subtrees keeps every child's
-      // transform (e.g. the magnet's meshes under its group) intact. Static by
-      // construction: dome, base, PCB, compass, coil, unnamed nodes, or
-      // instanced duplicates (mesh_9_instance_1 = the mirrored coil).
+      // transform (e.g. the magnet under the assembly node) intact. Static by
+      // construction: dome, base, PCB, connector, compass/coil, and the
+      // Melexis IO / EVB boards. Root group = 1317-500-JoystickDemonstrator.
+      // NOTE: three.js sanitizes glTF names (spaces -> '_', '.'/':'/'/'/'['/']'
+      // stripped), so these must be the sanitized names.
       const STATIC_PART_NAMES = new Set([
-        'DomeAssy',
-        'BottomBodyCoilTest2-1',
-        'MelexisPCB-1',
-        'TestCompass2-1',
-        'CoilRoundLarge-1',
-        'current camera'
+        '1317-DomeAssy',
+        '1317-TestCompass2-1',
+        '1317-Coils45mm-1',
+        '1317-BaseBody-2',
+        '1317-BodyCap-1',
+        '1317-PCBholder-1',
+        '1317-BottomBase-1',
+        '5991_HUSB238_USBC-1',
+        '1317-PcbStop-1',
+        'Melexisio_V12(A)-1',
+        'EVB90396(A)_(1)-1',
+        'current_camera'
       ]);
       const isStaticName = (name) =>
         STATIC_PART_NAMES.has(name) || name === '' || name.includes('_instance_');
 
-      const partsContainer = model.getObjectByName('Snowglobe') || model;
+      const partsContainer = model.getObjectByName('1317-500-JoystickDemonstrator') || model;
       const movingParts = [];
       Array.from(partsContainer.children).forEach((child) => {
         if (!isStaticName(child.name)) movingParts.push(child);
       });
-      movingParts.forEach((node) => joyAssembly.add(node));
+      movingParts.forEach((node) => {
+        // The CAD assembly ships with a rest lean: 1317-501-JoystickAssembly
+        // carries a ~12° rotation about Z, which tips the whole stick to one
+        // side even at neutral. Cancel it so the shaft stands vertical; the
+        // gimbal then adds the live tilt (joyAssembly.quaternion) on top.
+        node.quaternion.identity();
+        joyAssembly.add(node);
+      });
       console.log('[CAD GLB] moving parts:', movingParts.map((n) => n.name));
 
       scene.add(model);
       if (joyAssembly.children.length > 0) scene.add(joyAssembly);
 
       // Normalize the CAD dome radius to the world scale used by dome kinematics.
-      const domeNode = model.getObjectByName('DomeAssy') || model.getObjectByName('Dome-1') || model;
+      const domeNode = model.getObjectByName('1317-DomeAssy') || model.getObjectByName('1317-Dome-1') || model;
       const domeBox = new THREE.Box3().setFromObject(domeNode);
       const domeHeight = Math.max(0.0001, domeBox.max.y - domeBox.min.y);
       const scale = DOME_WORLD_RADIUS / domeHeight;
@@ -560,8 +571,8 @@ export function initSfiDemo() {
       model.position.x = -center.x;
       model.position.z = -center.z;
       if (joyAssembly.children.length > 0) {
-        // Keep the assembly at its CAD rest position so the magnet keeps the
-        // ~11 mm CAD airgap above the sensor when untilted.
+        // Keep the assembly at its CAD rest position so the magnet keeps its
+        // ~6 mm CAD airgap above the sensor when untilted.
         joyAssembly.position.x = -center.x;
         joyAssembly.position.z = -center.z;
         joyRestPosition.copy(joyAssembly.position);
@@ -578,67 +589,29 @@ export function initSfiDemo() {
 
       if (loadingHint) loadingHint.textContent = 'Fixed XYZ view | Scroll: Zoom';
 
-      // PDF review: make it a proper 3D gimbal joystick - pivot at the
-      // assembly coordinate-zero (the housing/sensor base, i.e. the very bottom
-      // center of the model) so the magnet holder sweeps a fixed-radius arc
-      // about that point with its axis always aimed at the zero position.
-      const pivotBox = new THREE.Box3().setFromObject(joyAssembly);
+      // Gimbal pivot at the middle of the sensor board — the blue EVB90396 PCB
+      // sitting under the magnet. It is a static part, so it is read from the
+      // model, not the moving assembly. The stick leans about the board centre
+      // instead of swinging around the ball joint.
+      const boardNode = model.getObjectByName('EVB90396(A)_(1)-1');
+      const jointNode = joyAssembly.getObjectByName('1317-JoystickInnerPart-1');
+      joyAssembly.updateMatrixWorld(true);
+      model.updateMatrixWorld(true);
+      const pivotBox = new THREE.Box3().setFromObject(boardNode || jointNode || joyAssembly);
       joyPivotPoint.set(
         (pivotBox.min.x + pivotBox.max.x) / 2,
-        pivotBox.min.y,
+        (pivotBox.min.y + pivotBox.max.y) / 2,
         (pivotBox.min.z + pivotBox.max.z) / 2
       );
 
-      const knob = joyAssembly.getObjectByName('JoystickButton-1') || joyAssembly;
+      const knob = joyAssembly.getObjectByName('1317-JoystickButton-1') || joyAssembly;
       setupMouseInteractions(knob);
 
-      // Bright marker on the lower tip of the M3 rod (the magnet holder) that
-      // tracks the stick; leaves a short fading trail behind it. Values are in
-      // CAD units because the marker is a child of the scaled assembly group.
-      const markerRadius = 0.0035;
-      joyTipMarker = new THREE.Mesh(
-        new THREE.SphereGeometry(markerRadius, 16, 16),
-        new THREE.MeshStandardMaterial({
-          color: 0xff3b30,
-          emissive: 0xff2200,
-          emissiveIntensity: 2.5,
-          roughness: 0.3,
-          metalness: 0.1
-        })
-      );
-      const magnetNode = joyAssembly.getObjectByName('mesh_7') ||
-        joyAssembly.getObjectByName('mesh_7_1') || null;
-      const rodNode = joyAssembly.getObjectByName('M3_rod-1') || joyAssembly;
-      if (magnetNode) {
-        joyTipMarker.position.copy(magnetNode.position);
-        joyTipMarker.position.y = magnetNode.position.y + 0.0004;
-      } else {
-        joyTipMarker.position.set(0, 0.0252, 0);
-      }
-      joyAssembly.add(joyTipMarker);
-
-      joyTrailHistory = [];
-      const TRAIL_POINTS = 14;
-      joyTrailMesh = new THREE.Group();
-      for (let i = 0; i < TRAIL_POINTS; i++) {
-        const dot = new THREE.Mesh(
-          new THREE.SphereGeometry(markerRadius * scale * (1 - i * 0.045), 8, 8),
-          new THREE.MeshBasicMaterial({
-            color: 0xff6030,
-            transparent: true,
-            opacity: Math.max(0, 0.55 - i * 0.042),
-            depthWrite: false
-          })
-        );
-        dot.userData.index = i;
-        joyTrailMesh.add(dot);
-      }
-      joyTrailMesh.visible = true;
-      scene.add(joyTrailMesh);
+      // The CAD magnet at the M3-rod tip is the marker now — no extra dot/trail.
     } catch (err) {
       console.error('[CAD GLB LOAD ERROR]', err);
       const hint = loadingHint || (() => { const h = document.createElement('div'); h.className = 'hint-overlay'; container.appendChild(h); return h; })();
-      hint.textContent = '3D model failed to load (network or CAD-MLX90396_Demo.glb missing). Reload to retry.';
+      hint.textContent = `3D model failed to load (network or ${MODEL_URL} missing). Reload to retry.`;
     }
   })();
 
@@ -708,19 +681,6 @@ export function initSfiDemo() {
       // Z press: the M3 rod (magnet holder) slides down its rotated shaft axis,
       // pushing the magnet toward the sensor (smaller airgap -> stronger Bz).
       joyAssemblyRef.position.add(new THREE.Vector3(0, -joyZ * 0.3, 0).applyQuaternion(q));
-    }
-
-    // Update the marker trail: record the marker's world position, keep a short
-    // history, and lay trail dots along it (fading and shrinking with age).
-    if (joyTipMarker && joyTrailMesh) {
-      joyTipMarker.getWorldPosition(tmpVec);
-      joyTrailHistory.unshift(tmpVec.clone());
-      if (joyTrailHistory.length > 32) joyTrailHistory.length = 32;
-      joyTrailMesh.children.forEach((dot) => {
-        const idx = dot.userData.index;
-        const histIdx = Math.min(joyTrailHistory.length - 1, idx + 1);
-        dot.position.copy(joyTrailHistory[histIdx] || tmpVec);
-      });
     }
 
     // Nominal magnetic field components
@@ -1146,6 +1106,117 @@ const PLOT_HEAD_HOVER = 0.4;
 // the grid, mirroring how the radars clamp to their rim.
 const PLOT_MAX_R = 3.0;
 
+// --- Floating XYZ orientation badge -----------------------------------------
+// A tiny self-contained scene drawn as an overlay in each plot's top-left
+// corner. Its camera is slaved to the main plot camera, so the triad spins with
+// the view exactly like a CAD "view cube". No backdrop — the arrows float.
+// Sensor frame, not the raw three.js world frame: the grid floor is the chip's
+// XY plane (X right, Y depth = world Z) and Z points up out of the board — the
+// same convention the radars and the datasheet use.
+const GIZMO_AXES = [
+  { dir: [1, 0, 0], color: 0xef4444, label: 'X' }, // floor, sensor +X
+  { dir: [0, 0, 1], color: 0x22c55e, label: 'Y' }, // floor, sensor +Y
+  { dir: [0, 1, 0], color: 0x3b82f6, label: 'Z' }  // up, normal to the board
+];
+
+function makeGizmoArrow(dirArr, color, length = 1.0, shaftR = 0.052, headR = 0.15, headLen = 0.32) {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true });
+  const shaftLen = length - headLen;
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(shaftR, shaftR, shaftLen, 16), mat);
+  shaft.position.y = shaftLen / 2;
+  group.add(shaft);
+  const head = new THREE.Mesh(new THREE.ConeGeometry(headR, headLen, 20), mat);
+  head.position.y = shaftLen + headLen / 2;
+  group.add(head);
+  const dir = new THREE.Vector3(dirArr[0], dirArr[1], dirArr[2]).normalize();
+  group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  return group;
+}
+
+function makeGizmoLabel(text, color, pos) {
+  const S = 64;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = S;
+  const ctx = cv.getContext('2d');
+  ctx.font = 'bold 46px ui-monospace, SFMono-Regular, Consolas, monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#' + color.toString(16).padStart(6, '0');
+  ctx.fillText(text, S / 2, S / 2 + 3);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.minFilter = THREE.LinearFilter;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+  sprite.scale.set(0.4, 0.4, 1);
+  sprite.position.set(pos[0], pos[1], pos[2]);
+  sprite.renderOrder = 30;
+  return sprite;
+}
+
+// Built once per plot. Orthographic so the triad never distorts with depth.
+// No backdrop: the arrows and labels just float over the plot.
+function buildAxisGizmo() {
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-1.5, 1.5, 1.5, -1.5, 0.1, 100);
+
+  scene.add(new THREE.Mesh(
+    new THREE.SphereGeometry(0.075, 12, 12),
+    new THREE.MeshBasicMaterial({ color: 0xcbd5e1, transparent: true })
+  ));
+
+  GIZMO_AXES.forEach((a) => {
+    scene.add(makeGizmoArrow(a.dir, a.color));
+    scene.add(makeGizmoLabel(a.label, a.color, a.dir.map((v) => v * 1.24)));
+  });
+
+  return { scene, camera, dir: new THREE.Vector3(1, 1, 1) };
+}
+
+// Draw the badge into the plot renderer's top-left corner. The scissor test
+// confines the mini-pass; only the depth buffer is cleared inside the badge, so
+// the plot behind it stays visible.
+function renderAxisGizmo(plot, w, h) {
+  const gizmo = plot.gizmo;
+  if (!gizmo) return;
+  const renderer = plot.renderer;
+  const size = Math.round(Math.min(Math.max(Math.min(w, h) * 0.26, 78), 130));
+  const margin = Math.round(size * 0.12);
+
+  // Slave the badge camera to the main view direction.
+  const dir = gizmo.dir;
+  dir.copy(plot.camera.position).sub(plot.controls.target);
+  if (dir.lengthSq() === 0) dir.set(1, 1, 1);
+  dir.normalize();
+  gizmo.camera.position.copy(dir).multiplyScalar(5);
+  gizmo.camera.up.copy(plot.camera.up);
+  gizmo.camera.lookAt(0, 0, 0);
+  gizmo.camera.updateMatrixWorld();
+
+  // WebGL viewport origin is bottom-left, so top-left is y = h - size.
+  const x = margin;
+  const y = h - size - margin;
+  renderer.setScissorTest(true);
+  renderer.setViewport(x, y, size, size);
+  renderer.setScissor(x, y, size, size);
+  renderer.clearDepth();
+  renderer.render(gizmo.scene, gizmo.camera);
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, w, h);
+}
+
+function renderPlot(plot) {
+  plot.controls.update();
+
+  const renderer = plot.renderer;
+  const w = plot.w || plot.el.clientWidth || 320;
+  const h = plot.h || plot.el.clientHeight || 260;
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, w, h);
+  renderer.clear();
+  renderer.render(plot.scene, plot.camera);
+  renderAxisGizmo(plot, w, h);
+}
+
 function create3DFieldPlot(elementId, ringColor, fullScale = 28.0) {  const el = document.getElementById(elementId);
   if (!el) return null;
 
@@ -1160,6 +1231,8 @@ function create3DFieldPlot(elementId, ringColor, fullScale = 28.0) {  const el =
   const plotRenderer = new THREE.WebGLRenderer({ antialias: true });
   plotRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
   plotRenderer.setSize(w, h);
+  // renderPlot() clears and paints the badge overlay itself.
+  plotRenderer.autoClear = false;
   el.appendChild(plotRenderer.domElement);
 
   const plotControls = new THREE.OrbitControls(plotCamera, plotRenderer.domElement);
@@ -1176,19 +1249,15 @@ function create3DFieldPlot(elementId, ringColor, fullScale = 28.0) {  const el =
   dirLight.position.set(6, 12, 8);
   plotScene.add(dirLight);
 
-  // World Y is the screen vertical axis, so the default X-Z grid is the floor.
-  // PLOT_FLOOR_Y is shared with the axis triad and the magnet hover height below.
+  // Floor = the sensor XY plane (world X-Z), centred on the origin so the
+  // magnet's zero/home position lands dead centre of the grid.
   const gridHelper = new THREE.GridHelper(12, 12, 0x334155, 0x1e293b);
-  gridHelper.position.set(0, PLOT_FLOOR_Y, -1.5);
+  gridHelper.position.set(0, PLOT_FLOOR_Y, 0);
   plotScene.add(gridHelper);
 
-  // Origin Axes: one triad tucked into the floor corner, clear of the centred
-  // action, so it reads as an orientation legend instead of colliding with the
-  // magnet head and its trail. Short 2.0 legs stay inside the 12x12 floor.
-  const axisOrigin = new THREE.Vector3(-4.5, PLOT_FLOOR_Y, -6.0);
-  plotScene.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), axisOrigin, 2.0, 0xef4444));
-  plotScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), axisOrigin, 2.0, 0x10b981));
-  plotScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), axisOrigin, 2.0, 0x00d2ff));
+  // The XYZ triad is no longer pinned into the floor corner: it is built as a
+  // floating orientation badge (buildAxisGizmo) and drawn over this scene each
+  // frame in the top-left corner, spinning with the camera. See renderAxisGizmo.
 
   const maxPoints = TRACE_HISTORY_POINTS;
   const linePositions = new Float32Array(maxPoints * 3);
@@ -1225,6 +1294,9 @@ function create3DFieldPlot(elementId, ringColor, fullScale = 28.0) {  const el =
   magnetGroup.add(ringBand);
 
   plotScene.add(magnetGroup);
+  // Start parked dead centre of the grid so the model reads centred before the
+  // first packet (or whenever history is empty).
+  magnetGroup.position.set(0, PLOT_FLOOR_Y + PLOT_HEAD_HOVER, 0);
 
   return {
     scene: plotScene,
@@ -1236,6 +1308,11 @@ function create3DFieldPlot(elementId, ringColor, fullScale = 28.0) {  const el =
     headMesh: magnetGroup,
     maxPoints,
     fullScale,
+    // Floating top-left XYZ orientation badge (see renderAxisGizmo).
+    gizmo: buildAxisGizmo(),
+    // Last laid-out pixel size, kept current by resizeSfiCanvases().
+    w,
+    h,
     // Zero offset in channel units, captured by the card's Zero button.
     zero: { x: 0, y: 0 },
     el
@@ -1315,8 +1392,7 @@ function update3DPlot(plot, history, isLegacy) {
     }
   }
 
-  plot.controls.update();
-  plot.renderer.render(plot.scene, plot.camera);
+  renderPlot(plot);
 }
 
 function setBoxVal(id, value) {
@@ -1375,6 +1451,8 @@ export function resizeSfiCanvases() {
         p.camera.aspect = w / h;
         p.camera.updateProjectionMatrix();
         p.renderer.setSize(w, h);
+        p.w = w;
+        p.h = h;
       }
     }
   });

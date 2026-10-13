@@ -547,11 +547,14 @@
         <div id="twist-config-card" class="ds-card ds-card--pad-md" style="width: 100%;">
           <h3 style="margin: 0 0 12px 0; font-size: var(--font-size-md);">Gain &amp; Calibration Config</h3>
           <div style="display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start;">
-            <div class="ds-field" style="width: 220px; margin-bottom: 0;">
-              <label class="ds-field__label" for="in-twist-gain">GAINSEL (electrical gain)</label>
-              <input id="in-twist-gain" type="number" min="0" max="63" step="1" class="ds-field__input" value="0" />
+            <div class="ds-field" style="min-width: 240px; margin-bottom: 0;">
+              <span class="ds-field__label">GAINSEL (electrical gain)</span>
+              <div id="twist-gain-seg" role="group" aria-label="Electrical gain preset" style="display: flex; gap: 6px;">
+                <button type="button" class="ds-button ds-button--primary ds-button--sm" data-gain="9" aria-pressed="true">1x (gain 9)</button>
+                <button type="button" class="ds-button ds-button--secondary ds-button--sm" data-gain="37" aria-pressed="false">3x (gain 37)</button>
+              </div>
               <small id="twist-gain-hint" style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
-                1px gain = 0 (0b000000) &rarr; ~219
+                1px gain = 9 (0b001001) &rarr; ~72
               </small>
               <small id="twist-gain-readback" style="display: block; margin-top: 2px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
                 Device: not read

@@ -70,7 +70,8 @@ MLX90396-WebUI/
 ├── ../angle_calib.js # Shared Desmos calibration engine (calculate1px/2px, defaults,
 │                     # setCalibrationParams) — one source of truth, also used by the Thumbstick page
 └── resources/
-    └── background.jpg# UI background image asset
+    ├── background.jpg# UI background image asset
+    └── 1317-500-JoystickDemonstratorMLX90396.glb  # CAD joystick/dome model (Idle tab)
 ```
 Getting Started
 Prerequisites

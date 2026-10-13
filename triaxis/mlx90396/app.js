@@ -364,41 +364,30 @@ function updateMagnetUI(posX_mm, posY_mm, angleDeg) {
 
 // --- Twist Signal & Calibration UI ---
 let twistMode = '1px';
-let gainWriteTimer = null;
 
 function initTwistControls() {
   const modeSel = document.getElementById('sel-twist-mode');
-  const gainInput = document.getElementById('in-twist-gain');
+  const gainSeg = document.getElementById('twist-gain-seg');
   const unitLbl = document.getElementById('twist-unit-lbl');
   const calKeys = ['k1', 'k2', 'o11', 'o12', 'o21', 'o22'];
 
   modeSel?.addEventListener('change', async () => {
     twistMode = modeSel.value;
     if (unitLbl) unitLbl.textContent = `Units: ${twistMode === '2px' ? 'mT/mm' : 'mT'}`;
-    // The switch does NOT push the table gain to the chip: with zeroed table
-    // defaults that would collapse electrical gain on every 1px<->2px change
-    // and flatten live readings until the trim is retyped. It only re-syncs
-    // the display; readSensorGain then adopts whatever the part actually
-    // holds (no-op without an SCPI device attached).
-    syncTwistGainField(gainInput);
+    // The switch does NOT push the table gain to the chip; it only re-syncs
+    // the display. readSensorGain then adopts whatever the part actually holds
+    // (no-op without an SCPI device attached).
+    syncTwistGainSeg();
     await readSensorGain();
     updateTwistUI(latestTwistPoints);
   });
 
-  // Live gain editing: the local table updates instantly, the register write is
-  // debounced so typing through the field doesn't saturate the SPI bus.
-  gainInput?.addEventListener('input', () => {
-    const v = Math.min(63, Math.max(0, parseInt(gainInput.value, 10) || 0));
-    setGainSel(twistMode, v);
-    syncTwistGainField(gainInput);
-    clearTimeout(gainWriteTimer);
-    gainWriteTimer = setTimeout(() => setSensorGain(v), 300);
-  });
-
-  gainInput?.addEventListener('change', () => {
-    clearTimeout(gainWriteTimer);
-    const v = Math.min(63, Math.max(0, parseInt(gainInput.value, 10) || 0));
-    setSensorGain(v);
+  // Two factory presets only; clicking one writes the active mode's gain.
+  gainSeg?.querySelectorAll('button[data-gain]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const v = parseInt(btn.dataset.gain, 10);
+      if (TWIST_GAIN_PRESETS.includes(v)) setSensorGain(v);
+    });
   });
 
   calKeys.forEach(key => {
@@ -416,16 +405,30 @@ function initTwistControls() {
     }
   });
 
-  syncTwistGainField(gainInput);
+  syncTwistGainSeg();
 }
 
-function syncTwistGainField(gainInput) {
-  if (!gainInput) return;
+// Only the two factory trims are offered: 1x (gain 9 -> ~72 counts) and
+// 3x (gain 37 -> ~219 counts). No free numeric entry.
+const TWIST_GAIN_PRESETS = [9, 37];
+const TWIST_GAIN_COUNTS = { 9: '~72', 37: '~219' };
+
+function syncTwistGainSeg() {
   const g = getGainSel(twistMode);
-  gainInput.value = g;
+  const seg = document.getElementById('twist-gain-seg');
+  if (seg) {
+    seg.querySelectorAll('button[data-gain]').forEach((btn) => {
+      const on = parseInt(btn.dataset.gain, 10) === g;
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.className = on
+        ? 'ds-button ds-button--primary ds-button--sm'
+        : 'ds-button ds-button--secondary ds-button--sm';
+    });
+  }
   const hint = document.getElementById('twist-gain-hint');
   if (hint) {
-    hint.textContent = `${twistMode} gain = ${g} (0b${g.toString(2).padStart(6, '0')})`;
+    const counts = TWIST_GAIN_COUNTS[g] ? ` → ${TWIST_GAIN_COUNTS[g]}` : '';
+    hint.textContent = `${twistMode} gain = ${g} (0b${g.toString(2).padStart(6, '0')})${counts}`;
   }
 }
 
@@ -447,9 +450,10 @@ function setTwistGainReadback(value) {
 // unlock sequence and a readback verify. Without a connected SCPI device the
 // local table still updates and the readback reads "not read".
 async function setSensorGain(gainVal) {
-  const g = Math.min(63, Math.max(0, parseInt(gainVal, 10) || 0));
+  const requested = parseInt(gainVal, 10);
+  const g = TWIST_GAIN_PRESETS.includes(requested) ? requested : getGainSel(twistMode);
   setGainSel(twistMode, g);
-  syncTwistGainField(document.getElementById('in-twist-gain'));
+  syncTwistGainSeg();
 
   if (!activeDevice || currentDriverType !== 'scpi') {
     setTwistGainReadback(null);
@@ -461,7 +465,7 @@ async function setSensorGain(gainVal) {
     const res = await activeDevice.setGain(twistMode, g, false);
     if (res.ok) {
       setGainSel(twistMode, res.value);
-      syncTwistGainField(document.getElementById('in-twist-gain'));
+      syncTwistGainSeg();
       setTwistGainReadback(res.value);
       appendLog(`[GAIN] Verified ${res.value} on device.\n`, 'log-okprompt');
     } else {
@@ -488,7 +492,7 @@ async function readSensorGain() {
   setTwistGainReadback(v);
   if (v !== null && v !== getGainSel(twistMode)) {
     setGainSel(twistMode, v);
-    syncTwistGainField(document.getElementById('in-twist-gain'));
+    syncTwistGainSeg();
   }
   return v;
 }

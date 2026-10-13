@@ -67,6 +67,6 @@
 
 **Gain & Calibration Config card** *(always visible in every motion mode so GAINSEL and the k/o constants stay reachable while tuning; per reviewer slide 4 the k/o formula itself applies to the no-twist XY demo, while twist calibration is covered by Zero Position.)*
 
-- **GAINSEL field** — 0–63 electrical gain register; the hint shows the 6-bit value (starts at 0 = `0b000000`). Over SCPI the change is written to the chip (unlock + readback verify) and confirmed in the "Device confirmed" line; without hardware it stays local. Switching 1px↔2px mode restores each mode's default (0 / 0) on the device; starting the demo re-reads the chip and adopts whatever it actually holds.
+- **GAINSEL presets** — electrical gain register with just two options: **1x** (gain 9 ≈ 72 counts) and **3x** (gain 37 ≈ 219 counts); no free numeric entry. The hint shows the selected 6-bit value (e.g. `0b001001`). Over SCPI clicking a preset writes it to the chip (unlock + readback verify) and confirms it in the "Device confirmed" line; without hardware it stays local. Switching 1px↔2px mode re-syncs the display without pushing gain to the chip; starting the demo re-reads the chip and adopts whatever it actually holds.
 
 - **Calibration constants k1 k2 o11 o12 o21 o22** — edited live; every keystroke updates the calibrated readouts using the published Desmos cross-axis formula. Defaults `k1=k2=1, o=0` are an exact no-op: calibrated = raw, so nothing is "hidden". The live engine is initialised from these fields on load, so display and math always agree.

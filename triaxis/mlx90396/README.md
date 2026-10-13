@@ -162,17 +162,17 @@ Thumbstick-with-twist tab):
 
 ### Twist panel — gain & calibration config
 
-- **GAINSEL (electrical gain)** — 0–63 register value, applied per mode through
-  `twist_api.js` `setGainSel`. Defaults are zeroed per user request: `1px = 0`, `2px = 0`
-  (previous production trim was `1px = 37 (0b100101)` ≈ 219, `2px = 9 (0b001001)`).
-  The hint text shows the current value and its 6-bit pattern live.
-  - **Hardware write (SCPI only)** — `setGainSel` is the local table; the field below it,
+- **GAINSEL (electrical gain)** — Two factory presets only, applied per mode through
+  `twist_api.js` `setGainSel`: **1x** (`gain 9` ≈ 72 counts) and **3x** (`gain 37` ≈ 219).
+  No free numeric entry. There is no "0" option, so the table starts at `1px = 9`,
+  `2px = 9` (the earlier production trim was `1px = 37`, `2px = 9`); the hint text shows
+  the selected value and its 6-bit pattern live.
+  - **Hardware write (SCPI only)** — `setGainSel` is the local table; the line below it,
     `Device confirmed: …`, is a readback of register `0x00` bits `[5:0]`/`[11:6]` via
     `MLX90396_API.setGain`/`readGain` (unlock `0x43=0x9952, 0x44=0x84DE`, field write,
-    readback verify). Editing the field is debounced (~300 ms) and writes in real time.
-    Switching 1px↔2px mode does NOT push gain to the chip (with zeroed table defaults
-    that would collapse electrical gain and flatten live readings); it only re-syncs the
-    display, and starting the demo re-reads the chip and adopts what it holds.
+    readback verify). Clicking a preset writes in real time.
+    Switching 1px↔2px mode re-syncs the display but does NOT push gain to the chip; on
+    start the demo re-reads the chip and adopts what it holds.
     Without an SCPI device every value stays local and the readback shows `not read`.
 - **Calibration constants** `k1, k2, o11, o12, o21, o22` — edited live; every change
   re-renders the readouts immediately. They feed the Desmos cross-axis model:
