@@ -1,0 +1,9 @@
+{
+  "name": "triaxis-angle-calib",
+  "private": true,
+  "type": "module",
+  "description": "Marks triaxis/*.js as ES modules so `node triaxis/angle_calib.test.mjs` resolves angle_calib.js as ESM (the browser ignores this file).",
+  "scripts": {
+    "test": "node angle_calib.test.mjs"
+  }
+}
