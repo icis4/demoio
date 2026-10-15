@@ -16,6 +16,11 @@ import {
   resetCalibrationParams,
   getCalibrationParams
 } from './sfi_demo.js';
+import {
+  setSensorPixelPitchMm,
+  getSensorPixelPitchMm,
+  DEFAULT_SENSOR_PIXEL_PITCH_MM
+} from '../angle_calib.js';
 // DOM Elements
 const btnConnect = document.getElementById('btn-connect');
 const btnStartDemo = document.getElementById('btn-start-demo');
@@ -87,8 +92,16 @@ function getSpiPrefix() {
 }
 
 function appendLog(text, cls = 'log-rx') {
-  if (!text || !miniLogWindow) return;
-  
+  if (!text) return;
+
+  // Mirror every message to the browser console before the on-page log's
+  // hidden check: an error swallowed silently is worse than a noisy console.
+  const clean = String(text).replace(/\s+$/, '');
+  if (cls === 'log-badprompt') console.warn(clean);
+  else console.log(clean);
+
+  if (!miniLogWindow) return;
+
   // Stop processing debug logs if the window is hidden (Massive Lag Fix)
   if (miniLogWindow.classList.contains('hidden')) return;
 
@@ -117,16 +130,12 @@ function processRx(text) {
       if (rxBuffer.trim() !== '') {
         const line = rxBuffer.trim();
         if (currentDriverType === 'arduino' && activeDevice) {
+          // Parse only; runJoystickDemo() polls getSample() and is the single
+          // driver of the dome/UI. Pushing updateSfiDomeKinematics() here too
+          // raced the loop and used a different scaling (rawZ/1000 vs the
+          // loop's DOME_LIVE_LSB_SCALE), so the dome jittered between the two.
           const sample = activeDevice.processLine(line);
-          if (!sample.error) {
-            setSfiHardwareTracking(true);
-            updateSfiDomeKinematics(
-              sample.posX_mm / 2,
-              sample.posY_mm / 2,
-              sample.rawZ / 1000,
-              { p0Raw: { x: sample.rawX, y: sample.rawY, z: sample.rawZ }, diffRaw: { x: sample.rawX, y: sample.rawY, z: sample.rawZ } }
-            );
-          }
+          if (!sample.error) setSfiHardwareTracking(true);
         } else {
           handlePrompt(line);
         }
@@ -403,6 +412,15 @@ function setUIConnected(connected) {
 
 async function connectSerial() {
   try {
+    // A Start pressed before connecting left the standalone emulation loop
+    // running. Stop it and reset the controls before this session takes over,
+    // otherwise the emulation keeps writing to the UI and #btn-start-demo
+    // stays disabled, leaving the page stuck in emulation.
+    isDemoRunning = false;
+    if (btnStartDemo) btnStartDemo.disabled = false;
+    if (btnStopDemo) btnStopDemo.disabled = true;
+    await new Promise(r => setTimeout(r, 50));
+
     currentDriverType = selDriverType ? selDriverType.value : 'scpi';
     const baudRate = selBaudRate ? parseInt(selBaudRate.value, 10) : 115200;
 
@@ -555,6 +573,13 @@ async function runJoystickDemo() {
           await scpiQuery(`${prefix}:BUFfer 1,1,1,1,0`);
           await scpiQuery(":VDD:3V3");
         }
+
+        // Trim BOTH gain fields to the selected preset before streaming. The
+        // chip powers up with GAINSEL_2PX = 0, which leaves the differential
+        // (2px) channels near zero: the SFI radar then flags "no magnet" while
+        // the 1px legacy path still reads fine. Writing the preset here makes
+        // the 2px path work without the user having to touch the gain control.
+        await setVoxGain(voxGain);
       }
 
       const K_ROT_X = 0.10, K_ROT_Y = 0.10;
@@ -634,7 +659,19 @@ async function runJoystickDemo() {
               angleDeg = sample.angleDeg;
               rawX = sample.rawX; rawY = sample.rawY; rawZ = sample.rawZ;
               p0Raw = { x: rawX, y: rawY, z: rawZ };
-              diffRaw = { x: rawX, y: rawY, z: rawZ, bzY: rawZ };
+              if (Array.isArray(sample.points) && sample.points.length === 4) {
+                // The Arduino frame carries the four absolute pixels; derive the
+                // differential pair (X02, Y13, Z02, Z13) exactly as 2px mode
+                // does, so the dome's diffRaw matches the SCPI path instead of
+                // reusing the absolute field for all four channels.
+                const [a, b, c, d] = sample.points;
+                diffRaw = {
+                  x: ((c.x ?? 0) - (a.x ?? 0)) / 2,
+                  y: ((d.y ?? 0) - (b.y ?? 0)) / 2,
+                  z: ((c.z ?? 0) - (a.z ?? 0)) / 2,
+                  bzY: ((d.z ?? 0) - (b.z ?? 0)) / 2,
+                };
+              }
             }
           }
 
@@ -781,24 +818,40 @@ Object.entries(calInputs).forEach(([key, inputEl]) => {
   }
 });
 
+// --- 1b. 2px DISPLAY SCALE (pixel pitch) ---
+// The differential channels are raw counts; turning them into mT/mm needs the
+// on-die pixel pitch (derivation and caveat in angle_calib.js). The datasheet we
+// have does not publish it, so it is live-trimmable here, default 1.0 mm.
+const calPitchInput = document.getElementById('cal-pitch');
+if (calPitchInput) {
+  calPitchInput.value = String(getSensorPixelPitchMm());
+  calPitchInput.addEventListener('input', () => {
+    setSensorPixelPitchMm(calPitchInput.value);
+  });
+}
+
 // Reset calibration inputs to the documented engine defaults (K=1.0)
 btnCalibReset?.addEventListener('click', () => {
   const defs = resetCalibrationParams();
   Object.entries(defs).forEach(([k, val]) => {
     if (calInputs[k]) calInputs[k].value = val;
   });
-  appendLog('[CALIBRATION] Reset parameters to default (K=1.0, Ortho=0.0).\n', 'log-okprompt');
+  setSensorPixelPitchMm(DEFAULT_SENSOR_PIXEL_PITCH_MM);
+  if (calPitchInput) calPitchInput.value = String(DEFAULT_SENSOR_PIXEL_PITCH_MM);
+  appendLog('[CALIBRATION] Reset parameters to default (K=1.0, Ortho=0.0, pitch=1.0 mm).\n', 'log-okprompt');
 });
 
 // --- 2. GAINSEL PRESET (1x / 3x) ---
-// Two factory trims only; no free numeric entry. The control lives in the
-// Calibration Tuning drawer alongside the k/o constants.
-const VOX_GAIN_PRESETS = { 9: '1x', 37: '3x' };
+// Two factory presets plus a free 0-63 trim field for the AE's final-test
+// value. The control lives in the Calibration Tuning drawer alongside the k/o
+// constants, and writes BOTH the 1px and 2px fields.
 const VOX_GAIN_COUNTS = { 9: '~72', 37: '~219' };
 const voxGainSeg = document.getElementById('vox-gain-seg');
 const voxGainHint = document.getElementById('vox-gain-hint');
 const voxGainReadback = document.getElementById('vox-gain-readback');
-let voxGain = 9;
+// Default 3x: the AE specifies 37 for the 1px path, and Voxdale shows 1px and
+// 2px together, so both fields start at the higher trim.
+let voxGain = 37;
 
 function syncVoxGainControl() {
   if (voxGainSeg) {
@@ -812,8 +865,10 @@ function syncVoxGainControl() {
   }
   if (voxGainHint) {
     const counts = VOX_GAIN_COUNTS[voxGain] ? ` → ${VOX_GAIN_COUNTS[voxGain]}` : '';
-    voxGainHint.textContent = `1px gain = ${voxGain} (0b${voxGain.toString(2).padStart(6, '0')})${counts}`;
+    voxGainHint.textContent = `1px & 2px gain = ${voxGain} (0b${voxGain.toString(2).padStart(6, '0')})${counts}`;
   }
+  const custom = document.getElementById('vox-gain-custom');
+  if (custom) custom.value = voxGain;
 }
 
 function setVoxGainReadback(value) {
@@ -829,7 +884,9 @@ function setVoxGainReadback(value) {
 
 async function setVoxGain(gainVal, persist = false) {
   const requested = parseInt(gainVal, 10);
-  const g = Object.prototype.hasOwnProperty.call(VOX_GAIN_PRESETS, requested) ? requested : voxGain;
+  // Accept any 0-63 code as well as the two presets: the AE's final-test trim
+  // can sit between the factory 1x (9) and 3x (37) codes.
+  const g = Number.isFinite(requested) ? Math.min(63, Math.max(0, requested)) : voxGain;
   voxGain = g;
   syncVoxGainControl();
 
@@ -839,14 +896,27 @@ async function setVoxGain(gainVal, persist = false) {
   }
 
   try {
-    appendLog(`[GAIN] Writing GAINSEL_1PX = ${g} (0b${g.toString(2).padStart(6, '0')})...\n`, 'log-okprompt');
-    const ok = await activeDevice.setGain1Px(g, persist);
-    if (ok) {
-      const rb = await activeDevice.readGain1Px();
-      const v = rb && !rb.error ? rb.value : null;
-      setVoxGainReadback(v);
-      appendLog(v !== null && v === g ? `[GAIN] Verified ${v} on device.\n` : '[GAIN] Write/verify returned no readback.\n', v !== null && v === g ? 'log-okprompt' : 'log-badprompt');
-      return true;
+    const bits = `0b${g.toString(2).padStart(6, '0')}`;
+    appendLog(`[GAIN] Writing GAINSEL_1PX = ${g} (${bits}) and GAINSEL_2PX = ${g} (${bits})...\n`, 'log-okprompt');
+    // Voxdale compares the 1px and 2px paths, so both gain fields are trimmed
+    // together; writing only 1px would leave the differential (2px) gain on the
+    // sensor untouched and the GAINSEL_2PX preset meaningless.
+    const res1 = await activeDevice.setGain('1px', g, persist);
+    const res2 = await activeDevice.setGain('2px', g, persist);
+    if (res1.ok && res2.ok) {
+      const rb1 = await activeDevice.readGain('1px');
+      const rb2 = await activeDevice.readGain('2px');
+      const v1 = rb1 && !rb1.error ? rb1.value : null;
+      const v2 = rb2 && !rb2.error ? rb2.value : null;
+      if (v1 !== null && v2 !== null) {
+        voxGainReadback.textContent = `Device confirmed: 1px ${v1} (0b${v1.toString(2).padStart(6, '0')}), 2px ${v2} (0b${v2.toString(2).padStart(6, '0')})`;
+        voxGainReadback.style.color = '#59FFB0';
+      } else {
+        setVoxGainReadback(null);
+      }
+      const good = v1 === g && v2 === g;
+      appendLog(good ? `[GAIN] Verified 1px=${v1}, 2px=${v2} on device.\n` : '[GAIN] Write/verify returned no readback.\n', good ? 'log-okprompt' : 'log-badprompt');
+      return good;
     }
     setVoxGainReadback(null);
     appendLog(`[GAIN] Write/verify failed for ${g}.\n`, 'log-badprompt');
@@ -862,6 +932,12 @@ window.setVoxGain = setVoxGain;
 
 voxGainSeg?.querySelectorAll('button[data-gain]').forEach((btn) => {
   btn.addEventListener('click', () => setVoxGain(parseInt(btn.dataset.gain, 10)));
+});
+
+const voxGainCustom = document.getElementById('vox-gain-custom');
+voxGainCustom?.addEventListener('change', () => {
+  const v = parseInt(voxGainCustom.value, 10);
+  if (Number.isFinite(v)) setVoxGain(v);
 });
 
 syncVoxGainControl();

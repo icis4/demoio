@@ -68,7 +68,9 @@ import {
   calculateDesmosAngles as moduleDesmosAngles,
   calculate1pxAngles,
   calculateSfiDifferentialAngles,
-  calculateDifferentialGimbalInput
+  calculateDifferentialGimbalInput,
+  SINGLE_PIXEL_LSB_PER_MT,
+  lsbPerMtMm
 } from '../angle_calib.js';
 
 export const DEFAULT_CALIBRATION_PARAMS = { ...ENGINE_DEFAULTS };
@@ -168,38 +170,28 @@ let radarCanvasMlx = null, radarCtxMlx = null;
 let liveHardwarePacket = null;
 let liveSfiAngles = { alpha: 90, beta: 90 };
 let gimbalZeroAngles = { alpha: 90, beta: 90 };
-const SINGLE_PIXEL_LSB_PER_MT = 20;
-const DIFFERENTIAL_LSB_PER_MT_MM = 120;
+// Display scale for the two field plots (see angle_calib.js for the derivation
+// and the pitch caveat). SINGLE_PIXEL_LSB_PER_MT and lsbPerMtMm() are imported
+// from the shared module so the Thumbstick page uses the same numbers.
 const TRACE_HISTORY_POINTS = 45;
 
-// Unwrap each axis against the previous frame so the angle remains continuous
-// across the ±180° seam, then clamp to the 0..180° range used by the radar.
-const unwrapPrevDeg = { alpha: null, beta: null };
-
-function unwrapAngleDeg(deg, key) {
+// The differential formula yields atan2(dBx/dx, dBz/dx) (and its Y sibling),
+// which spans -180..180, while every downstream consumer — the radar's
+// (90 - a) / 90 mapping (0° at the right rim, 180° at the left), the #angle-*
+// readouts, the gimbal's 90° neutral — expects the 0..180° band the 1px/Desmos
+// path already produces. Fold the signed angle onto that band with a triangle
+// wave (|angle| over the range): continuous at 0 and at ±180, so the needle
+// never snaps across the dial, and it still fixes the original freeze (a
+// reversed polarity / mirrored mount, X02 < 0 → α ≈ -90°, now reads 90° and
+// sweeps). Do NOT re-base mod 180: that makes α and α+180 collide, so crossing
+// 0°/±180° flips the needle to the opposite rim.
+function toDialAngleDeg(deg) {
   if (typeof deg !== 'number' || !Number.isFinite(deg)) return 90;
 
-  const prev = unwrapPrevDeg[key];
-  if (prev === null) {
-    unwrapPrevDeg[key] = deg;
-    return Math.min(180, Math.max(0, deg));
-  }
-
-  let d = deg - prev;
-  while (d > 180) d -= 360;
-  while (d < -180) d += 360;
-
-  let out = prev + d;
-  if (out - deg > 360) out = deg + 360;
-  else if (deg - out > 360) out = deg - 360;
-
-  unwrapPrevDeg[key] = out;
-  return Math.min(180, Math.max(0, out));
-}
-
-function resetAngleUnwrap() {
-  unwrapPrevDeg.alpha = null;
-  unwrapPrevDeg.beta = null;
+  let out = deg % 360;
+  if (out < 0) out += 360;
+  if (out > 180) out = 360 - out;
+  return out;
 }
 
 // PDF review: the previous Y orientation was opposite to the actual joystick
@@ -422,18 +414,15 @@ export function initSfiDemo() {
     }
   });
 
-  // Per-plot Zero buttons live in the battle-card headers. They centre the
-  // magnet model on its grid by capturing the current bias as the zero offset.
-  const wirePlotZero = (btnId, isLegacy) => {
-    const btn = document.getElementById(btnId);
-    btn?.addEventListener('click', () => {
-      const state = togglePlotZero(isLegacy);
-      if (state === 'captured') btn.textContent = 'Zeroed';
-      else if (state === 'cleared') btn.textContent = 'Zero';
-    });
-  };
-  wirePlotZero('btn-zero-std-plot', true);
-  wirePlotZero('btn-zero-mlx-plot', false);
+  // One shared Zero button centres BOTH 3D field plots on their grids by
+  // capturing each plot's current bias as its zero offset; pressing again
+  // clears both.
+  const btnZeroPlots = document.getElementById('btn-zero-plots');
+  btnZeroPlots?.addEventListener('click', () => {
+    const state = zeroAllPlots();
+    if (state === 'captured') btnZeroPlots.textContent = 'Zeroed';
+    else if (state === 'cleared') btnZeroPlots.textContent = 'Zero Graphs';
+  });
 
   // --- 1. THREE.JS SCENE SETUP (CAD GLB MODEL) ---
   const scene = new THREE.Scene();
@@ -706,10 +695,11 @@ export function initSfiDemo() {
       stdBy = liveHardwarePacket.p0Raw.y / SINGLE_PIXEL_LSB_PER_MT + noiseY;
       stdBz = (liveHardwarePacket.p0Raw.z / SINGLE_PIXEL_LSB_PER_MT + noiseZ);
 
-      mlxDBx = liveHardwarePacket.diffRaw.x / DIFFERENTIAL_LSB_PER_MT_MM;
-      mlxDBy = liveHardwarePacket.diffRaw.y / DIFFERENTIAL_LSB_PER_MT_MM;
-      mlxDBz = (liveHardwarePacket.diffRaw.z || 0) / DIFFERENTIAL_LSB_PER_MT_MM;
-      mlxDBzY = (liveHardwarePacket.diffRaw.bzY || liveHardwarePacket.diffRaw.z || 0) / DIFFERENTIAL_LSB_PER_MT_MM;
+      const lsbPerMtMmNow = lsbPerMtMm();
+      mlxDBx = liveHardwarePacket.diffRaw.x / lsbPerMtMmNow;
+      mlxDBy = liveHardwarePacket.diffRaw.y / lsbPerMtMmNow;
+      mlxDBz = (liveHardwarePacket.diffRaw.z || 0) / lsbPerMtMmNow;
+      mlxDBzY = (liveHardwarePacket.diffRaw.bzY || liveHardwarePacket.diffRaw.z || 0) / lsbPerMtMmNow;
     }
 
     targetStdBx = stdBx;
@@ -736,9 +726,8 @@ export function initSfiDemo() {
     // With no signal, park at the 90° neutral position instead of feeding
     // atan2(0, 0) to the radar.
     const mlxHasSignal = sfi2px.signalStrength > NO_MAG_DIFF_MT_MM;
-    if (!mlxHasSignal) resetAngleUnwrap();
-    const dispAlpha = unwrapAngleDeg(mlxHasSignal ? sfi2px.alphaDeg : 90, 'alpha');
-    const dispBeta = unwrapAngleDeg(mlxHasSignal ? sfi2px.betaDeg : 90, 'beta');
+    const dispAlpha = toDialAngleDeg(mlxHasSignal ? sfi2px.alphaDeg : 90);
+    const dispBeta = toDialAngleDeg(mlxHasSignal ? sfi2px.betaDeg : 90);
     const angleAlpha = mlxHasSignal ? sfi2px.alphaDeg : 90;
     const angleBeta = mlxHasSignal ? sfi2px.betaDeg : 90;
     const gimbalInput = calculateDifferentialGimbalInput(
@@ -1428,6 +1417,22 @@ export function togglePlotZero(isLegacy) {
   plot.zero.x = last.x;
   plot.zero.y = last.y;
   return 'captured';
+}
+
+// Single button behaviour: capture the current bias for BOTH plots in one
+// press, or clear both if either was already zeroed. Returns the resulting
+// state ('captured' | 'cleared' | 'none').
+export function zeroAllPlots() {
+  const anyZeroed = [stdPlot, mlxPlot].some(
+    p => p && (p.zero.x !== 0 || p.zero.y !== 0)
+  );
+  if (anyZeroed) {
+    [stdPlot, mlxPlot].forEach(p => { if (p) { p.zero.x = 0; p.zero.y = 0; } });
+    return 'cleared';
+  }
+  const legacy = togglePlotZero(true);
+  const differential = togglePlotZero(false);
+  return (legacy === 'captured' || differential === 'captured') ? 'captured' : 'none';
 }
 
 export function resizeSfiCanvases() {

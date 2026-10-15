@@ -17,7 +17,9 @@
 import {
   DEFAULT_CALIBRATION_PARAMS as CALIB_DEFAULTS,
   normalizeParams,
-  calculateDesmosAngles
+  calculateDesmosAngles,
+  SINGLE_PIXEL_LSB_PER_MT,
+  lsbPerMtMm
 } from '../angle_calib.js';
 
 const toDeg = (rad) => (rad * 180) / Math.PI;
@@ -99,18 +101,30 @@ export function computeTwistSignals(mode = '1px', input = null) {
   };
 }
 
-// Derive 1px + 2px inputs from the 4 pixel readouts.
-export function deriveTwistInputsFromPoints(points) {
+// Derive 1px + 2px inputs from the 4 pixel readouts, converted from raw LSB to
+// physical units (absolute mT, differential mT/mm) so the strengths the panel
+// prints carry true units. Both divisors live in angle_calib.js and are shared
+// with the Voxdale page; dividing every component of a signal by the same
+// divisor leaves the atan2 angles untouched.
+// When the chip's dedicated differential channels are available (SCPI resDiff:
+// x02/y02/z02/x13/y13/z13) use them directly for the 2px pair, so the 2px
+// GAINSEL trim actually affects the readout. The software (p2 - p0) / 2
+// difference is only the fallback for Arduino / emulation frames that carry
+// just the four absolute pixels.
+export function deriveTwistInputsFromPoints(points, diff = null) {
   const p0 = points?.[0] || {};
   const p1 = points?.[1] || {};
   const p2 = points?.[2] || {};
   const p3 = points?.[3] || {};
+  const hasDiff = !!diff && ['x02', 'z02', 'y13', 'z13'].every(k => Number.isFinite(diff[k]));
+  const lsbPerMt = SINGLE_PIXEL_LSB_PER_MT;
+  const lsbPerMtPerMm = lsbPerMtMm();
   return {
-    X0: p0.x ?? 0, Y0: p0.y ?? 0, Z0: p0.z ?? 0,
-    X02: ((p2.x ?? 0) - (p0.x ?? 0)) / 2,
-    Z02: ((p2.z ?? 0) - (p0.z ?? 0)) / 2,
-    Y13: ((p3.y ?? 0) - (p1.y ?? 0)) / 2,
-    Z13: ((p3.z ?? 0) - (p1.z ?? 0)) / 2,
+    X0: (p0.x ?? 0) / lsbPerMt, Y0: (p0.y ?? 0) / lsbPerMt, Z0: (p0.z ?? 0) / lsbPerMt,
+    X02: (hasDiff ? diff.x02 : ((p2.x ?? 0) - (p0.x ?? 0)) / 2) / lsbPerMtPerMm,
+    Z02: (hasDiff ? diff.z02 : ((p2.z ?? 0) - (p0.z ?? 0)) / 2) / lsbPerMtPerMm,
+    Y13: (hasDiff ? diff.y13 : ((p3.y ?? 0) - (p1.y ?? 0)) / 2) / lsbPerMtPerMm,
+    Z13: (hasDiff ? diff.z13 : ((p3.z ?? 0) - (p1.z ?? 0)) / 2) / lsbPerMtPerMm,
   };
 }
 
@@ -122,9 +136,13 @@ export function deriveTwistInputsFromPoints(points) {
 // TODO(hw-trim): during the physical Arduino hardware validation session,
 // confirm the preset bits against the GAINSEL register table in the MLX90396
 // datasheet before flashing.
+// Defaults follow the AE's twist-demo guidance: 1px runs at 3x (gain 37 ≈ 219)
+// because the single-pixel path needs the extra ~3x electrical gain there; 2px
+// keeps the 1x factory trim (gain 9 ≈ 72). Final-test trimming can shift the
+// exact value, so the UI also exposes a free 0-63 trim field per mode.
 export const GAINSEL = {
-  '1px': 0b001001, // 9 — 1x preset (~72)
-  '2px': 0b001001, // 9 — 1x preset (~72)
+  '1px': 0b100101, // 37 — 3x preset (~219), twist-demo default
+  '2px': 0b001001, // 9  — 1x preset (~72)
 };
 
 export function setGainSel(mode, value) {

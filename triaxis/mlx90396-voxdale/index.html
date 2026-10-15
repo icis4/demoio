@@ -92,6 +92,14 @@
     }
     .sfi-controls-bar .coil-dwell-input { min-width: 4.5rem; }
 
+    /* P10: the coil label is longer than the shared 132px button floor, so it
+       gets its own width plus tabular figures; the ON countdown then ticks
+       without changing the button's width. */
+    #btn-coil {
+      min-width: 195px;
+      font-variant-numeric: tabular-nums;
+    }
+
     /* FULL-WIDTH TABS (Using Design System Variables) */
     .view-tabs.ds-tabs__list {
       display: flex;
@@ -685,7 +693,7 @@
     }
     .log-rx { color: var(--color-ink-muted); } 
     .log-okprompt { color: var(--color-success); } 
-    .log-badprompt { color: var(--color-success); }
+    .log-badprompt { color: var(--color-danger); }
     .hidden { display: none !important; }
     /* Temporary graph-first layout: remove class="temporary-hidden" from any block to restore it. */
     .temporary-hidden { display: none !important; }
@@ -791,7 +799,8 @@
            title="Coil pulse width in seconds (0.5 - 60)" aria-label="Coil pulse width in seconds" />
     <button id="btn-calib-toggle" class="ds-button ds-button--secondary ds-button--sm">Calibration Tuning</button>
     <button id="btn-reset-trace" class="ds-button ds-button--secondary ds-button--sm">Clear Trajectories</button>
-    <button id="btn-toggle-debug" class="ds-button ds-button--ghost ds-button--sm hidden">Debug</button>
+    <button id="btn-zero-plots" class="ds-button ds-button--secondary ds-button--sm" title="Centre both 3D magnet models on their grids">Zero Graphs</button>
+    <button id="btn-toggle-debug" class="ds-button ds-button--ghost ds-button--sm">Debug</button>
     <!-- Inside .sfi-controls-bar in index.html -->
 
   </div>
@@ -847,14 +856,26 @@
     <div class="ds-field" style="min-width: 240px; margin-bottom: 0;">
       <span class="ds-field__label">GAINSEL (electrical gain)</span>
       <div id="vox-gain-seg" role="group" aria-label="Electrical gain preset" style="display: flex; gap: 6px;">
-        <button type="button" class="ds-button ds-button--primary ds-button--sm" data-gain="9" aria-pressed="true">1x (gain 9)</button>
-        <button type="button" class="ds-button ds-button--secondary ds-button--sm" data-gain="37" aria-pressed="false">3x (gain 37)</button>
+        <button type="button" class="ds-button ds-button--secondary ds-button--sm" data-gain="9" aria-pressed="false">1x (gain 9)</button>
+        <button type="button" class="ds-button ds-button--primary ds-button--sm" data-gain="37" aria-pressed="true">3x (gain 37)</button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; margin-top: 6px;">
+        <label for="vox-gain-custom" style="font-size: var(--font-size-xs); color: var(--color-ink-muted);">trim</label>
+        <input id="vox-gain-custom" type="number" min="0" max="63" step="1" class="ds-field__input" style="width: 5.5rem;" />
+        <span style="font-size: var(--font-size-xs); color: var(--color-ink-muted);">0&ndash;63 (final-test value)</span>
       </div>
       <small id="vox-gain-hint" style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
-        1px gain = 9 (0b001001) &rarr; ~72
+        1px &amp; 2px gain = 37 (0b100101) &rarr; ~219
       </small>
       <small id="vox-gain-readback" style="display: block; margin-top: 2px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
         Device: not read
+      </small>
+    </div>
+    <div class="ds-field" style="min-width: 190px; margin-bottom: 0;">
+      <label class="ds-field__label" for="cal-pitch">Pixel pitch (mm)</label>
+      <input type="number" id="cal-pitch" step="0.1" min="0.1" class="ds-field__input" value="1" />
+      <small style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+        &nabla;B scale: 20 &times; pitch counts per mT/mm. Datasheet value unconfirmed &mdash; trim to match the die.
       </small>
     </div>
     <div style="display: grid; grid-template-columns: repeat(3, 80px); gap: 10px;">
@@ -897,8 +918,9 @@
   </div>
 
   <p style="margin: 0 0 var(--space-4) 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
-    a1 = atan2( &radic;(z1&sup2; + (k1&middot;(y1 &minus; o11&middot;z1))&sup2;), (x1 &minus; o12&middot;z1) )<br/>
-    b1 = atan2( &radic;(z1&sup2; + (k2&middot;(x1 &minus; o21&middot;z1))&sup2;), (y1 &minus; o22&middot;z1) )<br/>
+    <b>Normal:</b> &alpha; = atan2(X02, Z02), &beta; = atan2(Y13, Z13)<br/>
+    <b>Enhanced:</b> &alpha; = atan2( &radic;(X02&sup2; + (k1&middot;(Z13 &minus; o11&middot;X02))&sup2;), Z02 &minus; o12&middot;X02 )<br/>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&beta; = atan2( &radic;(Y13&sup2; + (k2&middot;(Z02 &minus; o21&middot;Y13))&sup2;), Z13 &minus; o22&middot;Y13 )<br/>
     Angles in degrees; calibration constants update live.
   </p>
 </div>
@@ -923,7 +945,8 @@
               <b>MLX90396 SFI</b> &mdash; 2px mode, the four differential channels between neighboring pixels
               (dB<sub>x</sub>/dx&nbsp;=&nbsp;X<sub>02</sub>, dB<sub>z</sub>/dx&nbsp;=&nbsp;Z<sub>02</sub>,
               dB<sub>y</sub>/dy&nbsp;=&nbsp;Y<sub>13</sub>, dB<sub>z</sub>/dy&nbsp;=&nbsp;Z<sub>13</sub>, units
-              mT/mm). Feeds <code>computeSfi2Px</code> &rarr; the &ldquo;MLX&rdquo; radar &alpha;/&beta; readouts.
+              mT/mm, i.e. counts &divide; (20 &times; pixel pitch) &mdash; the pitch is set in
+              Calibration Tuning). Feeds <code>computeSfi2Px</code> &rarr; the &ldquo;MLX&rdquo; radar &alpha;/&beta; readouts.
               Uniform external fields cancel in the subtraction, so this pair rejects stray field; the graph
               tabs plot these gradients directly.
             </li>
@@ -1063,11 +1086,11 @@
       <!-- MIDDLE: 3D MAGNET FIELD PLOTS -->
       <div class="battle-matrix-grid telemetry-graphs-expanded">
         <div class="battle-card fail">
-          <div class="battle-card-header"><span>Legacy field and 6 mm magnet model</span><span style="display: flex; align-items: center; gap: 8px;"><button id="btn-zero-std-plot" class="ds-button ds-button--secondary ds-button--sm" title="Centre the magnet model on its grid">Zero</button><span class="ds-badge ds-badge--success">STRAY-SENSITIVE</span></span></div>
+          <div class="battle-card-header"><span>Legacy field and 6 mm magnet model</span><span class="ds-badge ds-badge--success">STRAY-SENSITIVE</span></div>
           <div class="plot3d-canvas" id="canvas3d-std-plot"><div id="plot-overlay-std" class="plot-overlay" style="font-size: 13px;"><div class="plot-overlay-row"><span id="plot-std-velocity">v 0.0 px/s</span><span class="plot-overlay-units">mT</span></div><div class="plot-overlay-boxes"><span class="xyz-value-box"><span class="xyz-value-lbl">Bx</span><b id="plot-std-bx">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">By</span><b id="plot-std-by">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">Bz</span><b id="plot-std-bz">0.0</b></span></div></div></div>
         </div>
         <div class="battle-card pass">
-          <div class="battle-card-header"><span>MLX90396 differential field and 6 mm magnet model</span><span style="display: flex; align-items: center; gap: 8px;"><button id="btn-zero-mlx-plot" class="ds-button ds-button--secondary ds-button--sm" title="Centre the magnet model on its grid">Zero</button><span class="ds-badge ds-badge--success">SFI COMPENSATED</span></span></div>
+          <div class="battle-card-header"><span>MLX90396 differential field and 6 mm magnet model</span><span class="ds-badge ds-badge--success">SFI COMPENSATED</span></div>
           <div class="plot3d-canvas" id="canvas3d-mlx-plot"><div id="plot-overlay-mlx" class="plot-overlay" style="font-size: 12px;"><div class="plot-overlay-row"><span id="plot-mlx-velocity">v 0.0 px/s</span><span class="plot-overlay-units">mT/mm</span></div><div class="plot-overlay-boxes"><span class="xyz-value-box"><span class="xyz-value-lbl">dBx/dx</span><b id="plot-mlx-dbx">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">dBy/dy</span><b id="plot-mlx-dby">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">dBz/dx</span><b id="plot-mlx-dbzdx">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">dBz/dy</span><b id="plot-mlx-dbzdy">0.0</b></span></div></div></div>
         </div>
       </div>
@@ -1078,15 +1101,15 @@
           <span class="radar-badge ds-badge ds-badge--success">
             Legacy Standard 3D Hall Radar
           </span>
+          <div class="plot-overlay" style="top: 12px; right: 14px; bottom: auto;">
+            <div class="plot-overlay-boxes">
+              <span class="xyz-value-box"><span class="xyz-value-lbl">|B|</span><b id="radar-mag-std">0.0 mT</b></span>
+              <span class="xyz-value-box"><span class="xyz-value-lbl">α_std</span><b id="radar-alpha-std">0.0°</b></span>
+              <span class="xyz-value-box"><span class="xyz-value-lbl">β_std</span><b id="radar-beta-std">0.0°</b></span>
+            </div>
+          </div>
           <div class="radar-stage">
             <canvas id="radarCanvasStd" class="radar-canvas"></canvas>
-            <div class="plot-overlay" style="right: -106px; bottom: 262px" >
-              <div class="plot-overlay-boxes">
-                <span class="xyz-value-box"><span class="xyz-value-lbl">|B|</span><b id="radar-mag-std">0.0 mT</b></span>
-                <span class="xyz-value-box"><span class="xyz-value-lbl">α_std</span><b id="radar-alpha-std">0.0°</b></span>
-                <span class="xyz-value-box"><span class="xyz-value-lbl">β_std</span><b id="radar-beta-std">0.0°</b></span>
-              </div>
-            </div>
           </div>
         </div>
 
@@ -1094,15 +1117,15 @@
           <span class="radar-badge ds-badge ds-badge--success">
             MLX90396 Differential SFI Radar
           </span>
+          <div class="plot-overlay" style="top: 12px; right: 14px; bottom: auto;">
+            <div class="plot-overlay-boxes">
+              <span class="xyz-value-box"><span class="xyz-value-lbl">|∇B|</span><b id="radar-mag-mlx">0.0 mT/mm</b></span>
+              <span class="xyz-value-box"><span class="xyz-value-lbl">α_diff</span><b id="radar-alpha-mlx">0.0°</b></span>
+              <span class="xyz-value-box"><span class="xyz-value-lbl">β_diff</span><b id="radar-beta-mlx">0.0°</b></span>
+            </div>
+          </div>
           <div class="radar-stage">
             <canvas id="radarCanvasMlx" class="radar-canvas"></canvas>
-            <div class="plot-overlay" style="right: -106px; bottom: 262px;">
-              <div class="plot-overlay-boxes">
-                <span class="xyz-value-box"><span class="xyz-value-lbl">|∇B|</span><b id="radar-mag-mlx">0.0 mT/mm</b></span>
-                <span class="xyz-value-box"><span class="xyz-value-lbl">α_diff</span><b id="radar-alpha-mlx">0.0°</b></span>
-                <span class="xyz-value-box"><span class="xyz-value-lbl">β_diff</span><b id="radar-beta-mlx">0.0°</b></span>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -1183,7 +1206,7 @@
 
         <section class="diagnostics-card">
           <h3>Differential Channels &mdash; raw LSB</h3>
-          <p>The chip's own inter-pixel gradients, read in a single transfer (mask <code>0x000AC</code>: X02, Z02, Y13, Z13). They feed the SFI radar and the dome.</p>
+          <p>The chip's own inter-pixel gradients, read in a single transfer (mask <code>0x000AC</code>: X02, Z02, Y13, Z13). They feed the SFI radar and the dome. The counts are converted to mT/mm by <code>20 &times; pixel&nbsp;pitch</code> (the <b>Pixel pitch</b> field in Calibration Tuning); a magnet sitting centred reads a small gradient &mdash; that is the null, not a missing magnet.</p>
           <table class="diagnostics-table">
             <thead><tr><th>Channel</th><th>Count</th></tr></thead>
             <tbody>

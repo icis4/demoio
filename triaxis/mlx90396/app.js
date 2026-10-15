@@ -1,7 +1,6 @@
 import { MLX90396_API } from './mlx_api.js';
 import { Arduino_API } from './arduino_api.js';
-// import { initSfiDemo, resizeSfiCanvases } from './sfi_demo.js';
-import { initSfiDemo, resizeSfiCanvases, updateSfiDomeKinematics } from './sfi_demo.js';
+import { resizeSfiCanvases } from './sfi_demo.js';
 import {
   computeTwistSignals,
   deriveTwistInputsFromPoints,
@@ -10,6 +9,11 @@ import {
   getGainSel,
   setGainSel,
 } from './twist_api.js';
+import {
+  setSensorPixelPitchMm,
+  getSensorPixelPitchMm,
+  SINGLE_PIXEL_LSB_PER_MT
+} from '../angle_calib.js';
 
 // --- DOM Elements (Declared first to avoid TDZ ReferenceErrors) ---
 const btnConnect = document.getElementById('btn-connect');
@@ -109,13 +113,13 @@ const DEBUG_SERIAL_RX = false;
 const magnetOffsets = { x: 0, y: 0 };
 const latestRawMagnet = { x: 0, y: 0 };
 
-// The twist calibration panel is hosted inside view-magnet in the markup but is
-// meant to be reachable from the Thumbstick tab as well. Reparent it onto
-// #demo-jwt so it renders under whichever sub-view is active; every
-// [data-twist-toggle] button then shows/hides this single shared panel.
+// The twist panel is authored inside view-magnet in the markup, but per PDF
+// slide 4 the twist demo is calibrated with Zero Position alone: the live
+// alpha/beta readout (and its k/o window) belongs to the no-twist Thumbstick
+// tab. Reparent it into #view-joystick so it can only ever be visible there.
 const twistPanelEl = document.getElementById('twist-panel');
-const demoJwtEl = document.getElementById('demo-jwt');
-if (twistPanelEl && demoJwtEl) demoJwtEl.appendChild(twistPanelEl);
+const viewJoystickEl = document.getElementById('view-joystick');
+if (twistPanelEl && viewJoystickEl) viewJoystickEl.appendChild(twistPanelEl);
 
 const leds = [];
 const TOTAL_LEDS = 28;
@@ -127,14 +131,24 @@ function isViewActive(id) {
   return !!el && el.classList.contains('active');
 }
 
+// The 0x000FC differential transfer (x02/y02/z02/x13/y13/z13) is only consumed
+// by the diagnostics tab and by the twist panel's 2px readouts. Skip it when
+// neither needs it: it is a real SPI round-trip the other views would discard.
+function needsDiffChannels() {
+  if (isViewActive('view-diagnostics')) return true;
+  const panel = document.getElementById('twist-panel');
+  return twistMode === '2px'
+    && isViewActive('view-joystick')
+    && !!panel
+    && !panel.classList.contains('hidden');
+}
+
 // --- Initialize on Startup ---
 window.addEventListener('DOMContentLoaded', () => {
-  initSfiDemo();
   initJoystickLEDs();
   initMagnetMotionMode();
   initSerialPortEvents();
   startRadarLoop();
-  initNvramControls();
   initGridReordering();
   initTwistControls();
   refreshPortGuide();
@@ -286,7 +300,7 @@ function updateMagnetScaleLabels(mmRange) {
   lastMagnetScaleKey = key;
   const travelLbl = document.getElementById('magnet-travel-lbl');
   if (travelLbl) {
-    travelLbl.innerHTML = `Sensing Grid: &plusmn;${mmRange.toFixed(1)} mm (&plusmn;${half} px). Disk positions on the grid and rotates with the twist angle.`;
+    travelLbl.innerHTML = `Sensing Grid: &plusmn;${mmRange.toFixed(1)} mm (&plusmn;${half} px). N = dark charcoal, S = gold; the disk rotates with the twist angle.`;
   }
   const factor = mmRange / 2.5;
   document.querySelectorAll('.grid-tick').forEach(el => {
@@ -382,12 +396,19 @@ function initTwistControls() {
     updateTwistUI(latestTwistPoints);
   });
 
-  // Two factory presets only; clicking one writes the active mode's gain.
+  // Two factory presets plus a free trim field; either writes the active
+  // mode's gain field on the chip.
   gainSeg?.querySelectorAll('button[data-gain]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const v = parseInt(btn.dataset.gain, 10);
-      if (TWIST_GAIN_PRESETS.includes(v)) setSensorGain(v);
+      if (TWIST_GAIN_PRESETS.includes(v)) { twistGainUserSet = true; setSensorGain(v); }
     });
+  });
+
+  const gainCustom = document.getElementById('twist-gain-custom');
+  gainCustom?.addEventListener('change', () => {
+    const v = parseInt(gainCustom.value, 10);
+    if (Number.isFinite(v)) { twistGainUserSet = true; setSensorGain(v); }
   });
 
   calKeys.forEach(key => {
@@ -405,13 +426,26 @@ function initTwistControls() {
     }
   });
 
+  // 2px display scale: the differential channels are raw counts, so the mT/mm
+  // strength needs the on-die pixel pitch (derivation in angle_calib.js, shared
+  // with the Voxdale page). Datasheet value unconfirmed, so it is trimmable.
+  const calPitch = document.getElementById('cal-pitch');
+  if (calPitch) {
+    calPitch.value = String(getSensorPixelPitchMm());
+    calPitch.addEventListener('input', () => setSensorPixelPitchMm(calPitch.value));
+  }
+
   syncTwistGainSeg();
 }
 
-// Only the two factory trims are offered: 1x (gain 9 -> ~72 counts) and
-// 3x (gain 37 -> ~219 counts). No free numeric entry.
+// Two factory presets (1x = gain 9 -> ~72 counts, 3x = gain 37 -> ~219 counts)
+// plus a free 0-63 trim field for the AE's final-test value.
 const TWIST_GAIN_PRESETS = [9, 37];
 const TWIST_GAIN_COUNTS = { 9: '~72', 37: '~219' };
+// Steering defaults per mode: the AE specifies 3x (37) for the 1px twist demo;
+// 2px keeps the 1x factory trim. Applied on Start unless the user picked a value.
+const TWIST_GAIN_DEFAULTS = { '1px': 37, '2px': 9 };
+let twistGainUserSet = false;
 
 function syncTwistGainSeg() {
   const g = getGainSel(twistMode);
@@ -430,6 +464,8 @@ function syncTwistGainSeg() {
     const counts = TWIST_GAIN_COUNTS[g] ? ` → ${TWIST_GAIN_COUNTS[g]}` : '';
     hint.textContent = `${twistMode} gain = ${g} (0b${g.toString(2).padStart(6, '0')})${counts}`;
   }
+  const custom = document.getElementById('twist-gain-custom');
+  if (custom) custom.value = g;
 }
 
 function setTwistGainReadback(value) {
@@ -451,7 +487,11 @@ function setTwistGainReadback(value) {
 // local table still updates and the readback reads "not read".
 async function setSensorGain(gainVal) {
   const requested = parseInt(gainVal, 10);
-  const g = TWIST_GAIN_PRESETS.includes(requested) ? requested : getGainSel(twistMode);
+  // Accept any 0-63 code as well as the two presets: the AE's final-test trim
+  // can sit between the factory 1x (9) and 3x (37) codes.
+  const g = Number.isFinite(requested)
+    ? Math.min(63, Math.max(0, requested))
+    : getGainSel(twistMode);
   setGainSel(twistMode, g);
   syncTwistGainSeg();
 
@@ -480,8 +520,10 @@ async function setSensorGain(gainVal) {
   }
 }
 
-// readSensorGain confirms the chip's active gain field for the current twistMode
-// and adopts it into the local table if the device disagrees with the UI.
+// readSensorGain reports the chip's active gain field for the current twistMode
+// in the "Device confirmed" line. It does NOT overwrite the local selection:
+// the selected value is what Start writes (see TWIST_GAIN_DEFAULTS), so the UI
+// always shows what will be applied rather than what the part happens to hold.
 async function readSensorGain() {
   if (!activeDevice || currentDriverType !== 'scpi') {
     setTwistGainReadback(null);
@@ -490,26 +532,24 @@ async function readSensorGain() {
   const res = await activeDevice.readGain(twistMode);
   const v = res && !res.error ? res.value : null;
   setTwistGainReadback(v);
-  if (v !== null && v !== getGainSel(twistMode)) {
-    setGainSel(twistMode, v);
-    syncTwistGainSeg();
-  }
   return v;
 }
 
 const latestTwistPoints = [];
+let latestTwistDiff = null;
 
-function updateTwistUI(points) {
+function updateTwistUI(points, diff = null) {
   const twistPanel = document.getElementById('twist-panel');
-  const twistBedVisible = isViewActive('view-magnet') || isViewActive('view-joystick');
+  const twistBedVisible = isViewActive('view-joystick');
   if (!twistBedVisible || !twistPanel || twistPanel.classList.contains('hidden')) return;
   if (!Array.isArray(points) || points.length < 4) return;
 
   updateTwistPanelGating();
 
   latestTwistPoints.splice(0, latestTwistPoints.length, ...points);
+  latestTwistDiff = diff;
 
-  const input = deriveTwistInputsFromPoints(points);
+  const input = deriveTwistInputsFromPoints(points, diff);
   const res = computeTwistSignals(twistMode, input);
   const unit = res.unit;
 
@@ -746,9 +786,13 @@ function pushRadarPoint(x, y) {
 
 // Radar XY follows the calibrated tilt angles, with 90° as the neutral field.
 function pushRadarFromAvg(x, y, z) {
-  const bx = typeof x === 'number' && Number.isFinite(x) ? x : 0;
-  const by = typeof y === 'number' && Number.isFinite(y) ? y : 0;
-  const bz = typeof z === 'number' && Number.isFinite(z) ? z : 0;
+  // Input is raw LSB; RADAR_NO_MAG_MT is an mT figure, so scale the counts by
+  // the shared absolute divisor. The calibrated angle below is scale-invariant,
+  // so this only makes the park gate mean what it says.
+  const scale = 1 / SINGLE_PIXEL_LSB_PER_MT;
+  const bx = (typeof x === 'number' && Number.isFinite(x) ? x : 0) * scale;
+  const by = (typeof y === 'number' && Number.isFinite(y) ? y : 0) * scale;
+  const bz = (typeof z === 'number' && Number.isFinite(z) ? z : 0) * scale;
   // Park at the neutral point (α=β=90° → offset 0,0) while the field is
   // negligible, mirroring the Voxdale no-signal park instead of pinning to the
   // rim on a degenerate atan2(0,0).
@@ -856,6 +900,14 @@ function appendLog(text, cls) {
 // --- Serial RX Router ---
 let rxBuffer = '';
 let lastDataLine = '';
+let lastScalarLine = '';
+
+// The Melexis IO board answers a command with an optional payload then a prompt
+// "(<status>)>" where status is OK on success and a HAL/errno string otherwise
+// (ERROR, BUSY, TIMEOUT, CRC, ERR:<n>). Matching the shape rather than a fixed
+// list is what lets a rejected command surface as an error instead of hanging
+// for the full 2.5 s timeout.
+const SCPI_PROMPT_RE = /\(([A-Za-z_][A-Za-z0-9_]*(?::[A-Za-z0-9]+)?)\)>\s*$/;
 
 function processRx(text) {
   for (let i = 0; i < text.length; i++) {
@@ -874,36 +926,40 @@ function processRx(text) {
       rxBuffer = ''; 
     } else {
       rxBuffer += char;
-      if (currentDriverType === 'scpi') {
-        if (rxBuffer.endsWith('(OK)>') || rxBuffer.endsWith('(ERR)>') || rxBuffer.endsWith('(E2BIG)>') || rxBuffer.endsWith('(ERANGE)>')) {
-          const line = rxBuffer.trim();
-          if (DEBUG_SERIAL_RX) console.log('[RX PROMPT]', line);
-          handlePrompt(line);
-          rxBuffer = '';
-        }
+      if (currentDriverType === 'scpi' && SCPI_PROMPT_RE.test(rxBuffer)) {
+        const line = rxBuffer.trim();
+        if (DEBUG_SERIAL_RX) console.log('[RX PROMPT]', line);
+        handlePrompt(line);
+        rxBuffer = '';
       }
     }
   }
 }
 
 function handlePrompt(line) {
-  if (line.endsWith('(OK)>')) {
-    let dataPart = line.slice(0, -5).trim();
+  const prompt = SCPI_PROMPT_RE.exec(line);
+  const status = prompt ? prompt[1] : null;
+
+  if (status === 'OK') {
+    const dataPart = line.slice(0, prompt.index).trim();
     if (dataPart.includes(':SPI') || dataPart.includes(',') || dataPart.includes('0x')) {
       lastDataLine = dataPart;
     }
-    if (dataPart) { if (DEBUG_SERIAL_RX) appendLog(dataPart + '\n', 'log-rx'); }
+    if (dataPart && DEBUG_SERIAL_RX) appendLog(dataPart + '\n', 'log-rx');
     if (DEBUG_SERIAL_RX) appendLog('(OK)>\n', 'log-okprompt');
-    
+
     if (scpiWaiter) {
       clearTimeout(scpiWaiter.timeoutId);
-      scpiWaiter.resolve(lastDataLine);
+      scpiWaiter.resolve(scpiWaiter.scalar ? lastScalarLine : lastDataLine);
       const rel = scpiWaiter.release;
       scpiWaiter = null;
       if (rel) rel();
     }
     lastDataLine = '';
-  } else if (line.endsWith('(ERR)>') || line.endsWith('(E2BIG)>') || line.endsWith('(ERANGE)>')) {
+    lastScalarLine = '';
+  } else if (status) {
+    // (ERROR)> (BUSY)> (TIMEOUT)> …: any non-OK prompt is a failed command, so
+    // reject the pending waiter immediately instead of waiting out the timeout.
     appendLog(line + '\n', 'log-badprompt');
     if (scpiWaiter) {
       clearTimeout(scpiWaiter.timeoutId);
@@ -913,10 +969,14 @@ function handlePrompt(line) {
       if (rel) rel();
     }
     lastDataLine = '';
+    lastScalarLine = '';
   } else {
     appendLog(line + '\n', 'log-rx');
-    if (line.includes(',') && !line.startsWith(':') && !line.startsWith('*')) {
-      lastDataLine = line;
+    // Bare payload lines (e.g. the "1"/"0" a GPIO? answers with) carry no comma
+    // and no 0x, so they are captured separately for scalar reads.
+    if (!line.startsWith(':') && !line.startsWith('*')) {
+      if (line.includes(',')) lastDataLine = line;
+      lastScalarLine = line;
     }
   }
 }
@@ -937,25 +997,29 @@ async function sendCommand(cmd) {
   }
 }
 
-async function scpiQuery(cmd) {
+async function scpiQuery(cmd, options = {}) {
   let releaseLock;
   const nextLock = new Promise(resolve => { releaseLock = resolve; });
-  
+
   await scpiLock;
   scpiLock = nextLock;
 
   return new Promise((resolve, reject) => {
-    lastDataLine = ''; 
-    scpiWaiter = { resolve, reject, release: releaseLock };
-    sendCommand(cmd, true, false); 
-    
-    scpiWaiter.timeoutId = setTimeout(() => {
-      if (scpiWaiter) {
-        scpiWaiter.reject(new Error("Device Timeout on command: " + cmd));
-        scpiWaiter = null;
-        releaseLock(); 
-      }
-    }, 2500); 
+    lastDataLine = '';
+    lastScalarLine = '';
+
+    // The timeout has to recognise its own waiter: a slow reply arriving after
+    // the deadline would otherwise be handed to (or discarded by) the next query.
+    const waiter = { resolve, reject, release: releaseLock, scalar: Boolean(options.scalar) };
+    scpiWaiter = waiter;
+    sendCommand(cmd);
+
+    waiter.timeoutId = setTimeout(() => {
+      if (scpiWaiter !== waiter) return;
+      scpiWaiter = null;
+      waiter.reject(new Error("Device Timeout on command: " + cmd));
+      releaseLock();
+    }, 2500);
   });
 }
 
@@ -977,6 +1041,15 @@ function setUIConnected(connected) {
 
 async function connectSerial() {
   try {
+    // A Start pressed before connecting left the standalone emulation loop
+    // running. Stop it and reset the controls before this session takes over,
+    // otherwise the emulation keeps writing to the UI (and in the thumbstick
+    // build pressing Start again would spawn a second runJoystickDemo()).
+    isDemoRunning = false;
+    if (btnStartDemo) btnStartDemo.disabled = false;
+    if (btnStopDemo) btnStopDemo.disabled = true;
+    await new Promise(r => setTimeout(r, 50));
+
     if (!navigator.serial) {
       connectModal?.classList.remove('hidden');
       showConnectError('This browser does not support the Web Serial API. Use Google Chrome or Microsoft Edge (desktop) \u2014 Firefox and Safari do not implement it.');
@@ -1131,7 +1204,6 @@ async function runJoystickDemo() {
 
   if (isConnected && activeDevice) {
     try {
-      readSensorGain().catch(() => {});
       appendLog('[SYSTEM] Starting Live Demo...\n', 'log-okprompt');
 
       if (currentDriverType === 'scpi') {
@@ -1149,6 +1221,13 @@ async function runJoystickDemo() {
           await scpiQuery(":CON:CS1:GPIO:INIT:OUT 0");
           await scpiQuery(`${prefix}:BUFfer 1,1,1,1,0`);
           await scpiQuery(":VDD:3V3");
+        }
+
+        // Apply the AE's steering gain for the active mode unless the user
+        // chose one: the chip powers up at 1px = 9, and the 1px twist demo
+        // needs the 3x (37) trim, so a fresh part would otherwise under-drive.
+        if (!twistGainUserSet) {
+          await setSensorGain(TWIST_GAIN_DEFAULTS[twistMode]);
         }
       }
 
@@ -1174,19 +1253,22 @@ async function runJoystickDemo() {
 
             // The chip's dedicated differential channels. Mask 0x000FC covers
             // all six of them (X02, Y02, Z02, X13, Y13, Z13, bits 7..2), which
-            // is still a legal 6-channel measurement, so they arrive in one
-            // transfer for the price the old four-channel mask already cost.
-            // These feed the diagnostics tab and the 2px twist readouts.
-            // A third transfer cannot be avoided: 12 absolute + 6 gradient is 18
-            // channels and the part allows 6 per measurement. Each SM is
-            // followed by a DRDY-gated wait (bounded, so a slow conversion
-            // still yields fresh data without stalling the loop).
-            await activeDevice.sm(0x000FC); 
-            await activeDevice.awaitReady();
-            const resDiff = await activeDevice.rm(false, 0x000FC); 
+            // is still a legal 6-channel measurement. They feed the diagnostics
+            // tab and the twist panel's 2px readouts, so the extra transfer is
+            // skipped when neither needs it (see needsDiffChannels): 12 absolute
+            // + 6 gradient is 18 channels and the part allows 6 per measurement,
+            // i.e. a real round-trip the other views would otherwise pay for and
+            // discard. Each SM is followed by a DRDY-gated wait (bounded, so a
+            // slow conversion still yields fresh data without stalling the loop).
+            let resDiff = null;
+            if (needsDiffChannels()) {
+              await activeDevice.sm(0x000FC);
+              await activeDevice.awaitReady();
+              resDiff = await activeDevice.rm(false, 0x000FC);
+            }
             frames = { res01, res23, resDiff };
 
-            if (!res01.error && !res23.error && !resDiff.error) {
+            if (!res01.error && !res23.error) {
               const avgX = (res01.x0 + res01.x1 + res23.x2 + res23.x3) / 4;
               const avgY = (res01.y0 + res01.y1 + res23.y2 + res23.y3) / 4;
               const avgZ = (res01.z0 + res01.z1 + res23.z2 + res23.z3) / 4;
@@ -1219,7 +1301,7 @@ async function runJoystickDemo() {
                 { x: res01.x1, y: res01.y1, z: res01.z1 },
                 { x: res23.x2, y: res23.y2, z: res23.z2 },
                 { x: res23.x3, y: res23.y3, z: res23.z3 },
-              ]);
+              ], resDiff && !resDiff.error ? resDiff : null);
             }
           } else {
             const sample = await activeDevice.getSample();
@@ -1244,15 +1326,11 @@ async function runJoystickDemo() {
           // Live UI Updates (Placed INSIDE loop after data is read)
           updateMagnetUI(posX_mm, posY_mm, angleDeg);
           updateJoystickUI(joyX, joyY); 
-          update3DVectorPlot(rawX, rawY, rawZ);
 
           updateDiagnostics(frames, {
             joyX, joyY, angleDeg,
             periodMs: Math.round(performance.now() - loopT0 + (currentDriverType === 'scpi' ? 10 : 25))
           });
-          
-          // Send real normalized telemetry directly to the SFI Dome
-          updateSfiDomeKinematics(rawX / 1000, rawY / 1000, rawZ / 1000);
 
           await new Promise(r => setTimeout(r, currentDriverType === 'scpi' ? 10 : 25));
         } catch (loopErr) {
@@ -1279,7 +1357,6 @@ async function runJoystickDemo() {
       updateMagnetUI(emulatedX, emulatedY, emulatedAngle);
       updateJoystickUI(emulatedX * 20, emulatedY * 20);
       pushRadarFromAvg(emulatedX * 20, emulatedY * 20, 20);
-      update3DVectorPlot(Math.cos(angle) * 500, Math.sin(angle) * 500, 200);
 
       // Synthetic 4-pixel twist field (rotating around Z, constant bias on Z)
       const twistV = Math.sin(angle) * 6;
@@ -1291,9 +1368,6 @@ async function runJoystickDemo() {
         { x: twistV + 3, y: twistW, z: bias },
         { x: twistV, y: twistW - 3, z: bias },
       ]);
-
-      // Drive SFI Dome in emulation mode as well
-      updateSfiDomeKinematics(emulatedX / 2, emulatedY / 2, 0);
 
       await new Promise(r => setTimeout(r, 33)); 
     }

@@ -5,11 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MLX90396 Multi-Demo Platform</title>
   
-  <!-- Plotly + Three.js & OrbitControls -->
-  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-  
   <link rel="stylesheet" href="webdesign.css" />
 
   <style>
@@ -295,7 +290,7 @@
     }
     .magnet-disk {
       width: 200px; height: 200px; border-radius: 50%;
-      background: linear-gradient(to right, #D13434 50%, #2452D1 50%); 
+      background: linear-gradient(to right, #1E242B 50%, #EAA320 50%);
       position: absolute; top: 50%; left: 50%; margin-top: -100px; margin-left: -100px;
       display: flex; align-items: center; justify-content: center;
       transform-origin: 50% 50%; box-sizing: border-box; border: 4px solid #1A1F26;
@@ -434,7 +429,7 @@
             <div>
               <h3 style="margin: 0; font-size: var(--font-size-md);">Diametrical Magnet Orientation</h3>
               <p id="magnet-travel-lbl" style="margin: 4px 0 0 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
-                Travel Area: &plusmn;2.5 mm (&plusmn;170 px). North Pole (Red) tracks magnetic orientation.
+                Travel Area: &plusmn;2.5 mm (&plusmn;170 px). N (dark charcoal) / S (gold) mark the magnet poles; the north side tracks magnetic orientation.
               </p>
             </div>
             <button id="btn-zero-magnet" class="ds-button ds-button--secondary ds-button--sm">Zero Position</button>
@@ -505,7 +500,7 @@
           <div class="ds-card ds-card--pad-md" style="width: 100%; margin-bottom: 16px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
             <div>
-              <h3 style="margin: 0; font-size: var(--font-size-md);">Twist Signal &amp; Calibration</h3>
+              <h3 style="margin: 0; font-size: var(--font-size-md);">Thumbstick Signal &amp; Calibration</h3>
               <p style="margin: 4px 0 0 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
                 Live &alpha;/&beta; angles and field strengths from the twisted magnet demo.
                 <span id="twist-unit-lbl">Units: mT</span>
@@ -550,14 +545,26 @@
             <div class="ds-field" style="min-width: 240px; margin-bottom: 0;">
               <span class="ds-field__label">GAINSEL (electrical gain)</span>
               <div id="twist-gain-seg" role="group" aria-label="Electrical gain preset" style="display: flex; gap: 6px;">
-                <button type="button" class="ds-button ds-button--primary ds-button--sm" data-gain="9" aria-pressed="true">1x (gain 9)</button>
-                <button type="button" class="ds-button ds-button--secondary ds-button--sm" data-gain="37" aria-pressed="false">3x (gain 37)</button>
+                <button type="button" class="ds-button ds-button--secondary ds-button--sm" data-gain="9" aria-pressed="false">1x (gain 9)</button>
+                <button type="button" class="ds-button ds-button--primary ds-button--sm" data-gain="37" aria-pressed="true">3x (gain 37)</button>
+              </div>
+              <div style="display: flex; align-items: center; gap: 6px; margin-top: 6px;">
+                <label for="twist-gain-custom" style="font-size: var(--font-size-xs); color: var(--color-ink-muted);">trim</label>
+                <input id="twist-gain-custom" type="number" min="0" max="63" step="1" class="ds-field__input" style="width: 5.5rem;" />
+                <span style="font-size: var(--font-size-xs); color: var(--color-ink-muted);">0&ndash;63 (final-test value)</span>
               </div>
               <small id="twist-gain-hint" style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
-                1px gain = 9 (0b001001) &rarr; ~72
+                1px gain = 37 (0b100101) &rarr; ~219
               </small>
               <small id="twist-gain-readback" style="display: block; margin-top: 2px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
                 Device: not read
+              </small>
+            </div>
+            <div class="ds-field" style="min-width: 190px; margin-bottom: 0;">
+              <label class="ds-field__label" for="cal-pitch">Pixel pitch (mm)</label>
+              <input type="number" id="cal-pitch" step="0.1" min="0.1" class="ds-field__input" value="1" />
+              <small style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+                2px scale: 20 &times; pitch counts per mT/mm. Datasheet value unconfirmed &mdash; trim to match the die.
               </small>
             </div>
             <div style="display: grid; grid-template-columns: repeat(3, 80px); gap: 10px;">
@@ -736,58 +743,6 @@
 
         </div>
       </div>
-
-      <!-- SUB-VIEW: JOYSTICK CALIBRATION -->
-      <div id="view-calib" class="view">
-        <div style="display: grid; grid-template-columns: 280px 1fr; gap: 16px;">
-          <div class="ds-card ds-card--pad-md" style="width: 100%;">
-            <h3 style="margin: 0 0 12px 0; font-size: var(--font-size-md);">Calibration Wizard</h3>
-            <div style="display: flex; flex-direction: column; gap: 12px;">
-              <div id="step-1" style="padding: 12px; background: var(--color-surface); border-radius: 3px; border: 1px solid var(--color-border);">
-                <h4 style="margin: 0 0 4px 0; font-size: var(--font-size-sm);">1. Set Rest Center</h4>
-                <p style="margin: 0 0 8px 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">Leave joystick untouched at center rest.</p>
-                <button id="btn-calib-zero" class="ds-button ds-button--secondary ds-button--sm" disabled>Capture Zero</button>
-              </div>
-              <div id="step-2" style="padding: 12px; background: var(--color-surface); border-radius: 3px; border: 1px solid var(--color-border); opacity: 0.6;">
-                <h4 style="margin: 0 0 4px 0; font-size: var(--font-size-sm);">2. Boundary Sweep</h4>
-                <p style="margin: 0 0 8px 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">Rotate stick 360° along outer edge.</p>
-                <button id="btn-calib-sweep" class="ds-button ds-button--secondary ds-button--sm" disabled>Start Sweep Recording</button>
-              </div>
-              <div id="step-3" class="ds-slider" style="width: 100%; padding: 12px; background: var(--color-surface); border-radius: 3px; border: 1px solid var(--color-border); opacity: 0.6;">
-                <div class="ds-slider__meta">
-                  <span class="ds-slider__label">3. Deadband Filter</span>
-                  <span id="val-deadband" class="ds-slider__value">3%</span>
-                </div>
-                <input type="range" id="input-deadband" class="ds-slider__input" min="0" max="15" value="3" />
-              </div>
-              <div id="step-4" style="padding: 12px; background: var(--color-surface); border-radius: 3px; border: 1px solid var(--color-border); opacity: 0.6;">
-                <h4 style="margin: 0 0 4px 0; font-size: var(--font-size-sm);">4. Apply Calibration</h4>
-                <p style="margin: 0 0 8px 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">Save computed parameters.</p>
-                <button id="btn-calib-save" class="ds-button ds-button--secondary ds-button--sm" disabled>Apply Calibration</button>
-              </div>
-            </div>
-          </div>
-
-          <div style="display: flex; flex-direction: column; gap: 16px;">
-            <div class="ds-card ds-card--pad-md" style="width: 100%;">
-              <div style="width: 100%; display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                <h3 style="margin: 0; font-size: var(--font-size-sm);">Magnetic Motion Trace (Bx vs By)</h3>
-                <button id="btn-clear-plot" class="ds-button ds-button--secondary ds-button--sm">Clear Plot</button>
-              </div>
-              <div style="background: var(--color-surface); padding: 16px; border-radius: 3px; border: 1px solid var(--color-border); display: flex; justify-content: center; align-items: center; width: 100%;">
-                <canvas id="calib-canvas" width="300" height="300" style="display: block;"></canvas>
-              </div>
-            </div>
-            <div class="ds-card ds-card--pad-md" style="width: 100%; display: grid; grid-template-columns: repeat(4, 1fr); text-align: center;">
-              <div><span style="font-size: var(--font-size-xs); color: var(--color-ink-muted); text-transform: uppercase;">Offset X</span><div id="telem-off-x" style="font-weight: bold; color: var(--color-accent);">0</div></div>
-              <div><span style="font-size: var(--font-size-xs); color: var(--color-ink-muted); text-transform: uppercase;">Offset Y</span><div id="telem-off-y" style="font-weight: bold; color: var(--color-accent);">0</div></div>
-              <div><span style="font-size: var(--font-size-xs); color: var(--color-ink-muted); text-transform: uppercase;">Span</span><div id="telem-span" style="font-weight: bold; color: var(--color-accent);">0</div></div>
-              <div><span style="font-size: var(--font-size-xs); color: var(--color-ink-muted); text-transform: uppercase;">Status</span><div id="telem-status" style="font-weight: bold; color: var(--color-warning);">Uncalibrated</div></div>
-            </div>
-          </div>
-        </div>
-      </div>
-
 
     <!-- HELP MODAL -->
     <div id="help-modal" class="ds-modal-root hidden">

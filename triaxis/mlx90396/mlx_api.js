@@ -36,12 +36,10 @@ export class MLX90396_API {
       const decStr = txArray.join(',');
       
       await this.query(`${prefix}:CS0 0`);
-      await new Promise(r => setTimeout(r, 2));
 
       const scpiCmd = `${prefix}:WriteReaD ${decStr}`;
       let response = await this.query(scpiCmd);
-      
-      await new Promise(r => setTimeout(r, 2));
+
       await this.query(`${prefix}:CS0 1`);
 
       if (!response) return Array(miso_len).fill(0);

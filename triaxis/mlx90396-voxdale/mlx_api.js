@@ -36,12 +36,10 @@ export class MLX90396_API {
       const decStr = txArray.join(',');
       
       await this.query(`${prefix}:CS0 0`);
-      await new Promise(r => setTimeout(r, 2));
 
       const scpiCmd = `${prefix}:WriteReaD ${decStr}`;
       let response = await this.query(scpiCmd);
-      
-      await new Promise(r => setTimeout(r, 2));
+
       await this.query(`${prefix}:CS0 1`);
 
       if (!response) return Array(miso_len).fill(0);
@@ -320,6 +318,54 @@ export class MLX90396_API {
       const readRes = await this.rr(0x00);
       if (readRes.error) return { error: true, value: null, raw: null };
       return { error: false, value: readRes.data & 0x003F, raw: readRes.data };
+  }
+
+  /**
+   * GAINSEL fields share register 0x00: bits[5:0] = 1px, bits[11:6] = 2px.
+   * Writes require the unlock sequence (datasheet 15.4.3) and must preserve the
+   * other field; a readback then confirms what the part actually holds.
+   * @param {'1px'|'2px'} mode
+   * @param {number} gainValue 6-bit gain
+   * @param {boolean} persist - If true, issues HS to store permanently into NVRAM
+   */
+  async setGain(mode, gainValue, persist = false) {
+      if (await this.wr(0x43, 0x9952)) return { ok: false };
+      if (await this.wr(0x44, 0x84DE)) return { ok: false };
+
+      const is2px = mode === '2px';
+      const readRes = await this.rr(0x00);
+      // Abort on a failed read: substituting 0 would wipe the other mode's
+      // gain field instead of failing safe.
+      if (readRes.error) return { ok: false };
+      const currentVal = readRes.data;
+
+      const gainField = gainValue & 0x003F;
+      // Preserve everything outside the written field, including bits 15:12 -
+      // the old positive masks zeroed the upper nibble on every gain write.
+      const updatedVal = is2px
+          ? (currentVal & ~0x0FC0) | (gainField << 6)
+          : (currentVal & ~0x003F) | gainField;
+
+      if (await this.wr(0x00, updatedVal)) return { ok: false };
+
+      const verifyRes = await this.rr(0x00);
+      const verifiedField = is2px
+          ? (verifyRes.data >> 6) & 0x003F
+          : verifyRes.data & 0x003F;
+      const ok = !verifyRes.error && verifiedField === gainField;
+
+      if (ok && persist) await this.hs();
+
+      return { ok, value: ok ? verifiedField : null, raw: verifyRes.data };
+  }
+
+  async readGain(mode) {
+      const readRes = await this.rr(0x00);
+      if (readRes.error) return { error: true, value: null, raw: null };
+      const value = mode === '2px'
+          ? (readRes.data >> 6) & 0x003F
+          : readRes.data & 0x003F;
+      return { error: false, value, raw: readRes.data };
   }
 }
 

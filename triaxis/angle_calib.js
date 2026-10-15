@@ -37,6 +37,45 @@ export const DEFAULT_CALIBRATION_PARAMS = Object.freeze({
   o22: 0.0   // Beta lower orthogonality term
 });
 
+// --- Display scale: raw LSB -> physical units -------------------------------
+// Lives here because both pages import this module, so the Thumbstick and the
+// Voxdale page cannot disagree about what a count is worth.
+//
+//   absolute pixel : field[mT]       = counts / SINGLE_PIXEL_LSB_PER_MT
+//   differential   : gradient[mT/mm] = counts / (SINGLE_PIXEL_LSB_PER_MT * pitch_mm)
+//
+// The 2px channels carry the raw difference between two neighbouring pixels in
+// the same LSB scale as the absolute pixels - the chip does not pre-divide by
+// its pixel pitch - so one mT/mm is (LSB per mT) x (pitch) counts.
+//
+// NOTE: the pitch is NOT in the preliminary datasheet we have. 1.0 mm is the
+// working assumption: it reproduces the simulator's ~6.5 mT/mm nominal and
+// keeps the press target (~20 mT/mm) reachable. The old hard-coded divisor of
+// 120 implied a 6 mm pitch - that is the magnet diameter, not an on-die spacing
+// - and read every gradient ~6x low, which dropped the differential radar
+// under its "no magnet" gate. Trim it live until the part confirms the figure.
+export const SINGLE_PIXEL_LSB_PER_MT = 20;
+export const DEFAULT_SENSOR_PIXEL_PITCH_MM = 1.0;
+
+let sensorPixelPitchMm = DEFAULT_SENSOR_PIXEL_PITCH_MM;
+
+/** Current assumed pixel pitch in mm (live-trimmable from the UI). */
+export function getSensorPixelPitchMm() {
+  return sensorPixelPitchMm;
+}
+
+/** Set the assumed pixel pitch in mm; ignores non-finite / non-positive input. */
+export function setSensorPixelPitchMm(value) {
+  const n = typeof value === 'number' ? value : parseFloat(value);
+  if (Number.isFinite(n) && n > 0) sensorPixelPitchMm = n;
+  return sensorPixelPitchMm;
+}
+
+/** Counts per mT/mm for the 2px differential channels. */
+export function lsbPerMtMm() {
+  return SINGLE_PIXEL_LSB_PER_MT * sensorPixelPitchMm;
+}
+
 const RAD_TO_DEG = 180 / Math.PI;
 
 /** Coerce one reading/param value: non-finite -> fallback, so NaN never propagates. */

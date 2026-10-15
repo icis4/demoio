@@ -111,7 +111,7 @@
     });
   }
 
-  $('#reset').addEventListener('click', () => {
+  $('reset').addEventListener('click', () => {
     for (const id of SLIDERS) {
       const v = DEFAULT_CALIBRATION_PARAMS[id];
       $(id).value = v;
@@ -127,8 +127,8 @@
   });
 
   // Corrupt/repair demo: prove the valid:false guard swallows NaN silently.
-  $('#corrupt').addEventListener('click', () => { (modeEl.value === '1px' ? $('Bz') : $('dBzdy')).value = 'NaN'; render(); });
-  $('#clean').addEventListener('click', () => { READING_FIELDS.forEach(id => { if ($(id).value === 'NaN') $(id).value = ''; }); render(); });
+  $('corrupt').addEventListener('click', () => { (modeEl.value === '1px' ? $('Bz') : $('dBzdy')).value = 'NaN'; render(); });
+  $('clean').addEventListener('click', () => { READING_FIELDS.forEach(id => { if ($(id).value === 'NaN') $(id).value = ''; }); render(); });
   READING_FIELDS.forEach(id => $(id).addEventListener('input', render));
 
   function read1px() {

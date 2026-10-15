@@ -135,14 +135,13 @@ browser DevTools console (there is no on-screen terminal window).
   old `Lock XY (twist only)` checkbox, whose label was self-contradictory (locking XY is
   what makes it twist-only).
 - **Signal & Calibration** — toggles the `#twist-panel` with live readouts and calibration
-  inputs (below). Available from the **Thumbstick** tab; the panel is one shared element
-  reparented under `#demo-jwt` at load. (The duplicate button on the **Thumbstick with twist**
-  tab was removed — reviewer slide 4 puts twist calibration under *Zero Position* instead.)
+  inputs (below). Per reviewer slide 4 it belongs to the no-twist **Thumbstick** tab only, so
+  the panel is reparented into `#view-joystick` at load; twist-mode calibration is covered by
+  *Zero Position* instead.
 
 ### Twist panel — live signal
 
-Six readouts (updating while the panel is open on either the Thumbstick or the
-Thumbstick-with-twist tab):
+Six readouts (updating while the panel is open on the Thumbstick tab):
 
 1. **Alpha (calibrated)** — Desmos-calibrated twist angle about the X axis, degrees.
 2. **Beta (calibrated)** — Desmos-calibrated twist angle about the Y axis, degrees.
@@ -159,20 +158,27 @@ Thumbstick-with-twist tab):
   `X02 = (x2 − x0)/2`, `Z02 = (z2 − z0)/2`, `Y13 = (y3 − y1)/2`, `Z13 = (z3 − z1)/2`.
   `Alpha = atan2(Z02, X02)`, `Beta = atan2(Z13, Y13)`. Cross-terms in the calibration
   consume the *other* axis' differential pair (alpha sees `Y13`, beta sees `X02`).
+- **Units** — the raw LSB are converted to physical units before display, using the
+  shared scale in `../angle_calib.js`: absolute `÷ 20` (mT), differential `÷ (20 × pixel
+  pitch)` (mT/mm). The pitch is live-trimmable in the config card (default 1.0 mm) and is
+  the same value the Voxdale page uses. Dividing a whole signal by one constant leaves
+  every `atan2` angle untouched, so this only rescales the strength readouts.
 
 ### Twist panel — gain & calibration config
 
-- **GAINSEL (electrical gain)** — Two factory presets only, applied per mode through
-  `twist_api.js` `setGainSel`: **1x** (`gain 9` ≈ 72 counts) and **3x** (`gain 37` ≈ 219).
-  No free numeric entry. There is no "0" option, so the table starts at `1px = 9`,
-  `2px = 9` (the earlier production trim was `1px = 37`, `2px = 9`); the hint text shows
-  the selected value and its 6-bit pattern live.
+- **GAINSEL (electrical gain)** — Two factory presets, applied per mode through
+  `twist_api.js` `setGainSel`: **1x** (`gain 9` ≈ 72 counts) and **3x** (`gain 37` ≈ 219),
+  plus a free **trim** field (0–63) for the AE's final-test value. Per the AE, the 1px
+  path defaults to **3x (37)** for the twist demo and 2px to **1x (9)**; the hint text
+  shows the selected value and its 6-bit pattern live.
   - **Hardware write (SCPI only)** — `setGainSel` is the local table; the line below it,
     `Device confirmed: …`, is a readback of register `0x00` bits `[5:0]`/`[11:6]` via
     `MLX90396_API.setGain`/`readGain` (unlock `0x43=0x9952, 0x44=0x84DE`, field write,
-    readback verify). Clicking a preset writes in real time.
-    Switching 1px↔2px mode re-syncs the display but does NOT push gain to the chip; on
-    start the demo re-reads the chip and adopts what it holds.
+    readback verify). Choosing a preset or entering a trim writes in real time.
+    Switching 1px↔2px mode re-syncs the display; starting the demo writes the
+    configured gain for the active mode (the AE default 1px = 3x / 2px = 1x, or
+    the value the user chose). The `Device confirmed` line reports what the part
+    actually holds.
     Without an SCPI device every value stays local and the readback shows `not read`.
 - **Calibration constants** `k1, k2, o11, o12, o21, o22` — edited live; every change
   re-renders the readouts immediately. They feed the Desmos cross-axis model:
@@ -211,16 +217,18 @@ Per loop iteration (~50 ms):
    (`x2,y2,z2,x3,y3,z3`).
 3. Averages of the four pixels become `avgX, avgY, avgZ`.
 4. `angleDeg = atan2(-avgY, avgX)` (sign convention tuned for the demo orientation).
-5. `sm(0x000FC)` + 2 ms settle → `rm(false, 0x000FC)` reads the six differential
-   channels (X02 … Z13). They populate the **Diagnostics** tab only; the thumbstick
-   knob no longer consumes them (see 7).
+5. `sm(0x000FC)` → `rm(false, 0x000FC)` reads the six differential
+   channels (X02 … Z13). They feed the **Diagnostics** tab and the Twist panel's **2px**
+   readouts, so the transfer is issued only when one of those needs it
+   (`needsDiffChannels()`); the thumbstick knob still uses the absolute average (see 7).
 6. Magnet disk position is derived from **gradients** with crosstalk removal:
    `rawGradX = ((x1+x2) − (x0+x3))/2`, `rawGradY = ((y0+y1) − (y3+y2))/2`,
    `cleanGradX = rawGradX − avgX·K_ROT_X`, `cleanGradY = rawGradY − avgY·K_ROT_Y`
    (`K_ROT = 0.10`), finishing with `mm = cleanGrad · SCALE` (`SCALE = 0.02`).
 7. The thumbstick knob reads the 4-pixel absolute average only:
    `joyX = avgX / 20`, `joyY = avgY / 20` (gradient/field source toggle removed).
-8. All four pixels are passed to `updateTwistUI` for the Twist panel.
+8. All four pixels (plus `resDiff`, when fetched, for the 2px pair) are passed to
+   `updateTwistUI` for the Twist panel.
 
 ### Arduino path (`arduino`)
 The 15-field frame is parsed by `Arduino_API.parseLine`:
