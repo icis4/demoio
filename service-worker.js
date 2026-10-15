@@ -4,7 +4,7 @@
  * a cache-first worker keeps serving stale HTML/JS long after a change. The
  * cache is only a fallback for when the network is unavailable.
  */
-const CACHE = "melexis-io-tools-v2";
+const CACHE = "melexis-io-tools-v4";
 
 const SHELL = [
   "./",
@@ -28,6 +28,8 @@ const SHELL = [
   "./pressure/LICENSE",
   "./triaxis/",
   "./triaxis/index.html",
+  "./triaxis/angle_calib.js",
+  "./triaxis/angle_calib_demo.html",
   "./triaxis/mlx90396-2.html",
   "./triaxis/mlx90396/",
   "./triaxis/mlx90396/index.html",

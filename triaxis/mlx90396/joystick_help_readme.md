@@ -33,7 +33,7 @@
 
 - *If something fails, a red error box appears inside the modal with an explanatory hint (e.g. port already held by another program, browser not supporting Web Serial).*
 
-## Tabs (top of demo area): Thumbstick · Thumbstick with twist
+## Tabs (top of demo area): Thumbstick with twist · Thumbstick
 
 *Only the active tab animates.*
 
@@ -43,11 +43,13 @@
 
 - **28-LED ring** — outer LEDs; the one closest to the vector angle lights bright with dimmer neighbors on either side. Off when the stick is centered.
 
-- **Radar scope** — polar display under the stick: a trail of the last 40 positions, a gradient line from center to the current spot, a glowing dot when off-center, range rings, and compass labels. Readout line: **Azimuth: 0.0° | Range: 0.0%**.
+- **Polar radar** — Voxdale-style field-vector scope under the stick: dark reticle with 25% rings and compass labels (`0° (+X)`, `90° (+Y)`, `180° (-X)`, `270° (-Y)`), plus a teal measured vector with a glowing head. The radar XY is computed by the **angular formula (plain atan2 without calibration) applied to the averaged 4-pixel XYZ**; at rest the field is straight up, so the resting vector sits at the origin and grows in the direction of tilt. Readout line: **Azimuth: 0.0° | Range: 0.0%**, with `Azimuth = atan2(y, x)`.
+
+- **Signal & Calibration button** — toggles the twist panel (live α/β readouts plus the GAINSEL and k/o calibration card) below the radar. Reviewer slide 4 scopes this panel to the no-twist Thumbstick tab.
 
 ### 2. Thumbstick with twist tab
 
-- **Magnet disk** (half blue **N** / half red **S**) — rides a **fixed ±2.5 mm 1 mm-pitch grid** laid out like the sensor die. It positions with X/Y and spins with the twist angle. A rightward physical rotation shows as clockwise on screen.
+- **Magnet disk** (half dark-charcoal **N** / half gold **S**, the Melexis magnet-render colours) — rides a **fixed ±2.5 mm 1 mm-pitch grid** laid out like the sensor die. It positions with X/Y and spins with the twist angle. A rightward physical rotation shows as clockwise on screen.
 
     - The grid never rescales, so a pure rotation doesn't jump the disk.
 
@@ -55,18 +57,20 @@
 
 - **Zero Position button** — captures current raw X/Y as the reference; the disk recentres there.
 
-- **Lock XY (twist only) checkbox** — disk stops translating and only spins — for a clean twist demo. Toggling off never snaps, since the smoother keeps tracking.
+- **Motion mode selector** — `XY + Twist` (default), `XY only` or `Twist only`. `XY only` keeps the disk tracking position and holds the twist angle where it was; `Twist only` stops the disk translating so it only spins, for a clean twist demo. Replaces the old `Lock XY (twist only)` checkbox. The smoother keeps tracking behind the scenes, so switching modes never snaps.
 
-- **Signal & Calibration button** — toggles the twist panel below the grid.
+- Twist calibration on this tab is done with **Zero Position**; the Signal & Calibration panel (readouts + k/o) lives on the **Thumbstick** tab (reviewer slide 4).
 
-**Twist panel (when opened):**
+**Signal & Calibration panel** (opened from the Thumbstick tab):
 
 - **Mode selector**: 1px mode (single pixel · mT) — angles from pixel 0 fields; 2px mode (differential · mT/mm) — angles from gradient pairs between pixels.
 
-- **Readouts (6 boxes)**: `Alpha (calibrated)` / `Beta (calibrated)` (post-calibration angles), `Alpha (raw)` / `Beta (raw)` (pure atan2), and `Alpha Strength` / `Beta Strength` (field magnitude, in mT or mT/mm).
+- **Readouts (6 boxes)**: `Alpha (calibrated)` / `Beta (calibrated)` (post-calibration angles), `Alpha (raw)` / `Beta (raw)` (pure atan2), and `Alpha Strength` / `Beta Strength` (field magnitude, in mT or mT/mm). The strengths are true physical units: the raw counts are divided by the shared scale in `angle_calib.js` (20 counts/mT absolute, 20 × pitch counts per mT/mm differential).
 
-**Gain & Calibration Config card** *(always visible below the grid — it is not part of the twist panel)*
+**Gain & Calibration Config card** *(always visible in every motion mode so GAINSEL and the k/o constants stay reachable while tuning; per reviewer slide 4 the k/o formula itself applies to the no-twist XY demo, while twist calibration is covered by Zero Position.)*
 
-- **GAINSEL field** — 0–63 electrical gain register; the hint shows the 6-bit value (1px default 37 = `0b100101` → ~219). Changing it only updates the hint.
+- **GAINSEL presets** — electrical gain register with two factory presets, **1x** (gain 9 ≈ 72 counts) and **3x** (gain 37 ≈ 219 counts), plus a free **trim** field (0–63) for the final-test value. Applied per mode: **1px defaults to 3x (37)** per the AE's twist-demo guidance; **2px defaults to 1x (9)**. The hint shows the selected 6-bit value. Over SCPI choosing a value writes it to the active mode's field (unlock + readback verify) and confirms it in the "Device confirmed" line; without hardware it stays local. Switching 1px↔2px mode re-syncs the display; starting the demo writes the configured gain for the active mode.
 
-- **Calibration constants k1 k2 o11 o12 o21 o22** — edited live; every keystroke updates the calibrated readouts using the published Desmos cross-axis formula. Defaults `k1=k2=1, o=0` are an exact no-op: calibrated = raw, so nothing is "hidden".
+- **Pixel pitch (mm)** — the 2px display scale. The differential channels are raw counts, so mT/mm = counts ÷ (20 × pitch). The pitch is not in the preliminary datasheet, so it is live-trimmable (default 1.0 mm) and shared with the Voxdale page through `angle_calib.js`. It rescales the strength readouts only; the angles are unaffected.
+
+- **Calibration constants k1 k2 o11 o12 o21 o22** — edited live; every keystroke updates the calibrated readouts using the published Desmos cross-axis formula. Defaults `k1=k2=1, o=0` are an exact no-op: calibrated = raw, so nothing is "hidden". The live engine is initialised from these fields on load, so display and math always agree.

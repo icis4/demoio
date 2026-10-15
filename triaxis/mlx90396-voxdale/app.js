@@ -7,6 +7,8 @@ import {
   clampCoilDwellS,
   resizeSfiCanvases, 
   updateSfiDomeKinematics, 
+  updateSfiHardwareTelemetry,
+  setDifferentialFormula,
   setHardwareCoilCallback, 
   resetPlotLines,
   setSfiHardwareTracking,
@@ -14,6 +16,11 @@ import {
   resetCalibrationParams,
   getCalibrationParams
 } from './sfi_demo.js';
+import {
+  setSensorPixelPitchMm,
+  getSensorPixelPitchMm,
+  DEFAULT_SENSOR_PIXEL_PITCH_MM
+} from '../angle_calib.js';
 // DOM Elements
 const btnConnect = document.getElementById('btn-connect');
 const btnStartDemo = document.getElementById('btn-start-demo');
@@ -54,6 +61,7 @@ window.addEventListener('DOMContentLoaded', () => {
   initCoilControls();
   initSfiDemo();
   initTabNavigation();
+  initSerialPortEvents();
   window.addEventListener('resize', resizeSfiCanvases);
   window.addEventListener('pagehide', releaseCoilOnUnload);
 });
@@ -84,8 +92,16 @@ function getSpiPrefix() {
 }
 
 function appendLog(text, cls = 'log-rx') {
-  if (!text || !miniLogWindow) return;
-  
+  if (!text) return;
+
+  // Mirror every message to the browser console before the on-page log's
+  // hidden check: an error swallowed silently is worse than a noisy console.
+  const clean = String(text).replace(/\s+$/, '');
+  if (cls === 'log-badprompt') console.warn(clean);
+  else console.log(clean);
+
+  if (!miniLogWindow) return;
+
   // Stop processing debug logs if the window is hidden (Massive Lag Fix)
   if (miniLogWindow.classList.contains('hidden')) return;
 
@@ -114,16 +130,12 @@ function processRx(text) {
       if (rxBuffer.trim() !== '') {
         const line = rxBuffer.trim();
         if (currentDriverType === 'arduino' && activeDevice) {
+          // Parse only; runJoystickDemo() polls getSample() and is the single
+          // driver of the dome/UI. Pushing updateSfiDomeKinematics() here too
+          // raced the loop and used a different scaling (rawZ/1000 vs the
+          // loop's DOME_LIVE_LSB_SCALE), so the dome jittered between the two.
           const sample = activeDevice.processLine(line);
-          if (!sample.error) {
-            setSfiHardwareTracking(true);
-            updateSfiDomeKinematics(
-              sample.posX_mm / 2,
-              sample.posY_mm / 2,
-              sample.rawZ / 1000,
-              { p0Raw: { x: sample.rawX, y: sample.rawY, z: sample.rawZ }, diffRaw: { x: sample.rawX, y: sample.rawY, z: sample.rawZ } }
-            );
-          }
+          if (!sample.error) setSfiHardwareTracking(true);
         } else {
           handlePrompt(line);
         }
@@ -400,6 +412,15 @@ function setUIConnected(connected) {
 
 async function connectSerial() {
   try {
+    // A Start pressed before connecting left the standalone emulation loop
+    // running. Stop it and reset the controls before this session takes over,
+    // otherwise the emulation keeps writing to the UI and #btn-start-demo
+    // stays disabled, leaving the page stuck in emulation.
+    isDemoRunning = false;
+    if (btnStartDemo) btnStartDemo.disabled = false;
+    if (btnStopDemo) btnStopDemo.disabled = true;
+    await new Promise(r => setTimeout(r, 50));
+
     currentDriverType = selDriverType ? selDriverType.value : 'scpi';
     const baudRate = selBaudRate ? parseInt(selBaudRate.value, 10) : 115200;
 
@@ -454,24 +475,77 @@ async function connectSerial() {
   }
 }
 
-async function disconnectSerial() {
-  isDemoRunning = false;
-  // Before the streams go away, so the shut-off can still be sent and confirmed.
-  await releaseCoilBeforeDisconnect();
-  isReading = false;
-  if (reader) { await reader.cancel(); reader.releaseLock(); }
-  if (writer) { await writer.close(); writer.releaseLock(); }
-  if (readableStreamClosed) await readableStreamClosed.catch(() => {});
-  if (writableStreamClosed) await writableStreamClosed.catch(() => {});
-  if (port) await port.close();
+let disconnectInFlight = false;
 
-  port = null; reader = null; writer = null; activeDevice = null;
-  setSfiHardwareTracking(false);
-  setUIConnected(false);
-  btnStartDemo.disabled = false;
-  btnStopDemo.disabled = true;
-  appendLog('[SYSTEM] Port closed.\n', 'log-badprompt');
+async function disconnectSerial(reason = 'manual') {
+  // Guard against the unplug listener and the button both firing at once.
+  if (disconnectInFlight) return;
+  disconnectInFlight = true;
+
+  try {
+    isDemoRunning = false;
+    // Before the streams go away, so the shut-off can still be sent and confirmed.
+    await releaseCoilBeforeDisconnect();
+    isReading = false;
+
+    // Fail any in-flight SCPI query so the demo loop stops waiting on a promise
+    // a closed port can no longer answer.
+    if (scpiWaiter) {
+      clearTimeout(scpiWaiter.timeoutId);
+      const waiter = scpiWaiter;
+      scpiWaiter = null;
+      waiter.reject(new Error('Port closed'));
+      if (waiter.release) waiter.release();
+    }
+    scpiLock = Promise.resolve();
+
+    // Guarded: after an unplug these reject with NetworkError, and an unguarded
+    // await would abort teardown before the UI is reset - leaving the button
+    // stuck on "Disconnect".
+    try { if (reader) { await reader.cancel(); reader.releaseLock(); } } catch (_) { /* stream already gone */ }
+    try { if (writer) { await writer.close(); writer.releaseLock(); } } catch (_) { /* stream already gone */ }
+    if (readableStreamClosed) await readableStreamClosed.catch(() => {});
+    if (writableStreamClosed) await writableStreamClosed.catch(() => {});
+    try { if (port) await port.close(); } catch (_) { /* port already gone */ }
+
+    port = null; reader = null; writer = null; activeDevice = null;
+    readableStreamClosed = null; writableStreamClosed = null;
+    rxBuffer = '';
+    lastDataLine = '';
+
+    setSfiHardwareTracking(false);
+    setUIConnected(false);
+    btnStartDemo.disabled = false;
+    btnStopDemo.disabled = true;
+    appendLog(`[SYSTEM] Port closed${reason === 'unplugged' ? ' (device removed)' : ''}.\n`, 'log-badprompt');
+  } finally {
+    disconnectInFlight = false;
+  }
 }
+
+// The board can be pulled out mid-stream. navigator.serial reports that on its
+// own `disconnect` event; without this the UI keeps claiming "Connected" and
+// the demo loop keeps retrying a dead port every 150 ms.
+function initSerialPortEvents() {
+  if (!navigator.serial || typeof navigator.serial.addEventListener !== 'function') return;
+
+  navigator.serial.addEventListener('disconnect', (event) => {
+    if (!port || event.target !== port) return;
+    appendLog('[SYSTEM] Serial device disconnected.\n', 'log-badprompt');
+    disconnectSerial('unplugged');
+  });
+
+  navigator.serial.addEventListener('connect', () => {
+    appendLog('[SYSTEM] Serial device available - press Connect USB.\n', 'log-okprompt');
+  });
+}
+
+// Best effort on tab close so the OS/CDC port is released promptly. The coil is
+// NOT handled here: `pagehide` -> releaseCoilOnUnload already writes the pin low
+// synchronously, which is the part that actually matters on unload.
+window.addEventListener('beforeunload', () => {
+  if (port) { try { port.close(); } catch (_) { /* nothing left to close */ } }
+});
 
 // --- EXACT UNCHANGED ORIGINAL LIVE STREAMING LOOP ---
 async function runJoystickDemo() {
@@ -499,10 +573,24 @@ async function runJoystickDemo() {
           await scpiQuery(`${prefix}:BUFfer 1,1,1,1,0`);
           await scpiQuery(":VDD:3V3");
         }
+
+        // Trim BOTH gain fields to the selected preset before streaming. The
+        // chip powers up with GAINSEL_2PX = 0, which leaves the differential
+        // (2px) channels near zero: the SFI radar then flags "no magnet" while
+        // the 1px legacy path still reads fine. Writing the preset here makes
+        // the 2px path work without the user having to touch the gain control.
+        await setVoxGain(voxGain);
       }
 
       const K_ROT_X = 0.10, K_ROT_Y = 0.10;
       const SCALE_X = 0.02, SCALE_Y = 0.02;
+      // Live absolute-pixel LSB are normalized to joystick throw by this
+      // divisor (then clamped to ±1 in updateSfiDomeKinematics). 1000 == the
+      // original throw (≈12° for a typical stick sweep); raise it (e.g. 2000)
+      // for a softer response at full tilt.
+      const DOME_LIVE_LSB_SCALE = 500;
+      let diagPeriodMs = null;
+      let diagCyclePrev = null;
 
       while (isDemoRunning) {
         try {
@@ -513,17 +601,17 @@ async function runJoystickDemo() {
           let hasLiveSample = false;
 
           if (currentDriverType === 'scpi') {
-            await activeDevice.sm(0xFC000); 
-            await new Promise(r => setTimeout(r, 2)); 
-            const res01 = await activeDevice.rm(false, 0xFC000); 
+            await activeDevice.sm(0xFC000);
+            await activeDevice.awaitReady();
+            const res01 = await activeDevice.rm(false, 0xFC000);
             
-            await activeDevice.sm(0x03F00); 
-            await new Promise(r => setTimeout(r, 2)); 
-            const res23 = await activeDevice.rm(false, 0x03F00); 
+            await activeDevice.sm(0x03F00);
+            await activeDevice.awaitReady();
+            const res23 = await activeDevice.rm(false, 0x03F00);
 
             // Request the dedicated 2px channels: X02, Z02, Y13 and Z13.
             await activeDevice.sm(0x000AC);
-            await new Promise(r => setTimeout(r, 2));
+            await activeDevice.awaitReady();
             const resDiff = await activeDevice.rm(false, 0x000AC);
 
             if (!res01.error && !res23.error && !resDiff.error) {
@@ -553,6 +641,13 @@ async function runJoystickDemo() {
               p0Raw = { x: res01.x0, y: res01.y0, z: res01.z0 };
               diffRaw = { x: rawGradX, y: rawGradY, z: rawGradZx, bzY: rawGradZy };
             }
+
+            if (diagCyclePrev !== null) {
+              const cycleMs = performance.now() - diagCyclePrev;
+              diagPeriodMs = diagPeriodMs === null ? cycleMs : diagPeriodMs * 0.8 + cycleMs * 0.2;
+            }
+            diagCyclePrev = performance.now();
+            updateDiagnosticsFrame(res01, res23, resDiff, diagPeriodMs);
           } else {
             const sample = await activeDevice.getSample();
             if (!sample.error) {
@@ -564,14 +659,35 @@ async function runJoystickDemo() {
               angleDeg = sample.angleDeg;
               rawX = sample.rawX; rawY = sample.rawY; rawZ = sample.rawZ;
               p0Raw = { x: rawX, y: rawY, z: rawZ };
-              diffRaw = { x: rawX, y: rawY, z: rawZ, bzY: rawZ };
+              if (Array.isArray(sample.points) && sample.points.length === 4) {
+                // The Arduino frame carries the four absolute pixels; derive the
+                // differential pair (X02, Y13, Z02, Z13) exactly as 2px mode
+                // does, so the dome's diffRaw matches the SCPI path instead of
+                // reusing the absolute field for all four channels.
+                const [a, b, c, d] = sample.points;
+                diffRaw = {
+                  x: ((c.x ?? 0) - (a.x ?? 0)) / 2,
+                  y: ((d.y ?? 0) - (b.y ?? 0)) / 2,
+                  z: ((c.z ?? 0) - (a.z ?? 0)) / 2,
+                  bzY: ((d.z ?? 0) - (b.z ?? 0)) / 2,
+                };
+              }
             }
           }
 
           // A valid sample takes the dome seamlessly from its idle pattern to hardware tracking.
           if (hasLiveSample) {
             setSfiHardwareTracking(true);
-            updateSfiDomeKinematics(rawX / 1000, rawY / 1000, rawZ / 1000, { p0Raw, diffRaw });
+            if (currentDriverType === 'scpi') {
+              updateSfiHardwareTelemetry({ p0Raw, diffRaw, hasDifferential: true });
+            } else {
+              updateSfiDomeKinematics(
+                rawX / DOME_LIVE_LSB_SCALE,
+                rawY / DOME_LIVE_LSB_SCALE,
+                rawZ / DOME_LIVE_LSB_SCALE,
+                { p0Raw, diffRaw, hasDifferential: false }
+              );
+            }
           }
 
           await new Promise(r => setTimeout(r, currentDriverType === 'scpi' ? 10 : 25));
@@ -661,33 +777,7 @@ export async function apply1PxGainBoost(targetGain = 37, persist = false) {
 // Global hook for developer console or button triggers
 window.apply1PxGainBoost = apply1PxGainBoost;
 
-// --- 1. BAA ELECTRICAL GAIN TOGGLE (9 <-> 37) ---
-const btnGainToggle = document.getElementById('btn-gain-toggle');
-let isHighGain = false;
-
-btnGainToggle?.addEventListener('click', async () => {
-  if (!isConnected || currentDriverType !== 'scpi') {
-    appendLog('[GAIN ERROR] Connect hardware via SCPI first to configure registers.\n', 'log-badprompt');
-    return;
-  }
-
-  btnGainToggle.disabled = true;
-  const targetGain = isHighGain ? 9 : 37;
-
-  appendLog(`[BAA GAIN] Sending unlock sequence & writing GAINSEL_1PX = ${targetGain}...\n`, 'log-okprompt');
-  const success = await apply1PxGainBoost(targetGain, false);
-
-  if (success) {
-    isHighGain = !isHighGain;
-    btnGainToggle.textContent = isHighGain ? 'Gain 1px: 3x (219)' : 'Gain 1px: 1x (72)';
-    btnGainToggle.className = isHighGain 
-      ? 'ds-button ds-button--warning ds-button--sm' 
-      : 'ds-button ds-button--secondary ds-button--sm';
-  }
-  btnGainToggle.disabled = false;
-});
-
-// --- 2. CALIBRATION PANEL & LIVE TUNING ---
+// --- 1. CALIBRATION PANEL & LIVE TUNING ---
 const btnCalibToggle = document.getElementById('btn-calib-toggle');
 const panelCalibration = document.getElementById('panel-calibration');
 const btnCalibReset = document.getElementById('btn-calib-reset');
@@ -700,6 +790,11 @@ const calInputs = {
   o21: document.getElementById('cal-o21'),
   o22: document.getElementById('cal-o22')
 };
+
+const angleFormula = document.getElementById('sel-angle-formula');
+angleFormula?.addEventListener('change', () => {
+  setDifferentialFormula(angleFormula.value);
+});
 
 // Toggle drawer visibility
 btnCalibToggle?.addEventListener('click', () => {
@@ -715,13 +810,237 @@ Object.entries(calInputs).forEach(([key, inputEl]) => {
       setCalibrationParams({ [key]: val });
     }
   });
+  // Initialise the live engine from the fields on load, so the numbers on
+  // screen and the numbers in the formula can never disagree at startup.
+  if (inputEl) {
+    const val = parseFloat(inputEl.value);
+    if (!isNaN(val)) setCalibrationParams({ [key]: val });
+  }
 });
 
-// Reset calibration inputs to default values
+// --- 1b. 2px DISPLAY SCALE (pixel pitch) ---
+// The differential channels are raw counts; turning them into mT/mm needs the
+// on-die pixel pitch (derivation and caveat in angle_calib.js). The datasheet we
+// have does not publish it, so it is live-trimmable here, default 1.0 mm.
+const calPitchInput = document.getElementById('cal-pitch');
+if (calPitchInput) {
+  calPitchInput.value = String(getSensorPixelPitchMm());
+  calPitchInput.addEventListener('input', () => {
+    setSensorPixelPitchMm(calPitchInput.value);
+  });
+}
+
+// Reset calibration inputs to the documented engine defaults (K=1.0)
 btnCalibReset?.addEventListener('click', () => {
   const defs = resetCalibrationParams();
   Object.entries(defs).forEach(([k, val]) => {
-    if (calInputs[k]) calInputs[k].value = val.toFixed(k.startsWith('k') ? 2 : 3);
+    if (calInputs[k]) calInputs[k].value = val;
   });
-  appendLog('[CALIBRATION] Reset parameters to default (K=1.0, Ortho=0.0).\n', 'log-okprompt');
+  setSensorPixelPitchMm(DEFAULT_SENSOR_PIXEL_PITCH_MM);
+  if (calPitchInput) calPitchInput.value = String(DEFAULT_SENSOR_PIXEL_PITCH_MM);
+  appendLog('[CALIBRATION] Reset parameters to default (K=1.0, Ortho=0.0, pitch=1.0 mm).\n', 'log-okprompt');
 });
+
+// --- 2. GAINSEL PRESET (1x / 3x) ---
+// Two factory presets plus a free 0-63 trim field for the AE's final-test
+// value. The control lives in the Calibration Tuning drawer alongside the k/o
+// constants, and writes BOTH the 1px and 2px fields.
+const VOX_GAIN_COUNTS = { 9: '~72', 37: '~219' };
+const voxGainSeg = document.getElementById('vox-gain-seg');
+const voxGainHint = document.getElementById('vox-gain-hint');
+const voxGainReadback = document.getElementById('vox-gain-readback');
+// Default 3x: the AE specifies 37 for the 1px path, and Voxdale shows 1px and
+// 2px together, so both fields start at the higher trim.
+let voxGain = 37;
+
+function syncVoxGainControl() {
+  if (voxGainSeg) {
+    voxGainSeg.querySelectorAll('button[data-gain]').forEach((btn) => {
+      const on = parseInt(btn.dataset.gain, 10) === voxGain;
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.className = on
+        ? 'ds-button ds-button--primary ds-button--sm'
+        : 'ds-button ds-button--secondary ds-button--sm';
+    });
+  }
+  if (voxGainHint) {
+    const counts = VOX_GAIN_COUNTS[voxGain] ? ` → ${VOX_GAIN_COUNTS[voxGain]}` : '';
+    voxGainHint.textContent = `1px & 2px gain = ${voxGain} (0b${voxGain.toString(2).padStart(6, '0')})${counts}`;
+  }
+  const custom = document.getElementById('vox-gain-custom');
+  if (custom) custom.value = voxGain;
+}
+
+function setVoxGainReadback(value) {
+  if (!voxGainReadback) return;
+  if (typeof value === 'number' && !isNaN(value)) {
+    voxGainReadback.textContent = `Device confirmed: ${value} (0b${value.toString(2).padStart(6, '0')})`;
+    voxGainReadback.style.color = '#59FFB0';
+  } else {
+    voxGainReadback.textContent = 'Device: not read';
+    voxGainReadback.style.color = 'var(--color-ink-muted)';
+  }
+}
+
+async function setVoxGain(gainVal, persist = false) {
+  const requested = parseInt(gainVal, 10);
+  // Accept any 0-63 code as well as the two presets: the AE's final-test trim
+  // can sit between the factory 1x (9) and 3x (37) codes.
+  const g = Number.isFinite(requested) ? Math.min(63, Math.max(0, requested)) : voxGain;
+  voxGain = g;
+  syncVoxGainControl();
+
+  if (!isConnected || currentDriverType !== 'scpi') {
+    setVoxGainReadback(null);
+    return false;
+  }
+
+  try {
+    const bits = `0b${g.toString(2).padStart(6, '0')}`;
+    appendLog(`[GAIN] Writing GAINSEL_1PX = ${g} (${bits}) and GAINSEL_2PX = ${g} (${bits})...\n`, 'log-okprompt');
+    // Voxdale compares the 1px and 2px paths, so both gain fields are trimmed
+    // together; writing only 1px would leave the differential (2px) gain on the
+    // sensor untouched and the GAINSEL_2PX preset meaningless.
+    const res1 = await activeDevice.setGain('1px', g, persist);
+    const res2 = await activeDevice.setGain('2px', g, persist);
+    if (res1.ok && res2.ok) {
+      const rb1 = await activeDevice.readGain('1px');
+      const rb2 = await activeDevice.readGain('2px');
+      const v1 = rb1 && !rb1.error ? rb1.value : null;
+      const v2 = rb2 && !rb2.error ? rb2.value : null;
+      if (v1 !== null && v2 !== null) {
+        voxGainReadback.textContent = `Device confirmed: 1px ${v1} (0b${v1.toString(2).padStart(6, '0')}), 2px ${v2} (0b${v2.toString(2).padStart(6, '0')})`;
+        voxGainReadback.style.color = '#59FFB0';
+      } else {
+        setVoxGainReadback(null);
+      }
+      const good = v1 === g && v2 === g;
+      appendLog(good ? `[GAIN] Verified 1px=${v1}, 2px=${v2} on device.\n` : '[GAIN] Write/verify returned no readback.\n', good ? 'log-okprompt' : 'log-badprompt');
+      return good;
+    }
+    setVoxGainReadback(null);
+    appendLog(`[GAIN] Write/verify failed for ${g}.\n`, 'log-badprompt');
+    return false;
+  } catch (err) {
+    appendLog(`[GAIN ERROR] ${err.message}\n`, 'log-badprompt');
+    setVoxGainReadback(null);
+    return false;
+  }
+}
+
+window.setVoxGain = setVoxGain;
+
+voxGainSeg?.querySelectorAll('button[data-gain]').forEach((btn) => {
+  btn.addEventListener('click', () => setVoxGain(parseInt(btn.dataset.gain, 10)));
+});
+
+const voxGainCustom = document.getElementById('vox-gain-custom');
+voxGainCustom?.addEventListener('change', () => {
+  const v = parseInt(voxGainCustom.value, 10);
+  if (Number.isFinite(v)) setVoxGain(v);
+});
+
+syncVoxGainControl();
+
+// --- 3. SENSOR DIAGNOSTICS (thumbstick-style frame health + raw LSB) ---
+// Mirrors the MLX90396 thumbstick diagnostics: status byte decode, per-transfer
+// CRC line, raw 12-bit pixels, the four 2px gradient channels and the loop period.
+const DIAG_STATUS_FN = { 3: 'Single', 2: 'Burst', 1: 'WOC', 0: 'Exit / Memory' };
+
+function decodeStatus(s) {
+  if (typeof s !== 'number') return null;
+  const fn = (s >> 6) & 0x03;
+  return {
+    hex: '0x' + s.toString(16).toUpperCase().padStart(2, '0'),
+    fn: DIAG_STATUS_FN[fn] ?? 'Unknown',
+    fnBits: fn.toString(2).padStart(2, '0'),
+    counter: (s >> 3) & 0x07,
+    error: ((s >> 2) & 1) === 1,
+    warn: ((s >> 1) & 1) === 1,
+    drdy: (s & 1) === 1
+  };
+}
+
+function diagText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+function diagState(id, text, tone) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('diagnostics-state--warn', tone === 'warn');
+  el.classList.toggle('diagnostics-state--bad', tone === 'bad');
+}
+
+function updateDiagnosticsFrame(res01, res23, resDiff, periodMs) {
+  const tab = document.getElementById('tab-diagnostics');
+  if (tab && !tab.classList.contains('active')) return;
+
+  diagText('diag-source', 'Live hardware (SCPI)');
+
+  const st = decodeStatus(res01?.status);
+  if (st) {
+    diagText('diag-status', `${st.hex}  (${st.fnBits})`);
+    diagText('diag-fn', `${st.fn} · counter ${st.counter}`);
+    diagText('diag-drdy', st.drdy ? 'Ready' : 'Not ready');
+    diagText('diag-flags', `ERROR=${st.error ? 1 : 0}  WARN=${st.warn ? 1 : 0}`);
+    diagState('diag-health',
+      st.error ? 'Status ERROR set - the part rejected a command' :
+      !st.drdy ? 'DRDY clear - measurement not ready yet' :
+      st.warn ? 'WARN set - register 0x42 holds the detail' : 'Status clean',
+      st.error ? 'bad' : (!st.drdy || st.warn) ? 'warn' : null);
+  } else {
+    diagText('diag-status', '--');
+    diagText('diag-fn', '--');
+    diagText('diag-drdy', '--');
+    diagText('diag-flags', '--');
+    diagState('diag-health', 'No measurement received', 'bad');
+  }
+
+  const transfers = { '01': res01, '23': res23, '2px': resDiff };
+  diagText('diag-crc', ['01', '23', '2px'].map(k => {
+    const r = transfers[k];
+    if (!r) return `${k}:--`;
+    return `${k}:${r.error ? 'FAIL' : 'ok'}`;
+  }).join('   '));
+
+  if (typeof periodMs === 'number') {
+    diagText('diag-period', `${periodMs.toFixed(0)} ms`);
+  } else {
+    diagText('diag-period', '--');
+  }
+
+  const pixelRows = [
+    ['diag-x0', res01?.x0], ['diag-y0', res01?.y0], ['diag-z0', res01?.z0],
+    ['diag-x1', res01?.x1], ['diag-y1', res01?.y1], ['diag-z1', res01?.z1],
+    ['diag-x2', res23?.x2], ['diag-y2', res23?.y2], ['diag-z2', res23?.z2],
+    ['diag-x3', res23?.x3], ['diag-y3', res23?.y3], ['diag-z3', res23?.z3]
+  ];
+  pixelRows.forEach(([id, v]) => diagText(id, typeof v === 'number' ? String(v) : '--'));
+
+  const finite = pixelRows.every(([, v]) => typeof v === 'number' && !isNaN(v));
+  if (finite) {
+    const vals = pixelRows.map(([, v]) => v);
+    diagText('diag-avg-x', ((vals[0] + vals[3] + vals[6] + vals[9]) / 4).toFixed(2));
+    diagText('diag-avg-y', ((vals[1] + vals[4] + vals[7] + vals[10]) / 4).toFixed(2));
+    diagText('diag-avg-z', ((vals[2] + vals[5] + vals[8] + vals[11]) / 4).toFixed(2));
+    diagText('diag-peak', String(Math.max(...vals.map(Math.abs))));
+    diagState('diag-range',
+      Math.max(...vals.map(Math.abs)) >= 2040 ? 'ADC near full scale (2048)' : 'Within ADC range',
+      Math.max(...vals.map(Math.abs)) >= 2040 ? 'warn' : null);
+  } else {
+    diagText('diag-avg-x', '--');
+    diagText('diag-avg-y', '--');
+    diagText('diag-avg-z', '--');
+    diagText('diag-peak', '--');
+    diagState('diag-range', 'No measurement received', 'warn');
+  }
+
+  const gradRows = [
+    ['diag-dx02', resDiff?.x02], ['diag-dz02', resDiff?.z02],
+    ['diag-dy13', resDiff?.y13], ['diag-dz13', resDiff?.z13]
+  ];
+  gradRows.forEach(([id, v]) => diagText(id, typeof v === 'number' ? String(v) : '--'));
+}

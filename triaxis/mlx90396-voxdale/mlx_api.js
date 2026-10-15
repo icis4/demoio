@@ -15,6 +15,10 @@ export class MLX90396_API {
       SWOC: 0x20,     // Start WOC
       SM: 0x30,       // Start Single Measurement
       RM_NO_TEMP: 0x40, // Read Measurement (No Temp)
+      // Datasheet table 27 encodes the temperature request at bit 3
+      // (0b0100 T000 = 0x48), but the hardware-verified reference implementation
+      // drives bit 0 (0x41) and that is what works on the bench. Only 0x41 is
+      // confirmed here - verify on the part before relying on temperature.
       RM_TEMP: 0x41   // Read Measurement (With Temp)
   };
 
@@ -32,26 +36,24 @@ export class MLX90396_API {
       const decStr = txArray.join(',');
       
       await this.query(`${prefix}:CS0 0`);
-      await new Promise(r => setTimeout(r, 2));
 
       const scpiCmd = `${prefix}:WriteReaD ${decStr}`;
       let response = await this.query(scpiCmd);
-      
-      await new Promise(r => setTimeout(r, 2));
-      await this.query(`${prefix}:CS0 1`);
-      
-      if (!response) return Array(miso_len).fill(0);
-      
-      response = response.replace(scpiCmd, '').trim();
-      const tokens = response.match(/0x[0-9a-fA-F]+|[0-9a-fA-F]+/g) || [];
-      const rxArray = tokens.map(tok => parseInt(tok, 16));
 
-      if (rxArray.length >= mosi_data.length + miso_len) {
-        return rxArray.slice(mosi_data.length, mosi_data.length + miso_len);
-      } else if (rxArray.length >= miso_len) {
-        return rxArray.slice(-miso_len);
+      await this.query(`${prefix}:CS0 1`);
+
+      if (!response) return Array(miso_len).fill(0);
+
+      const stripped = response.replace(scpiCmd, '').trim();
+      const tokens = stripped.match(/0x[0-9a-fA-F]+|[0-9a-fA-F]+/g) || [];
+      const rx = tokens.map(tok => parseInt(tok, 16));
+
+      if (rx.length >= mosi_data.length + miso_len) {
+          return rx.slice(mosi_data.length, mosi_data.length + miso_len);
       }
-      
+      if (rx.length >= miso_len) {
+          return rx.slice(-miso_len);
+      }
       return Array(miso_len).fill(0);
   }
 
@@ -96,11 +98,15 @@ export class MLX90396_API {
   }
 
   _checkMaskLimit(data_mask) {
+      // The part measures at most 6 channels per SM/SB/SWOC/RM, and MI6 is the
+      // warning flag for over-asking. The mask is 20 bits (0..19); only bits
+      // 2..19 select measurement channels, so reserved bit 0 and the supply bit
+      // (bit 1) are excluded from the budget check instead of refusing.
       let count = 0;
-      let temp_mask = data_mask & 0xFFFFFC; 
+      let temp_mask = data_mask & 0xFFFFFC;
       while (temp_mask) {
           temp_mask &= (temp_mask - 1);
-          if (++count > 6) return true; 
+          if (++count > 6) return true;
       }
       return false;
   }
@@ -220,25 +226,54 @@ export class MLX90396_API {
       
       let result = { raw: miso };
       let offset = 1; 
-      
+
       if (temp) {
-          result.t = this._s16((miso[offset] << 8) | miso[offset + 1]);
+          const w = (miso[offset] << 8) | miso[offset + 1];
+          result.t = this._s16(w);
           offset += 2;
       }
       
       for (let key of activeKeys) {
-          result[key] = this._s16((miso[offset] << 8) | miso[offset + 1]);
+          const w = (miso[offset] << 8) | miso[offset + 1];
+          result[key] = this._s16(w);
           offset += 2;
       }
       
       result.error = !this._verify_crc(miso.slice(0, offset), miso[offset]);
       result.status = miso[0];
-      
+
       return result;
   }
 
   async rm_joystick_xyz(temp, data_mask) {
       return this.rm(temp, data_mask);
+  }
+
+  // Status-only RM: returns { ok, status } without consuming the pending
+  // measurement, mirroring the thumbstick API and the reference page's DRDY
+  // poll. The byte after the status is DATA (the reply CRC is only at the end
+  // of the full frame), so no CRC is verified on a lone status byte.
+  async rmStatus() {
+      const mosi = [MLX90396_API.Mlx90396Command.RM_NO_TEMP, 0];
+      mosi[1] = this._crc_2f(mosi.slice(0, 1));
+      const miso = await this._send_spi(mosi, 1);
+      if (!miso || miso.length < 1) return { ok: false, status: 0 };
+      return { ok: true, status: miso[0] };
+  }
+
+  // Wait for conversion-complete after SM: polls the status byte about every
+  // 2 ms up to deadlineMs, then proceeds regardless so a slow or silent part can
+  // never stall the loop. Returns true when DRDY (status bit 0) was seen.
+  async awaitReady(deadlineMs = 10) {
+      const t0 = Date.now();
+      for (;;) {
+          try {
+              const st = await this.rmStatus();
+              if (st.ok && (st.status & 0x01)) return true;
+          } catch (_) { /* transport hiccup: retry until the deadline */ }
+          if (Date.now() - t0 >= deadlineMs) return false;
+          await new Promise(r => setTimeout(r, 2));
+      }
   }
 
   /**
@@ -247,13 +282,16 @@ export class MLX90396_API {
    * @param {boolean} persist - If true, issues HS to store permanently into NVRAM
    */
   async setGain1Px(gainValue = 37, persist = false) {
-      // 1. Send unlock sequence (Datasheet 15.4.3)
-      await this.wr(0x43, 0x9952);
-      await this.wr(0x44, 0x84DE);
+      // 1. Send unlock sequence (Datasheet 15.4.3); abort if either write fails.
+      if (await this.wr(0x43, 0x9952)) return false;
+      if (await this.wr(0x44, 0x84DE)) return false;
 
       // 2. Read register 0x00 to preserve NV_GAINSEL_2PX (bits [11:6])
       const readRes = await this.rr(0x00);
-      const currentVal = readRes.error ? 0 : readRes.data;
+      // Abort on a failed read: substituting 0 would wipe the 2px gain field
+      // instead of failing safe.
+      if (readRes.error) return false;
+      const currentVal = readRes.data;
 
       // 3. Clear bits [5:0] and apply new 6-bit gain
       const updatedVal = (currentVal & ~0x003F) | (gainValue & 0x003F);
@@ -270,6 +308,64 @@ export class MLX90396_API {
           await this.hs();
       }
       return true;
+  }
+
+  /**
+   * Reads back NV_GAINSEL_1PX (reg 0x00 bits [5:0]) for UI confirmation.
+   * @returns {{error: boolean, value: (number|null), raw: (number|null)}}
+   */
+  async readGain1Px() {
+      const readRes = await this.rr(0x00);
+      if (readRes.error) return { error: true, value: null, raw: null };
+      return { error: false, value: readRes.data & 0x003F, raw: readRes.data };
+  }
+
+  /**
+   * GAINSEL fields share register 0x00: bits[5:0] = 1px, bits[11:6] = 2px.
+   * Writes require the unlock sequence (datasheet 15.4.3) and must preserve the
+   * other field; a readback then confirms what the part actually holds.
+   * @param {'1px'|'2px'} mode
+   * @param {number} gainValue 6-bit gain
+   * @param {boolean} persist - If true, issues HS to store permanently into NVRAM
+   */
+  async setGain(mode, gainValue, persist = false) {
+      if (await this.wr(0x43, 0x9952)) return { ok: false };
+      if (await this.wr(0x44, 0x84DE)) return { ok: false };
+
+      const is2px = mode === '2px';
+      const readRes = await this.rr(0x00);
+      // Abort on a failed read: substituting 0 would wipe the other mode's
+      // gain field instead of failing safe.
+      if (readRes.error) return { ok: false };
+      const currentVal = readRes.data;
+
+      const gainField = gainValue & 0x003F;
+      // Preserve everything outside the written field, including bits 15:12 -
+      // the old positive masks zeroed the upper nibble on every gain write.
+      const updatedVal = is2px
+          ? (currentVal & ~0x0FC0) | (gainField << 6)
+          : (currentVal & ~0x003F) | gainField;
+
+      if (await this.wr(0x00, updatedVal)) return { ok: false };
+
+      const verifyRes = await this.rr(0x00);
+      const verifiedField = is2px
+          ? (verifyRes.data >> 6) & 0x003F
+          : verifyRes.data & 0x003F;
+      const ok = !verifyRes.error && verifiedField === gainField;
+
+      if (ok && persist) await this.hs();
+
+      return { ok, value: ok ? verifiedField : null, raw: verifyRes.data };
+  }
+
+  async readGain(mode) {
+      const readRes = await this.rr(0x00);
+      if (readRes.error) return { error: true, value: null, raw: null };
+      const value = mode === '2px'
+          ? (readRes.data >> 6) & 0x003F
+          : readRes.data & 0x003F;
+      return { error: false, value, raw: readRes.data };
   }
 }
 

@@ -22,6 +22,15 @@
       align-items: center;
     }
 
+    /* The home link lives above the panel, lined up with its left edge, so the
+       stack has to carry the panel width rather than the body. */
+    .page {
+      width: min(1200px, 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
     .app-shell {
       width: min(1200px, 100%);
       background: var(--color-canvas);
@@ -30,6 +39,27 @@
       padding: var(--space-5);
       box-shadow: var(--shadow-md);
     }
+
+    /* Same pill as the Triaxis section page and the other subpages: arrow plus
+       the section name, back to triaxis/index.html. */
+    .home-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: var(--space-3);
+      padding: 4px 10px 4px 6px;
+      border-radius: var(--radius-sm);
+      color: var(--color-ink-muted);
+      font-family: var(--font-body);
+      font-size: var(--font-size-xs);
+      font-weight: 500;
+      text-decoration: none;
+      transition: color var(--duration-fast) var(--ease-out),
+                  background var(--duration-fast) var(--ease-out);
+    }
+    .home-link svg { width: 14px; height: 14px; flex-shrink: 0; }
+    .home-link:hover { color: var(--color-ink); background: var(--color-surface); }
+    .home-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 
     .header-row {
       display: flex;
@@ -51,6 +81,23 @@
       margin-bottom: var(--space-4);
       flex-wrap: wrap;
       gap: var(--space-2);
+    }
+
+    /* P10: fixed-size buttons in the controls bar so label changes (Gain
+       "1x 72" <-> "3x 219", Coil ON/OFF countdown) cannot shift the layout. */
+    .sfi-controls-bar .ds-button {
+      min-width: 132px;
+      justify-content: center;
+      white-space: nowrap;
+    }
+    .sfi-controls-bar .coil-dwell-input { min-width: 4.5rem; }
+
+    /* P10: the coil label is longer than the shared 132px button floor, so it
+       gets its own width plus tabular figures; the ON countdown then ticks
+       without changing the button's width. */
+    #btn-coil {
+      min-width: 195px;
+      font-variant-numeric: tabular-nums;
     }
 
     /* FULL-WIDTH TABS (Using Design System Variables) */
@@ -563,6 +610,16 @@
       font-size: var(--font-size-xs);
     }
 
+    .diagnostics-state--warn {
+      border-color: var(--color-warning, #eab308);
+      color: var(--color-warning, #eab308);
+    }
+
+    .diagnostics-state--bad {
+      border-color: var(--color-danger, #dc2626);
+      color: var(--color-danger, #dc2626);
+    }
+
     /* Coil Controller Bar */
     .coil-controller-box {
       background: var(--color-surface);
@@ -636,7 +693,7 @@
     }
     .log-rx { color: var(--color-ink-muted); } 
     .log-okprompt { color: var(--color-success); } 
-    .log-badprompt { color: var(--color-success); }
+    .log-badprompt { color: var(--color-danger); }
     .hidden { display: none !important; }
     /* Temporary graph-first layout: remove class="temporary-hidden" from any block to restore it. */
     .temporary-hidden { display: none !important; }
@@ -704,6 +761,15 @@
   </style>
 </head>
 <body>
+  <div class="page">
+    <a class="home-link" href="../index.html">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 12H5M12 19l-7-7 7-7"/>
+      </svg>
+      Triaxis
+    </a>
+
   <main class="app-shell">
 
     <div class="header-row">
@@ -731,10 +797,10 @@
     <label class="coil-dwell-lbl" for="coil-dwell-seconds">pulse</label>
     <input type="number" id="coil-dwell-seconds" class="ds-field__input coil-dwell-input" min="0.5" max="60" step="0.5" value="5"
            title="Coil pulse width in seconds (0.5 - 60)" aria-label="Coil pulse width in seconds" />
-    <button id="btn-gain-toggle" class="ds-button ds-button--secondary ds-button--sm">Gain 1px: 1x (72)</button>
     <button id="btn-calib-toggle" class="ds-button ds-button--secondary ds-button--sm">Calibration Tuning</button>
     <button id="btn-reset-trace" class="ds-button ds-button--secondary ds-button--sm">Clear Trajectories</button>
-    <button id="btn-toggle-debug" class="ds-button ds-button--ghost ds-button--sm hidden">Debug</button>
+    <button id="btn-zero-plots" class="ds-button ds-button--secondary ds-button--sm" title="Centre both 3D magnet models on their grids">Zero Graphs</button>
+    <button id="btn-toggle-debug" class="ds-button ds-button--ghost ds-button--sm">Debug</button>
     <!-- Inside .sfi-controls-bar in index.html -->
 
   </div>
@@ -777,55 +843,153 @@
 <div id="panel-calibration" class="ds-card ds-card--pad-md hidden" style="margin-bottom: var(--space-4);border: 1.5px solid var(--color-accent);background: var(--color-surface-raised);width: 100%;display: flow;">
   <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3); border-bottom: 1px solid var(--color-border); padding-bottom: var(--space-2);">
     <div>
-      <span style="font-family: var(--font-display); font-size: var(--font-size-sm); font-weight: 700; color: var(--color-accent);">
-        Desmos Calibration Engine (K-Factors &amp; Orthogonality)
+      <span style="font-family: var(--font-display); font-size: var(--font-size-md); font-weight: 700; color: var(--color-ink);">
+        Gain &amp; Calibration Config
       </span>
-      <p style="margin: 2px 0 0 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
-        Live compensation for cross-axis coupling and Z-feedthrough angles.
-      </p>
     </div>
     <div style="display: flex; gap: var(--space-2);">
       <button id="btn-calib-reset" class="ds-button ds-button--secondary ds-button--sm">Reset Defaults</button>
     </div>
   </div>
 
-  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4);">
-    <!-- Alpha Parameters -->
-    <div style="display: flex; flex-direction: column; gap: var(--space-2);">
-      <span style="font-family: var(--font-display); font-size: var(--font-size-xs); font-weight: 700; color: var(--color-success);">
-        Alpha (&alpha;) Calibration: a<sub>1</sub>
-      </span>
-      <div style="display: grid; grid-template-columns: 100px 1fr; align-items: center; gap: 8px; font-size: var(--font-size-xs);">
-        <label for="cal-k1">k1 (K-Factor):</label>
-        <input type="number" id="cal-k1" step="0.01" value="1.00" class="ds-field__input" style="padding: 4px 8px; height: 28px;">
-        <label for="cal-o11">o11 (Upper):</label>
-        <input type="number" id="cal-o11" step="0.005" value="0.000" class="ds-field__input" style="padding: 4px 8px; height: 28px;">
-        <label for="cal-o12">o12 (Lower):</label>
-        <input type="number" id="cal-o12" step="0.005" value="0.000" class="ds-field__input" style="padding: 4px 8px; height: 28px;">
+  <div style="display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; margin-bottom: var(--space-4);">
+    <div class="ds-field" style="min-width: 240px; margin-bottom: 0;">
+      <span class="ds-field__label">GAINSEL (electrical gain)</span>
+      <div id="vox-gain-seg" role="group" aria-label="Electrical gain preset" style="display: flex; gap: 6px;">
+        <button type="button" class="ds-button ds-button--secondary ds-button--sm" data-gain="9" aria-pressed="false">1x (gain 9)</button>
+        <button type="button" class="ds-button ds-button--primary ds-button--sm" data-gain="37" aria-pressed="true">3x (gain 37)</button>
       </div>
+      <div style="display: flex; align-items: center; gap: 6px; margin-top: 6px;">
+        <label for="vox-gain-custom" style="font-size: var(--font-size-xs); color: var(--color-ink-muted);">trim</label>
+        <input id="vox-gain-custom" type="number" min="0" max="63" step="1" class="ds-field__input" style="width: 5.5rem;" />
+        <span style="font-size: var(--font-size-xs); color: var(--color-ink-muted);">0&ndash;63 (final-test value)</span>
+      </div>
+      <small id="vox-gain-hint" style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+        1px &amp; 2px gain = 37 (0b100101) &rarr; ~219
+      </small>
+      <small id="vox-gain-readback" style="display: block; margin-top: 2px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+        Device: not read
+      </small>
     </div>
-
-    <!-- Beta Parameters -->
-    <div style="display: flex; flex-direction: column; gap: var(--space-2);">
-      <span style="font-family: var(--font-display); font-size: var(--font-size-xs); font-weight: 700; color: var(--color-accent);">
-        Beta (&beta;) Calibration: b<sub>1</sub>
-      </span>
-      <div style="display: grid; grid-template-columns: 100px 1fr; align-items: center; gap: 8px; font-size: var(--font-size-xs);">
-        <label for="cal-k2">k2 (K-Factor):</label>
-        <input type="number" id="cal-k2" step="0.01" value="1.00" class="ds-field__input" style="padding: 4px 8px; height: 28px;">
-        <label for="cal-o21">o21 (Upper):</label>
-        <input type="number" id="cal-o21" step="0.005" value="0.000" class="ds-field__input" style="padding: 4px 8px; height: 28px;">
-        <label for="cal-o22">o22 (Lower):</label>
-        <input type="number" id="cal-o22" step="0.005" value="0.000" class="ds-field__input" style="padding: 4px 8px; height: 28px;">
+    <div class="ds-field" style="min-width: 190px; margin-bottom: 0;">
+      <label class="ds-field__label" for="cal-pitch">Pixel pitch (mm)</label>
+      <input type="number" id="cal-pitch" step="0.1" min="0.1" class="ds-field__input" value="1" />
+      <small style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+        &nabla;B scale: 20 &times; pitch counts per mT/mm. Datasheet value unconfirmed &mdash; trim to match the die.
+      </small>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(3, 80px); gap: 10px;">
+      <div class="ds-field" style="margin-bottom: 0;">
+        <label class="ds-field__label" for="cal-k1">k1</label>
+        <input type="number" id="cal-k1" step="any" class="ds-field__input" value="1" />
+      </div>
+      <div class="ds-field" style="margin-bottom: 0;">
+        <label class="ds-field__label" for="cal-k2">k2</label>
+        <input type="number" id="cal-k2" step="any" class="ds-field__input" value="1" />
+      </div>
+      <div class="ds-field" style="margin-bottom: 0;">
+        <label class="ds-field__label" for="cal-o11">o11</label>
+        <input type="number" id="cal-o11" step="any" class="ds-field__input" value="0" />
+      </div>
+      <div class="ds-field" style="margin-bottom: 0;">
+        <label class="ds-field__label" for="cal-o12">o12</label>
+        <input type="number" id="cal-o12" step="any" class="ds-field__input" value="0" />
+      </div>
+      <div class="ds-field" style="margin-bottom: 0;">
+        <label class="ds-field__label" for="cal-o21">o21</label>
+        <input type="number" id="cal-o21" step="any" class="ds-field__input" value="0" />
+      </div>
+      <div class="ds-field" style="margin-bottom: 0;">
+        <label class="ds-field__label" for="cal-o22">o22</label>
+        <input type="number" id="cal-o22" step="any" class="ds-field__input" value="0" />
       </div>
     </div>
   </div>
+
+  <div class="ds-field" style="width: min(100%, 360px); margin-bottom: var(--space-3);">
+    <label class="ds-field__label" for="sel-angle-formula">Differential angle formula</label>
+    <select id="sel-angle-formula" class="ds-field__input">
+      <option value="normal" selected>Normal: ATAN2(X02, Z02) / ATAN2(Y13, Z13)</option>
+      <option value="enhanced">Enhanced: cross-axis calibrated</option>
+    </select>
+    <small style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+      Enhanced mode applies k1, k2 and o11–o22 to the differential channels.
+    </small>
+  </div>
+
+  <p style="margin: 0 0 var(--space-4) 0; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+    <b>Normal:</b> &alpha; = atan2(X02, Z02), &beta; = atan2(Y13, Z13)<br/>
+    <b>Enhanced:</b> &alpha; = atan2( &radic;(X02&sup2; + (k1&middot;(Z13 &minus; o11&middot;X02))&sup2;), Z02 &minus; o12&middot;X02 )<br/>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&beta; = atan2( &radic;(Y13&sup2; + (k2&middot;(Z02 &minus; o21&middot;Y13))&sup2;), Z13 &minus; o22&middot;Y13 )<br/>
+    Angles in degrees; calibration constants update live.
+  </p>
 </div>
       <!-- TEMPORARILY HIDDEN: remove temporary-hidden to restore the angle summary. -->
+      <details style="margin-bottom: var(--space-4); background: var(--color-surface-raised); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 10px 12px;">
+        <summary style="cursor: pointer; font-family: var(--font-display); font-size: var(--font-size-xs); font-weight: 700; text-transform: uppercase; color: var(--color-ink);">
+          How the Desmos calibration works here
+        </summary>
+        <div style="margin-top: 8px; font-size: var(--font-size-xs); color: var(--color-ink-muted); line-height: 1.7;">
+          <p>
+            This page runs the shared <code>angle_calib.js</code> module (the same engine the Thumbstick page
+            uses). There are two engines, and the readouts tell them apart:
+          </p>
+          <ul style="margin: 4px 0; padding-left: 18px;">
+            <li>
+              <b>Legacy Standard 3D Hall</b> &mdash; 1px mode, a single pixel&rsquo;s absolute field
+              (B<sub>x</sub>, B<sub>y</sub>, B<sub>z</sub>, units mT). Feeds
+              <code>computeSfi1Px</code> &rarr; the &ldquo;std&rdquo; radar &alpha;/&beta; readouts. It is the
+              uncompensated reference &mdash; fully exposed to stray fields and to the field&rsquo;s falloff.
+            </li>
+            <li>
+              <b>MLX90396 SFI</b> &mdash; 2px mode, the four differential channels between neighboring pixels
+              (dB<sub>x</sub>/dx&nbsp;=&nbsp;X<sub>02</sub>, dB<sub>z</sub>/dx&nbsp;=&nbsp;Z<sub>02</sub>,
+              dB<sub>y</sub>/dy&nbsp;=&nbsp;Y<sub>13</sub>, dB<sub>z</sub>/dy&nbsp;=&nbsp;Z<sub>13</sub>, units
+              mT/mm, i.e. counts &divide; (20 &times; pixel pitch) &mdash; the pitch is set in
+              Calibration Tuning). Feeds <code>computeSfi2Px</code> &rarr; the &ldquo;MLX&rdquo; radar &alpha;/&beta; readouts.
+              Uniform external fields cancel in the subtraction, so this pair rejects stray field; the graph
+              tabs plot these gradients directly.
+            </li>
+          </ul>
+          <p>
+            Both run the same model. For 1px, x1&nbsp;=&nbsp;B<sub>x</sub>, y1&nbsp;=&nbsp;B<sub>y</sub>,
+            z1&nbsp;=&nbsp;B<sub>z</sub>:
+          </p>
+          <p style="font-family: ui-monospace, Consolas, monospace;">
+            a1 = atan2( &radic;(z1&sup2; + (k1&middot;(y1 &minus; o11&middot;z1))&sup2;), x1 &minus; o12&middot;z1 )<br>
+            b1 = atan2( &radic;(z1&sup2; + (k2&middot;(x1 &minus; o21&middot;z1))&sup2;), y1 &minus; o22&middot;z1 )
+          </p>
+          <p>
+            The default 2px selection runs the reviewer&rsquo;s <b>normal formula</b> (their step 1),
+            each in its own differential axis:
+          </p>
+          <p style="font-family: ui-monospace, Consolas, monospace;">
+            &alpha; = ATAN2(dB<sub>x</sub>/dx, dB<sub>z</sub>/dx) &nbsp;=&nbsp; ATAN2(X02, Z02)<br>
+            &beta; = ATAN2(dB<sub>y</sub>/dy, dB<sub>z</sub>/dy) &nbsp;=&nbsp; ATAN2(Y13, Z13)
+          </p>
+          <p>
+            The radar plots that &alpha; on the X axis and &beta; on the Y axis in the same circular
+            polar style as the legacy radar (centre = (90&deg;,&nbsp;90&deg;)), and every readout
+            (summary, radar labels, Tilt&nbsp;X/Y) uses the same two numbers.
+          </p>
+          <p>
+            Select <b>Enhanced</b> in Calibration Tuning to apply the reviewed cross-axis formula:
+          </p>
+          <p style="font-family: ui-monospace, Consolas, monospace;">
+            &alpha; = atan2( &radic;(X02&sup2; + (k1&middot;(Z13 &minus; o11&middot;X02))&sup2;), Z02 &minus; o12&middot;X02 )<br>
+            &beta; = atan2( &radic;(Y13&sup2; + (k2&middot;(Z02 &minus; o21&middot;Y13))&sup2;), Z13 &minus; o22&middot;Y13 )
+          </p>
+          <p>
+            The selected formula feeds the &alpha;/&beta; readouts, radars and live gimbal.
+          </p>
+          <p>
+            Inputs and parameters are normalised against NaN/Infinity, so a bad sample can never break the loop.
+          </p>
+        </div>
+      </details>
       <div class="telemetry-summary temporary-hidden" style="margin-bottom: var(--space-4);">
         <div><span>Alpha tilt</span><b id="angle-alpha">0.0°</b></div>
         <div><span>Beta tilt</span><b id="angle-beta">0.0°</b></div>
-        <div><span>Heading theta</span><b id="angle-theta">0.0°</b></div>
       </div>
 
       <!-- TEMPORARILY HIDDEN: remove temporary-hidden to restore the raw signal cards. -->
@@ -884,22 +1048,22 @@
           <!-- Req 1: Differential Signals Bars -->
           <div class="raw-signals-list">
             <div class="signal-bar-row">
-              <span style="color: var(--color-success);">ΔBx/Δx:</span>
+              <span style="color: var(--color-success);">dBx/dx:</span>
               <div class="signal-meter-bg"><div id="meter-diff-bx" class="signal-meter-fill" style="background: var(--color-success);"></div></div>
               <span id="txt-diff-bx" style="color: var(--color-success); text-align:right;">0.0 mT/mm</span>
             </div>
             <div class="signal-bar-row">
-              <span style="color: var(--color-success);">ΔBy/Δy:</span>
+              <span style="color: var(--color-success);">dBy/dy:</span>
               <div class="signal-meter-bg"><div id="meter-diff-by" class="signal-meter-fill" style="background: var(--color-success);"></div></div>
               <span id="txt-diff-by" style="color: var(--color-success); text-align:right;">0.0 mT/mm</span>
             </div>
             <div class="signal-bar-row">
-              <span style="color: var(--color-success);">ΔBz/Δx:</span>
+              <span style="color: var(--color-success);">dBz/dx:</span>
               <div class="signal-meter-bg"><div id="meter-diff-bz" class="signal-meter-fill" style="background: var(--color-success);"></div></div>
               <span id="txt-diff-bz" style="color: var(--color-success); text-align:right;">0.0 mT/mm</span>
             </div>
             <div class="signal-bar-row">
-              <span style="color: var(--color-success);">ΔBz/Δy:</span>
+              <span style="color: var(--color-success);">dBz/dy:</span>
               <div class="signal-meter-bg"><div id="meter-diff-bz-y" class="signal-meter-fill" style="background: var(--color-success);"></div></div>
               <span id="txt-diff-bz-y" style="color: var(--color-success); text-align:right;">0.0 mT/mm</span>
             </div>
@@ -911,7 +1075,7 @@
               <div style="font-family: var(--font-display); font-size: var(--font-size-xs); color: var(--color-ink-muted); text-transform: uppercase;">
                 Req 2: Signal Strength |B_diff|
               </div>
-              <span style="font-size: var(--font-size-xs); color: var(--color-success);">√((ΔBx/Δx)² + (ΔBy/Δy)² + (ΔBz/Δx)² + (ΔBz/Δy)²)</span>
+              <span style="font-size: var(--font-size-xs); color: var(--color-success);">√((dBx/dx)² + (dBy/dy)² + (dBz/dx)² + (dBz/dy)²)</span>
             </div>
             <span id="mag-val-diff" class="mag-val-large" style="color: var(--color-success);">0.0 mT</span>
           </div>
@@ -927,7 +1091,7 @@
         </div>
         <div class="battle-card pass">
           <div class="battle-card-header"><span>MLX90396 differential field and 6 mm magnet model</span><span class="ds-badge ds-badge--success">SFI COMPENSATED</span></div>
-          <div class="plot3d-canvas" id="canvas3d-mlx-plot"><div id="plot-overlay-mlx" class="plot-overlay" style="font-size: 12px;"><div class="plot-overlay-row"><span id="plot-mlx-velocity">v 0.0 px/s</span><span class="plot-overlay-units">mT/mm</span></div><div class="plot-overlay-boxes"><span class="xyz-value-box"><span class="xyz-value-lbl">ΔBx/Δx</span><b id="plot-mlx-dbx">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">ΔBy/Δy</span><b id="plot-mlx-dby">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">ΔBz/Δx</span><b id="plot-mlx-dbzdx">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">ΔBz/Δy</span><b id="plot-mlx-dbzdy">0.0</b></span></div></div></div>
+          <div class="plot3d-canvas" id="canvas3d-mlx-plot"><div id="plot-overlay-mlx" class="plot-overlay" style="font-size: 12px;"><div class="plot-overlay-row"><span id="plot-mlx-velocity">v 0.0 px/s</span><span class="plot-overlay-units">mT/mm</span></div><div class="plot-overlay-boxes"><span class="xyz-value-box"><span class="xyz-value-lbl">dBx/dx</span><b id="plot-mlx-dbx">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">dBy/dy</span><b id="plot-mlx-dby">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">dBz/dx</span><b id="plot-mlx-dbzdx">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">dBz/dy</span><b id="plot-mlx-dbzdy">0.0</b></span></div></div></div>
         </div>
       </div>
 
@@ -937,15 +1101,15 @@
           <span class="radar-badge ds-badge ds-badge--success">
             Legacy Standard 3D Hall Radar
           </span>
+          <div class="plot-overlay" style="top: 12px; right: 14px; bottom: auto;">
+            <div class="plot-overlay-boxes">
+              <span class="xyz-value-box"><span class="xyz-value-lbl">|B|</span><b id="radar-mag-std">0.0 mT</b></span>
+              <span class="xyz-value-box"><span class="xyz-value-lbl">α_std</span><b id="radar-alpha-std">0.0°</b></span>
+              <span class="xyz-value-box"><span class="xyz-value-lbl">β_std</span><b id="radar-beta-std">0.0°</b></span>
+            </div>
+          </div>
           <div class="radar-stage">
             <canvas id="radarCanvasStd" class="radar-canvas"></canvas>
-            <div class="plot-overlay" style="right: -106px; bottom: 262px" >
-              <div class="plot-overlay-boxes">
-                <span class="xyz-value-box"><span class="xyz-value-lbl">θ_std</span><b id="radar-angle-std">0.0°</b></span>
-                <span class="xyz-value-box"><span class="xyz-value-lbl">α_std</span><b id="radar-alpha-std">0.0°</b></span>
-                <span class="xyz-value-box"><span class="xyz-value-lbl">β_std</span><b id="radar-beta-std">0.0°</b></span>
-              </div>
-            </div>
           </div>
         </div>
 
@@ -953,15 +1117,15 @@
           <span class="radar-badge ds-badge ds-badge--success">
             MLX90396 Differential SFI Radar
           </span>
+          <div class="plot-overlay" style="top: 12px; right: 14px; bottom: auto;">
+            <div class="plot-overlay-boxes">
+              <span class="xyz-value-box"><span class="xyz-value-lbl">|∇B|</span><b id="radar-mag-mlx">0.0 mT/mm</b></span>
+              <span class="xyz-value-box"><span class="xyz-value-lbl">α_diff</span><b id="radar-alpha-mlx">0.0°</b></span>
+              <span class="xyz-value-box"><span class="xyz-value-lbl">β_diff</span><b id="radar-beta-mlx">0.0°</b></span>
+            </div>
+          </div>
           <div class="radar-stage">
             <canvas id="radarCanvasMlx" class="radar-canvas"></canvas>
-            <div class="plot-overlay" style="right: -106px; bottom: 262px;">
-              <div class="plot-overlay-boxes">
-                <span class="xyz-value-box"><span class="xyz-value-lbl">θ_diff</span><b id="radar-angle-mlx">0.0°</b></span>
-                <span class="xyz-value-box"><span class="xyz-value-lbl">α_diff</span><b id="radar-alpha-mlx">0.0°</b></span>
-                <span class="xyz-value-box"><span class="xyz-value-lbl">β_diff</span><b id="radar-beta-mlx">0.0°</b></span>
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -975,9 +1139,15 @@
             <span style="font-family: var(--font-display); font-size: var(--font-size-xs); font-weight: 700; text-transform: uppercase; color: var(--color-ink-muted);">
               Dome Kinematics: auto-pattern transitions to live hardware telemetry
             </span>
-            <span style="font-size: var(--font-size-xs); font-weight: 700; color: var(--color-accent);" id="joy-pos-text">
-              Tilt X: 0.0° | Tilt Y: 0.0° | Press Z: 0.0 mm
-            </span>
+            <div style="display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; justify-content: flex-end;">
+              <span style="font-size: var(--font-size-xs); color: var(--color-ink-muted);" id="gimbal-zero-status">
+                Zero: α 90.0°, β 90.0°
+              </span>
+              <button id="btn-zero-gimbal" class="ds-button ds-button--secondary ds-button--sm">Zero Position</button>
+              <span style="font-size: var(--font-size-xs); font-weight: 700; color: var(--color-accent);" id="joy-pos-text">
+                Tilt X: 0.0° | Tilt Y: 0.0° | Press: —
+              </span>
+            </div>
           </div>
           <div id="canvas3d-container">
             <div class="hint-overlay">Fixed XYZ view | Scroll: Zoom</div>
@@ -989,56 +1159,79 @@
 
     <div id="tab-diagnostics" class="tab-content">
       <div class="diagnostics-grid">
+
         <section class="diagnostics-card">
-          <h3>What The Two Signals Mean</h3>
-          <p>
-            The legacy signal is the absolute field measured at one pixel. It includes the magnet's steady field and any stray field, so its direction can move when the environment changes.
-          </p>
-          <p style="margin-top: var(--space-3);">
-            The differential signal compares neighboring pixels. Uniform external fields tend to cancel, while the local field gradient from the magnet remains. It is useful for position and direction, but it is not the same unit or scale as the legacy field.
-          </p>
-          <span id="diag-source" class="diagnostics-state">Simulation</span>
-          <span id="diag-health" class="diagnostics-state">Range watch: no obvious clipping</span>
+          <h3>Frame Health</h3>
+          <p>Everything on this tab is the unmodified reply from the three transfers the SFI loop issues each cycle: <code>0xFC000</code> and <code>0x03F00</code> for the twelve absolute pixels, <code>0x000AC</code> for the four 2px gradient channels. Nothing is averaged, scaled or clamped.</p>
+          <table class="diagnostics-table">
+            <tbody>
+              <tr><th>Source</th><td id="diag-source">--</td></tr>
+              <tr><th>Status byte</th><td id="diag-status">--</td></tr>
+              <tr><th>Function</th><td id="diag-fn">--</td></tr>
+              <tr><th>Data ready</th><td id="diag-drdy">--</td></tr>
+              <tr><th>Flags</th><td id="diag-flags">--</td></tr>
+              <tr><th>CRC</th><td id="diag-crc">--</td></tr>
+              <tr><th>Loop period</th><td id="diag-period">--</td></tr>
+            </tbody>
+          </table>
+          <span id="diag-health" class="diagnostics-state">Waiting for a measurement</span>
         </section>
 
         <section class="diagnostics-card">
-          <h3>Decoded Sensor Values</h3>
+          <h3>Absolute Pixels &mdash; raw LSB</h3>
+          <p>Signed 12-bit counts, full scale &plusmn;2048. The averages are the four-pixel means the dome uses for the absolute heading.</p>
           <table class="diagnostics-table">
-            <thead><tr><th>Channel</th><th>Current value</th></tr></thead>
+            <thead><tr><th>Channel</th><th>Count</th></tr></thead>
             <tbody>
-              <tr><td>Standard Bx0</td><td id="diag-bx">0.00 mT</td></tr>
-              <tr><td>Standard By0</td><td id="diag-by">0.00 mT</td></tr>
-              <tr><td>Standard Bz0</td><td id="diag-bz">0.00 mT</td></tr>
-              <tr><td>Differential Bx</td><td id="diag-dbx">0.00 mT/mm</td></tr>
-              <tr><td>Differential By</td><td id="diag-dby">0.00 mT/mm</td></tr>
-              <tr><td>Differential Bz / X</td><td id="diag-dbz-x">0.00 mT/mm</td></tr>
-              <tr><td>Differential Bz / Y</td><td id="diag-dbz-y">0.00 mT/mm</td></tr>
+              <tr><td>X0</td><td id="diag-x0">--</td></tr>
+              <tr><td>Y0</td><td id="diag-y0">--</td></tr>
+              <tr><td>Z0</td><td id="diag-z0">--</td></tr>
+              <tr><td>X1</td><td id="diag-x1">--</td></tr>
+              <tr><td>Y1</td><td id="diag-y1">--</td></tr>
+              <tr><td>Z1</td><td id="diag-z1">--</td></tr>
+              <tr><td>X2</td><td id="diag-x2">--</td></tr>
+              <tr><td>Y2</td><td id="diag-y2">--</td></tr>
+              <tr><td>Z2</td><td id="diag-z2">--</td></tr>
+              <tr><td>X3</td><td id="diag-x3">--</td></tr>
+              <tr><td>Y3</td><td id="diag-y3">--</td></tr>
+              <tr><td>Z3</td><td id="diag-z3">--</td></tr>
+              <tr><th>Average X</th><td id="diag-avg-x">--</td></tr>
+              <tr><th>Average Y</th><td id="diag-avg-y">--</td></tr>
+              <tr><th>Average Z</th><td id="diag-avg-z">--</td></tr>
+              <tr><th>Peak |count|</th><td id="diag-peak">--</td></tr>
+            </tbody>
+          </table>
+          <span id="diag-range" class="diagnostics-state">Waiting for a measurement</span>
+        </section>
+
+        <section class="diagnostics-card">
+          <h3>Differential Channels &mdash; raw LSB</h3>
+          <p>The chip's own inter-pixel gradients, read in a single transfer (mask <code>0x000AC</code>: X02, Z02, Y13, Z13). They feed the SFI radar and the dome. The counts are converted to mT/mm by <code>20 &times; pixel&nbsp;pitch</code> (the <b>Pixel pitch</b> field in Calibration Tuning); a magnet sitting centred reads a small gradient &mdash; that is the null, not a missing magnet.</p>
+          <table class="diagnostics-table">
+            <thead><tr><th>Channel</th><th>Count</th></tr></thead>
+            <tbody>
+              <tr><td>X02</td><td id="diag-dx02">--</td></tr>
+              <tr><td>Z02</td><td id="diag-dz02">--</td></tr>
+              <tr><td>Y13</td><td id="diag-dy13">--</td></tr>
+              <tr><td>Z13</td><td id="diag-dz13">--</td></tr>
             </tbody>
           </table>
         </section>
 
         <section class="diagnostics-card">
-          <h3>Derived Magnitudes</h3>
+          <h3>Dome Output</h3>
+          <p>What the Idle / Auto-Pattern tab is drawing, after the 2px gradient &rarr; tilt mapping is applied.</p>
           <table class="diagnostics-table">
             <tbody>
-              <tr><th>Legacy full vector</th><td id="diag-std-magnitude">0.00 mT</td></tr>
-              <tr><th>Differential full vector</th><td id="diag-diff-magnitude">0.00 mT/mm</td></tr>
+              <tr><th>Position source</th><td id="diag-joy-src">Differential 2px (dBz/dx, dBz/dy)</td></tr>
+              <tr><th>Tilt X</th><td id="diag-joy-x">--</td></tr>
+              <tr><th>Tilt Y</th><td id="diag-joy-y">--</td></tr>
+              <tr><th>Press magnitude</th><td id="diag-press-mag">--</td></tr>
+              <tr><th>Press state</th><td id="diag-press">--</td></tr>
             </tbody>
           </table>
-          <p style="margin-top: var(--space-3);">
-            Large absolute values do not automatically mean a fault. Check stability, sign changes, saturation, and whether the differential vector follows movement while the legacy vector changes under a stray field.
-          </p>
         </section>
 
-        <section class="diagnostics-card">
-          <h3>Why The Radar Target Can Disappear</h3>
-          <p>
-            In simulation, the radar has a known mechanical target. With live hardware, this page has sensor measurements but no independent position reference, so it hides the simulated target instead of pretending the comparison is calibrated.
-          </p>
-          <p style="margin-top: var(--space-3);">
-            This keeps the measured vector contained in the radar and makes the diagnostic view honest. A future calibration step can add a real target from a known fixture or motion reference.
-          </p>
-        </section>
       </div>
     </div>
 
@@ -1108,7 +1301,8 @@
     </div>
 
   </main>
-  
+  </div>
+
   <script type="module" src="help.js"></script>
   <script type="module" src="app.js"></script>
 </body>

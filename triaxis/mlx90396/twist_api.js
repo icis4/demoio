@@ -9,7 +9,18 @@
  *  2px mode (units: mT/mm): X02 (dBx/dx), Z02 (dBz/dx), Y13 (dBy/dy), Z13 (dBz/dy)
  *     alpha = atan2(Z02, X02)             strength = sqrt(Z02^2 + X02^2)
  *     beta  = atan2(Z13, Y13)             strength = sqrt(Z13^2 + Y13^2)
+ *
+ *  The calibrated (Desmos) angles are computed by the shared ../angle_calib.js
+ *  module so the thumbstick and the Voxdale page run one and the same engine.
  */
+
+import {
+  DEFAULT_CALIBRATION_PARAMS as CALIB_DEFAULTS,
+  normalizeParams,
+  calculateDesmosAngles,
+  SINGLE_PIXEL_LSB_PER_MT,
+  lsbPerMtMm
+} from '../angle_calib.js';
 
 const toDeg = (rad) => (rad * 180) / Math.PI;
 
@@ -46,42 +57,19 @@ export function calcTwist2px({ X02, Z02, Y13, Z13 }) {
 // --- Calibration (Desmos model, rad -> deg) ---
 //   a1 = atan2( sqrt( z1^2 + (k1 * (y1 - o11 * z1))^2 ), (x1 - o12 * z1) )
 //   b1 = atan2( sqrt( z1^2 + (k2 * (x1 - o21 * z1))^2 ), (y1 - o22 * z1) )
-export const TWIST_CAL = {
-  k1: 1, k2: 1,
-  o11: 0, o12: 0,
-  o21: 0, o22: 0,
-};
+// Live params follow the module's defaults; normalizeParams drops NaN input.
+export const TWIST_CAL = { ...CALIB_DEFAULTS };
 
 export function applyTwistCalibration(x, y, z) {
-  const { k1, k2, o11, o12, o21, o22 } = TWIST_CAL;
-  const isIdentity = k1 === 1 && k2 === 1 && o11 === 0 && o12 === 0 && o21 === 0 && o22 === 0;
-  if (isIdentity) {
-    // Vanilla mode: identity calibration is a true no-op, so the calibrated
-    // readout equals the pure atan2 (no tangential cross-axis mixing) until
-    // the user actually enters calibration offsets / gains.
-    const a1 = Math.atan2(z, x);
-    const b1 = Math.atan2(z, y);
-    return {
-      alphaRad: a1,
-      betaRad: b1,
-      alphaDeg: toDeg(a1),
-      betaDeg: toDeg(b1),
-    };
-  }
-  const a1 = Math.atan2(
-    Math.hypot(z, k1 * (y - o11 * z)),
-    x - o12 * z
-  );
-  const b1 = Math.atan2(
-    Math.hypot(z, k2 * (x - o21 * z)),
-    y - o22 * z
-  );
-  return {
-    alphaRad: a1,
-    betaRad: b1,
-    alphaDeg: toDeg(a1),
-    betaDeg: toDeg(b1),
-  };
+  // One angle definition only. The old identity fast-path hand-rolled
+  // atan2(z, x) with a SIGNED z: a negative vertical field then gave negative
+  // alpha/beta, and the radar's (90-α)/90 mapping pushed the needle past the
+  // rim into the corner until a K or offset was changed. Delegating to the
+  // Desmos core keeps atan2's first argument a magnitude (hypot), so the
+  // calibrated angles stay in the 0..180° band at every parameter set -
+  // including the k1=k2=1, o=0 default.
+  const p = normalizeParams(TWIST_CAL);
+  return calculateDesmosAngles(x, y, z, p);
 }
 
 // Combined pipeline: raw alpha/beta + strengths for the selected mode, then
@@ -113,30 +101,48 @@ export function computeTwistSignals(mode = '1px', input = null) {
   };
 }
 
-// Derive 1px + 2px inputs from the 4 pixel readouts.
-export function deriveTwistInputsFromPoints(points) {
+// Derive 1px + 2px inputs from the 4 pixel readouts, converted from raw LSB to
+// physical units (absolute mT, differential mT/mm) so the strengths the panel
+// prints carry true units. Both divisors live in angle_calib.js and are shared
+// with the Voxdale page; dividing every component of a signal by the same
+// divisor leaves the atan2 angles untouched.
+// When the chip's dedicated differential channels are available (SCPI resDiff:
+// x02/y02/z02/x13/y13/z13) use them directly for the 2px pair, so the 2px
+// GAINSEL trim actually affects the readout. The software (p2 - p0) / 2
+// difference is only the fallback for Arduino / emulation frames that carry
+// just the four absolute pixels.
+export function deriveTwistInputsFromPoints(points, diff = null) {
   const p0 = points?.[0] || {};
   const p1 = points?.[1] || {};
   const p2 = points?.[2] || {};
   const p3 = points?.[3] || {};
+  const hasDiff = !!diff && ['x02', 'z02', 'y13', 'z13'].every(k => Number.isFinite(diff[k]));
+  const lsbPerMt = SINGLE_PIXEL_LSB_PER_MT;
+  const lsbPerMtPerMm = lsbPerMtMm();
   return {
-    X0: p0.x ?? 0, Y0: p0.y ?? 0, Z0: p0.z ?? 0,
-    X02: ((p2.x ?? 0) - (p0.x ?? 0)) / 2,
-    Z02: ((p2.z ?? 0) - (p0.z ?? 0)) / 2,
-    Y13: ((p3.y ?? 0) - (p1.y ?? 0)) / 2,
-    Z13: ((p3.z ?? 0) - (p1.z ?? 0)) / 2,
+    X0: (p0.x ?? 0) / lsbPerMt, Y0: (p0.y ?? 0) / lsbPerMt, Z0: (p0.z ?? 0) / lsbPerMt,
+    X02: (hasDiff ? diff.x02 : ((p2.x ?? 0) - (p0.x ?? 0)) / 2) / lsbPerMtPerMm,
+    Z02: (hasDiff ? diff.z02 : ((p2.z ?? 0) - (p0.z ?? 0)) / 2) / lsbPerMtPerMm,
+    Y13: (hasDiff ? diff.y13 : ((p3.y ?? 0) - (p1.y ?? 0)) / 2) / lsbPerMtPerMm,
+    Z13: (hasDiff ? diff.z13 : ((p3.z ?? 0) - (p1.z ?? 0)) / 2) / lsbPerMtPerMm,
   };
 }
 
 // --- Gain Configuration (MLX90396 GAINSEL register) ---
-// Twisted demo gain: electrical gain scaled ~72 -> ~219.
-// GAINSEL_1PX was 9 (0b001001); now 37 (0b100101).
+// The UI exposes just the two factory presets (1x = 9, 3x = 37); this table
+// holds the selection per mode. Switching 1px<->2px re-syncs the display and
+// starting the live demo re-reads the chip and adopts whatever it actually
+// holds. NOTE: the mode switch does not push this table value to the chip.
 // TODO(hw-trim): during the physical Arduino hardware validation session,
-// adjust this literal to the final trimmed value and confirm bits against
-// the GAINSEL register table in the MLX90396 datasheet before flashing.
+// confirm the preset bits against the GAINSEL register table in the MLX90396
+// datasheet before flashing.
+// Defaults follow the AE's twist-demo guidance: 1px runs at 3x (gain 37 ≈ 219)
+// because the single-pixel path needs the extra ~3x electrical gain there; 2px
+// keeps the 1x factory trim (gain 9 ≈ 72). Final-test trimming can shift the
+// exact value, so the UI also exposes a free 0-63 trim field per mode.
 export const GAINSEL = {
-  '1px': 0b100101, // 37 — boosted electrical gain (~219) for the twist demo
-  '2px': 0b001001, // 9  — stock 1px-style gain, kept off until trim
+  '1px': 0b100101, // 37 — 3x preset (~219), twist-demo default
+  '2px': 0b001001, // 9  — 1x preset (~72)
 };
 
 export function setGainSel(mode, value) {

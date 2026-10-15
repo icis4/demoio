@@ -142,7 +142,7 @@ export function initSfiDemo() {
 
   const northPoleMesh = new THREE.Mesh(
     new THREE.CylinderGeometry(0.9, 0.9, 0.25, 32),
-    new THREE.MeshStandardMaterial({ color: 0xff1144, roughness: 0.2, metalness: 0.3 })
+    new THREE.MeshStandardMaterial({ color: 0x1E242B, roughness: 0.2, metalness: 0.3 })
   );
   northPoleMesh.position.y = 0.125;
   axialMagnetGroup.add(northPoleMesh);
@@ -157,7 +157,7 @@ export function initSfiDemo() {
 
   const southPoleMesh = new THREE.Mesh(
     new THREE.CylinderGeometry(0.9, 0.9, 0.25, 32),
-    new THREE.MeshStandardMaterial({ color: 0x0088ff, roughness: 0.2, metalness: 0.3 })
+    new THREE.MeshStandardMaterial({ color: 0xEAA320, roughness: 0.2, metalness: 0.3 })
   );
   southPoleMesh.position.y = 0.375;
   axialMagnetGroup.add(southPoleMesh);
@@ -280,7 +280,7 @@ function animate() {
     // Magnetic Math
     let trueBx = joyX * 18.0;
     let trueBy = joyY * 18.0;
-    let trueBz = 22.0 + joyZ * 10.0;
+    let trueBz =  22.0 + joyZ * 10.0;
 
     let pSignals = [
       { bx: trueBx + trueBy * 0.2, by: trueBy - 5.0, bz: trueBz },
