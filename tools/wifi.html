@@ -50,7 +50,17 @@
     .networks .ssid { font-weight: 600; word-break: break-all; }
     .networks .num { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
     .networks .joined { color: var(--mx-accent); font-size: .6875rem; font-weight: 600; letter-spacing: .04em; }
+    .networks .known { color: var(--clr-text-dim); font-size: .6875rem; font-weight: 600; letter-spacing: .04em; }
     .networks .open-net { color: var(--clr-warning, #e0a106); }
+    /* The known list is read, not picked from: its rows carry their own
+       buttons, and a row that also reacted to a click would do two things. */
+    .networks.known-list tbody tr { cursor: default; }
+    .networks.known-list tbody tr:hover td { background: none; }
+    .networks.known-list .status { color: var(--clr-text-muted); white-space: nowrap; }
+    .networks.known-list .status.is-joined { color: var(--mx-accent); }
+    .networks.known-list .status.is-away { color: var(--clr-text-dim); }
+    .networks.known-list .actions { text-align: right; white-space: nowrap; }
+    .networks.known-list .actions .btn { padding: 1px 8px; font-size: .6875rem; }
 
     /* Four bars rather than a number alone: the dBm is there for whoever reads
        dBm, and the bars for whoever just wants to know which one to pick. */
@@ -115,6 +125,27 @@
 
         <div class="card mb-3">
           <div class="card-body">
+            <div class="d-flex align-items-start justify-content-between">
+              <h2>Known networks</h2>
+              <span id="knownCount" class="text-secondary" style="font-size:.6875rem"></span>
+            </div>
+            <table class="networks known-list">
+              <thead>
+                <tr><th>Network</th><th>Status</th><th></th></tr>
+              </thead>
+              <tbody id="knownBody">
+                <tr class="empty-row"><td colspan="3">Connect to a board.</td></tr>
+              </tbody>
+            </table>
+            <div class="form-text" style="font-size:.6875rem">
+              Every network the board has joined, most recent first, up to ten — in range or not. Whether one
+              is in range comes from the last scan. A known network joins with no password typed.
+            </div>
+          </div>
+        </div>
+
+        <div class="card mb-3">
+          <div class="card-body">
             <h2>Join</h2>
             <div class="row g-2">
               <div class="col-12 col-sm-6">
@@ -132,13 +163,16 @@
             <div class="d-flex gap-2 mt-3 flex-wrap">
               <button id="btnJoin" class="btn btn-sm btn-primary" disabled>Join</button>
               <button id="btnLeave" class="btn btn-sm btn-outline-secondary" disabled>Leave network</button>
-              <button id="btnForget" class="btn btn-sm btn-outline-danger" disabled>Forget</button>
+              <button id="btnForget" class="btn btn-sm btn-outline-danger" disabled>Forget all</button>
             </div>
             <div class="form-text" style="font-size:.6875rem">
               A network that joins is remembered in the board's EEPROM journal, and the board rejoins it
               at power-up with no host attached. <strong>Leave network</strong> drops the link but keeps
-              what is remembered; <strong>Forget</strong> clears it. The password is sent to the board as
-              typed and is never stored by this page — the board does not print it back either.
+              what is remembered. The board remembers every network it has joined, up to ten; one it knows is
+              marked <em>KNOWN</em> in the list and rejoins with no password typed, and at power-up the board
+              joins the strongest known one in range. <strong>Forget</strong> takes the picked network off
+              the list, or every network if nothing known is picked, and leaves it. The password is sent to the board as typed and is
+              never stored by this page — the board does not print it back either.
             </div>
             <div id="charWarning" class="alert alert-warning py-2 px-3 mt-3 mb-0" style="font-size:.75rem" hidden></div>
           </div>
@@ -217,7 +251,7 @@
               <dt>Channel</dt><dd id="infoChannel">—</dd>
               <dt>Address</dt><dd id="infoAddress">—</dd>
               <dt>Gateway</dt><dd id="infoGateway">—</dd>
-              <dt>Remembered</dt><dd id="infoRemembered">—</dd>
+              <dt>Known</dt><dd id="infoRemembered">—</dd>
               <dt>Hotspot</dt><dd id="infoHotspot">—</dd>
               <dt>Hotspot name</dt><dd id="infoApSsid">—</dd>
               <dt>Hotspot address</dt><dd id="infoApAddress">—</dd>
@@ -275,7 +309,7 @@
     const ui = {
       btnConnect: els("btnConnect"), btnConnectBle: els("btnConnectBle"), btnDisconnect: els("btnDisconnect"),
       badgeConn: els("badgeConn"), log: els("log"),
-      btnScan: els("btnScan"), networksBody: els("networksBody"),
+      btnScan: els("btnScan"), networksBody: els("networksBody"), knownBody: els("knownBody"), knownCount: els("knownCount"),
       ssid: els("ssid"), password: els("password"), btnShowPass: els("btnShowPass"),
       btnJoin: els("btnJoin"), btnLeave: els("btnLeave"), btnForget: els("btnForget"),
       charWarning: els("charWarning"), btnStatus: els("btnStatus"),
@@ -293,7 +327,8 @@
     const state = {
       port: null, writer: null, reader: null, readLoop: null, link: null,
       rxBuffer: "", waiters: [], handleLost: false,
-      networks: [], joinedSsid: "", busy: false,
+      networks: [], scanned: false, joinedSsid: "", rememberedSsid: "",
+      known: new Set(), knownOrder: [], knownMax: 0, busy: false,
       /* Bumped on every connect. A read loop that is still unwinding from the
          previous port carries the number it started with, so its error cannot
          mark a session that opened after it as lost -- which is what left a
@@ -411,6 +446,7 @@
     const barCount = rssi => rssi >= -55 ? 4 : rssi >= -65 ? 3 : rssi >= -75 ? 2 : 1;
 
     function renderNetworks() {
+      renderKnown();                 // its status column reads the same scan
       const rows = state.networks;
       if (rows.length === 0) {
         ui.networksBody.innerHTML = '<tr class="empty-row"><td colspan="4">Nothing in range.</td></tr>';
@@ -427,6 +463,14 @@
           const tag = document.createElement("span");
           tag.className = "joined ms-2";
           tag.textContent = "JOINED";
+          name.append(tag);
+        } else if (net.ssid && state.known.has(net.ssid)) {
+          /* In range and remembered, but not the link: the one the board is
+             retrying, or the one it was told to leave. Joining it needs no
+             password from here. */
+          const tag = document.createElement("span");
+          tag.className = "known ms-2";
+          tag.textContent = "KNOWN";
           name.append(tag);
         }
 
@@ -463,11 +507,107 @@
       }
       ui.ssid.value = net.ssid;
       /* An open network takes no password, and leaving a stale one in the box
-         would send it for nothing. */
-      if (net.auth === "open") ui.password.value = "";
+         would send it for nothing. Nor does one the board remembers: it has
+         the password, and asking for it again sends somebody to look it up. */
+      if (net.auth === "open" || state.known.has(net.ssid)) ui.password.value = "";
+      showPasswordHint();
       checkCharacters();
       renderNetworks();
       ui.password.focus();
+    }
+
+    function showPasswordHint() {
+      const ssid = ui.ssid.value.trim();
+      const known = ssid && state.known.has(ssid);
+      ui.password.placeholder = known
+        ? "Known to the board — leave empty to use its password"
+        : "Leave empty for an open network";
+      /* Forget goes with what is picked: that network if the board knows it,
+         every network if nothing known is picked. */
+      ui.btnForget.textContent = known ? `Forget ${ssid}` : "Forget all";
+    }
+
+    /* :WiFi:KNOWn? lists every network the board has joined and remembers.
+       Firmware before it knew one network, which :WiFi:STATus? already names
+       as Remembered -- so its absence is not an error, only a shorter list. */
+    async function refreshKnown() {
+      try {
+        const text = await scpi(":WiFi:KNOWn?", 4000);
+        state.knownOrder = text.split(/\r?\n/)
+          .map(line => line.replace(/\s+\(joined\)\s*$/, ""))
+          .filter(line => line.trim() && !/^\d+ known\s*$/.test(line.trim()) && !/^\(\w+\)>/.test(line.trim()));
+        state.knownMax = 10;
+      } catch {
+        state.knownOrder = state.rememberedSsid ? [state.rememberedSsid] : [];
+        state.knownMax = 1;
+      }
+      state.known = new Set(state.knownOrder);
+      ui.infoRemembered.textContent = state.known.size ? [...state.known].join(", ") : "none";
+      showPasswordHint();
+      renderNetworks();
+    }
+
+    /* Status from what is known now: the link from :WiFi:STATus?, in range or
+       not from the last scan -- which can be minutes old, so before any scan
+       it says nothing rather than "not in range". */
+    function renderKnown() {
+      const rows = state.knownOrder;
+      ui.knownCount.textContent = state.link ? `${rows.length} of ${state.knownMax || 10}` : "";
+      if (!state.link) {
+        ui.knownBody.innerHTML = '<tr class="empty-row"><td colspan="3">Connect to a board.</td></tr>';
+        return;
+      }
+      if (rows.length === 0) {
+        ui.knownBody.innerHTML = '<tr class="empty-row"><td colspan="3">None yet: a network the board joins is remembered here.</td></tr>';
+        return;
+      }
+      ui.knownBody.replaceChildren(...rows.map((ssid) => {
+        const tr = document.createElement("tr");
+        const seen = state.networks.find(net => net.ssid === ssid);
+
+        const name = document.createElement("td");
+        name.className = "ssid";
+        name.textContent = ssid;
+
+        const status = document.createElement("td");
+        status.className = "status";
+        if (ssid === state.joinedSsid) {
+          status.classList.add("is-joined");
+          status.textContent = seen ? `joined · ${seen.rssi} dBm` : "joined";
+        } else if (seen) {
+          status.textContent = `in range · ${seen.rssi} dBm`;
+        } else if (state.scanned) {
+          status.classList.add("is-away");
+          status.textContent = "not in range";
+        } else {
+          status.textContent = "—";
+        }
+
+        const actions = document.createElement("td");
+        actions.className = "actions";
+        if (seen && ssid !== state.joinedSsid) {
+          const joinBtn = document.createElement("button");
+          joinBtn.className = "btn btn-sm btn-outline-primary me-1";
+          joinBtn.textContent = "Join";
+          joinBtn.disabled = state.busy;
+          joinBtn.addEventListener("click", () => {
+            ui.ssid.value = ssid;
+            ui.password.value = "";
+            showPasswordHint();
+            join();
+          });
+          actions.append(joinBtn);
+        }
+        const forgetBtn = document.createElement("button");
+        forgetBtn.className = "btn btn-sm btn-outline-danger";
+        forgetBtn.textContent = "Forget";
+        forgetBtn.disabled = state.busy;
+        forgetBtn.addEventListener("click", () => forgetNetwork(ssid));
+        actions.append(forgetBtn);
+
+        tr.append(name, status, actions);
+        return tr;
+      }));
     }
 
     async function scan() {
@@ -478,7 +618,9 @@
       try {
         const text = await scpi(":WiFi:List", SCAN_TIMEOUT);
         state.networks = parseNetworks(text);
+        state.scanned = true;
         renderNetworks();
+        renderKnown();
         log(`Scan: ${state.networks.length} network(s) in range.`);
       } catch (error) {
         ui.networksBody.innerHTML = '<tr class="empty-row"><td colspan="4">The scan did not finish.</td></tr>';
@@ -486,6 +628,7 @@
       } finally {
         state.busy = false;
         ui.btnScan.disabled = !state.link;
+        renderKnown();               // drawn while busy, with its buttons off
       }
     }
 
@@ -519,12 +662,16 @@
       setBusy(true);
       /* Never the password, here or anywhere else on the page. */
       log(`:WiFi:CONect ${ssid}${password ? ",••••" : ""} — this takes a few seconds.`);
+      if (!password && state.known.has(ssid)) {
+        log(`${ssid} is remembered by the board; it joins with the password it has.`);
+      }
       try {
         const reply = await exchange(
           password ? `:WiFi:CONect ${ssid},${password}` : `:WiFi:CONect ${ssid}`, JOIN_TIMEOUT);
         if (reply.status === "OK") {
           log(`Joined ${ssid}.`);
           applyStatus(reply.text);      // the firmware prints the status block on success
+          await refreshKnown();
         } else {
           /* The words are the firmware's: "wrong password (reason 15)", "no such
              network in range", and the line saying it went back to what it had. */
@@ -549,9 +696,20 @@
       await refreshStatus();
     }
 
+    /* The picked network if the board knows it, otherwise every one. */
     async function forget() {
+      if (!checkCharacters()) return;
+      const ssid = ui.ssid.value.trim();
+      await forgetNetwork(state.known.has(ssid) ? ssid : null);
+    }
+
+    async function forgetNetwork(ssid) {
       try {
-        const text = await scpi(":WiFi:FORget", 8000);
+        /* Current firmware forgets one network by name, or every one without
+           it, and leaves what it forgets ("forgot X, and left it"). Older
+           firmware knew one network, ignored the name and stayed on it until
+           the next boot; the status below shows which this board did. */
+        const text = await scpi(ssid ? `:WiFi:FORget ${ssid}` : ":WiFi:FORget", 8000);
         log(text || "Forgotten.");
       } catch (error) {
         log(`Forget failed: ${error.message}`);
@@ -676,6 +834,9 @@
       const f = statusFields(text);
       const stateWord = f.get("State") ?? "—";
       state.joinedSsid = f.get("SSID") ?? "";
+      const remembered = f.get("Remembered") ?? "";
+      state.rememberedSsid = remembered === "none" ? "" : remembered;
+      showPasswordHint();
 
       ui.infoState.textContent = stateWord;
       ui.infoState.className = stateWord === "joined" ? "text-success" : "";
@@ -702,6 +863,7 @@
       if (linkIsGone()) return;
       try {
         applyStatus(await scpi(":WiFi:STATus?", 6000));
+        await refreshKnown();
       } catch (error) {
         /* A lost link has already said so, once, with what to do about it.
            Repeating it per command turned one problem into four lines. */
@@ -728,6 +890,7 @@
         el.disabled = busy || !state.link;
       }
       ui.btnJoin.textContent = busy ? "Joining…" : "Join";
+      renderKnown();
     }
 
     function setConnected(connected) {
@@ -752,6 +915,12 @@
         ui.networksBody.innerHTML = '<tr class="empty-row"><td colspan="4">Connect to a board, then scan.</td></tr>';
         state.networks = [];
         state.joinedSsid = "";
+        state.rememberedSsid = "";
+        state.known = new Set();
+        state.knownOrder = [];
+        state.scanned = false;
+        ui.btnForget.textContent = "Forget all";
+        renderKnown();
       }
     }
 
@@ -826,6 +995,7 @@
       await readIdentity();
       try {
         applyStatus(await scpi(":WiFi:STATus?", 6000));
+        await refreshKnown();
       } catch (error) {
         /* A board that refuses the command and a link that died say the same
            thing to this catch, and they want opposite advice. Guessing wrong
@@ -899,7 +1069,7 @@
       ui.apPass.type = shown ? "password" : "text";
       ui.btnShowApPass.textContent = shown ? "Show" : "Hide";
     });
-    ui.ssid.addEventListener("input", () => { checkCharacters(); renderNetworks(); });
+    ui.ssid.addEventListener("input", () => { checkCharacters(); showPasswordHint(); renderNetworks(); });
     ui.password.addEventListener("input", checkCharacters);
     ui.password.addEventListener("keydown", (event) => { if (event.key === "Enter") join(); });
     ui.btnShowPass.addEventListener("click", () => {
