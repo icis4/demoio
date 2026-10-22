@@ -76,7 +76,7 @@ import {
 export const DEFAULT_CALIBRATION_PARAMS = { ...ENGINE_DEFAULTS };
 
 let activeCalibrationParams = { ...DEFAULT_CALIBRATION_PARAMS };
-let differentialFormula = 'normal';
+let differentialFormula = 'enhanced';
 
 export function setCalibrationParams(newParams) {
   activeCalibrationParams = normalizeParams({ ...activeCalibrationParams, ...newParams });
@@ -175,6 +175,15 @@ let gimbalZeroAngles = { alpha: 90, beta: 90 };
 // from the shared module so the Thumbstick page uses the same numbers.
 const TRACE_HISTORY_POINTS = 45;
 
+// Fake-data ("auto-pattern") tuning, in physical units.
+//   SIM_DIFF_BASE_MT_MM  nominal in-plane gradient at rest
+//   SIM_DIFF_SWEEP_DEG   alpha/beta swing at full stick deflection
+//   SIM_TILT_Z_DROP_MT   how far Bz drops as the stick tilts (the field rotates
+//                        rather than only growing, which keeps |B| roughly flat)
+const SIM_DIFF_BASE_MT_MM = 6.5;
+const SIM_DIFF_SWEEP_DEG = 60;
+const SIM_TILT_Z_DROP_MT = 8.0;
+
 // The differential formula yields atan2(dBx/dx, dBz/dx) (and its Y sibling),
 // which spans -180..180, while every downstream consumer — the radar's
 // (90 - a) / 90 mapping (0° at the right rim, 180° at the left), the #angle-*
@@ -194,15 +203,17 @@ function toDialAngleDeg(deg) {
   return out;
 }
 
-// PDF review: the previous Y orientation was opposite to the actual joystick
-// movement, so it is reversed once at the single source ("fJoyY") and every
-// consumer (dome tilt, readouts, radars, traces) inherits the flipped sign.
-const ORIENT_Y_FLIP = -1;
+// Display convention: screen right = +X, screen up = +Y. The stick command
+// (joyX, joyY) maps straight through to the dome lean, the field plots and the
+// radars - no axis is pre-flipped, so every view agrees on which way "up" is.
+// If the physical sensor turns out to be mounted mirrored, correct it once in
+// the hardware decode, not separately in each consumer.
 
-// PDF review: a button press is defined by the differential gradient magnitude
-// crossing ~20 mT/mm. Below that it reads "no press"; the two field-strength
-// hats on the radars flag weak / missing magnets (values are adjustable).
-const SFI_PRESS_THRESHOLD_MT_MM = 20;
+// A button press is defined by the differential gradient magnitude crossing
+// ~10 mT/mm (lowered from 20 so the simulated sweep can actually reach it).
+// Below that it reads "no press"; the two field-strength hats on the radars flag
+// weak / missing magnets (values are adjustable).
+const SFI_PRESS_THRESHOLD_MT_MM = 10;
 const WEAK_MAG_STD_MT = 8;
 const NO_MAG_STD_MT = 2;
 const WEAK_MAG_DIFF_MT_MM = 3;
@@ -504,6 +515,18 @@ export function initSfiDemo() {
       });
       cameraNodes.forEach((node) => node.parent && node.parent.remove(node));
 
+      // The Melexis IO board is 859,584 of this model's 1,042,774 triangles (82%)
+      // and sits inside the housing, so it is never actually seen. Hide it rather
+      // than remove it: three skips invisible objects entirely (no draw call, no
+      // vertex work, no GPU upload), while Box3.setFromObject still includes it,
+      // so the dome scaling and X/Z centring below are unchanged.
+      const ioBoard = model.getObjectByName('Melexisio_V12(A)-1');
+      if (ioBoard) {
+        ioBoard.visible = false;
+      } else {
+        console.warn('[CAD GLB] Melexis IO board node not found; nothing hidden.');
+      }
+
       // Reparent the moving joystick parts (as whole top-level nodes) into the
       // animated assembly group. Moving whole subtrees keeps every child's
       // transform (e.g. the magnet under the assembly node) intact. Static by
@@ -608,7 +631,9 @@ export function initSfiDemo() {
 
   // Setup subplots and radars
   stdPlot = create3DFieldPlot('canvas3d-std-plot', 0xef4444, 16.0);
-  mlxPlot = create3DFieldPlot('canvas3d-mlx-plot', 0x10b981, 2.5);
+  // 8 mT/mm rather than 2.5: the simulated 2px sweep now reaches ~7.9 mT/mm, so
+  // the old full scale pinned the head against the rim for most of the pattern.
+  mlxPlot = create3DFieldPlot('canvas3d-mlx-plot', 0x10b981, 8.0);
   initRadarCanvases();
 
   let previousFrameTime = performance.now();
@@ -647,12 +672,12 @@ export function initSfiDemo() {
     joyY += (targetJoyY - joyY) * smoothing;
     joyZ += (targetJoyZ - joyZ) * smoothing;
 
-    const TILT_MAX_RAD = 0.19;
-    const fJoyY = ORIENT_Y_FLIP * joyY;
-    let tiltAngle = Math.sqrt(joyX * joyX + fJoyY * fJoyY) * TILT_MAX_RAD;
-    // The 3D assembly was tilting to the opposite side of the live magnet, so
-    // reverse the tilt direction by half a turn (both X and Y at once).
-    let tiltDir = Math.atan2(fJoyY, joyX) + Math.PI;
+    const TILT_MAX_RAD = 0.38;
+    let tiltAngle = Math.hypot(joyX, joyY) * TILT_MAX_RAD;
+    // Lean follows the stick command: +Y leans up. X is inverted here because
+    // the CAD assembly's local X reads mirrored on screen, so +joyX appeared as
+    // a left-hand lean while the radar and the plots went right.
+    let tiltDir = Math.atan2(joyY, -joyX);
 
     // Rotate the joystick assembly rigidly about the spherical joint where the
     // stick passes through the dome opening. Every point of the assembly keeps
@@ -672,10 +697,15 @@ export function initSfiDemo() {
       joyAssemblyRef.position.add(new THREE.Vector3(0, -joyZ * 0.3, 0).applyQuaternion(q));
     }
 
-    // Nominal magnetic field components
+    // Simulated absolute field (mT). Tilting the stick rotates the field, so the
+    // in-plane pair grows with tilt while Z trades against it: Bz then animates
+    // for the whole loop instead of sitting at exactly 22.0 until the press
+    // phase (the old model gave Bz only a joyZ term, so it looked frozen for the
+    // first half of the 24 s pattern). joyZ still adds the push.
+    const tiltMagnitude = Math.min(1, Math.hypot(joyX, joyY));
     let trueBx = joyX * 18.0;
-    let trueBy = fJoyY * 18.0;
-    let trueBz = joyZ * 12.0;
+    let trueBy = joyY * 18.0;
+    let trueBz = -SIM_TILT_Z_DROP_MT * tiltMagnitude + joyZ * 12.0;
 
     let noiseX = coilActive ? 6.2 + (Math.random() - 0.5) * 0.6 : 0;
     let noiseY = coilActive ? -5.8 + (Math.random() - 0.5) * 0.6 : 0;
@@ -685,10 +715,20 @@ export function initSfiDemo() {
     let stdBy = trueBy + noiseY;
     let stdBz = 22.0 + trueBz + noiseZ;
 
-    let mlxDBx = 6.5;
-    let mlxDBy = 6.5;
-    let mlxDBz = joyX * 2.5;
-    let mlxDBzY = fJoyY * 2.5;
+    // Simulated 2px gradients (mT/mm). At rest the in-plane pair dominates:
+    // X02 = Y13 = 6.5 and Z02 = Z13 = 0, i.e. alpha = beta = 90 and the radar
+    // sits centred. Displacement then ROTATES each pair, so all four channels -
+    // and the magnitude - animate. The previous model pinned X02/Y13 at a
+    // constant 6.5 and moved only the Z pair, so dBx/dx and dBy/dy never
+    // changed. Scaling a whole pair cannot move its atan2 angle, so the radius
+    // term is free to shape the magnitude without disturbing alpha/beta.
+    const simThetaX = joyX * SIM_DIFF_SWEEP_DEG * (Math.PI / 180);
+    const simThetaY = joyY * SIM_DIFF_SWEEP_DEG * (Math.PI / 180);
+    const simDiffR = SIM_DIFF_BASE_MT_MM * (1 + 0.5 * tiltMagnitude);
+    let mlxDBx = simDiffR * Math.cos(simThetaX);
+    let mlxDBy = simDiffR * Math.cos(simThetaY);
+    let mlxDBz = simDiffR * Math.sin(simThetaX);
+    let mlxDBzY = simDiffR * Math.sin(simThetaY);
 
     if (isLiveHardwareConnected && liveHardwarePacket && liveHardwarePacket.p0Raw) {
       stdBx = liveHardwarePacket.p0Raw.x / SINGLE_PIXEL_LSB_PER_MT + noiseX;
@@ -757,51 +797,64 @@ export function initSfiDemo() {
       targetJoyZ = pressed ? 1 : 0;
     }
 
-    updateSignalBarsUI(
-      displayStdBx, displayStdBy, displayStdBz,
-      displayMlxDBx, displayMlxDBy, displayMlxDBz, displayMlxDBzY,
-      sfi1px.signalStrength,
-      sfi2px.signalStrength,
-      tiltX,
-      tiltY
-    );
-
-    // PDF review: the θ (heading) readouts are removed; the two radars now show
-    // the calibrated α/β plus a field-strength head that flags weak / missing
-    // magnets (P5).
-    const magFlag = (mag, noMag, weakMag) => (mag < noMag ? 'no magnet' : mag < weakMag ? 'weak' : '');
-
-    // Top Summary (if unhidden) - alpha/beta from the differential formula.
-    const angleAlphaEl = document.getElementById('angle-alpha');
-    const angleBetaEl = document.getElementById('angle-beta');
-    if (angleAlphaEl) angleAlphaEl.innerText = dispAlpha.toFixed(1) + '°';
-    if (angleBetaEl) angleBetaEl.innerText = dispBeta.toFixed(1) + '°';
-
-    // Standard 3D Hall Radar Readouts
-    const magStdEl = document.getElementById('radar-mag-std');
-    const alphaStdEl = document.getElementById('radar-alpha-std');
-    const betaStdEl = document.getElementById('radar-beta-std');
-
-    if (magStdEl) {
-      const flag = magFlag(sfi1px.signalStrength, NO_MAG_STD_MT, WEAK_MAG_STD_MT);
-      magStdEl.innerText = sfi1px.signalStrength.toFixed(1) + ' mT' + (flag ? ` (${flag})` : '');
-    }
-    if (alphaStdEl) alphaStdEl.innerText = sfi1px.alphaDeg.toFixed(1) + '°';
-    if (betaStdEl) betaStdEl.innerText = sfi1px.betaDeg.toFixed(1) + '°';
-
-    // MLX90396 Differential SFI Radar Readouts (Desmos Calibrated)
-    const magMlxEl = document.getElementById('radar-mag-mlx');
-    const alphaMlxEl = document.getElementById('radar-alpha-mlx');
-    const betaMlxEl = document.getElementById('radar-beta-mlx');
-
-    if (magMlxEl) {
-      const flag = magFlag(sfi2px.signalStrength, NO_MAG_DIFF_MT_MM, WEAK_MAG_DIFF_MT_MM);
-      magMlxEl.innerText = sfi2px.signalStrength.toFixed(1) + ' mT/mm' + (flag ? ` (${flag})` : '');
-    }
-    if (alphaMlxEl) alphaMlxEl.innerText = dispAlpha.toFixed(1) + '°';
-    if (betaMlxEl) betaMlxEl.innerText = dispBeta.toFixed(1) + '°';
-
+    // Only the telemetry/diagnostics panes consume these readouts. The 3D CAD
+    // tab was paying for ~30 DOM writes on hidden elements every frame while the
+    // browser was already GPU-bound on the model; keep the sim running, but skip
+    // the writes when neither pane is on screen.
     const activeTab = document.querySelector('.tab-content.active')?.id;
+    const controlPaneVisible = activeTab === 'tab-telemetry' || activeTab === 'tab-diagnostics';
+
+    if (controlPaneVisible) {
+      updateSignalBarsUI(
+        displayStdBx, displayStdBy, displayStdBz,
+        displayMlxDBx, displayMlxDBy, displayMlxDBz, displayMlxDBzY,
+        sfi1px.signalStrength,
+        sfi2px.signalStrength,
+        tiltX,
+        tiltY
+      );
+
+      // PDF review: the θ (heading) readouts are removed; the two radars now show
+      // the calibrated α/β plus a field-strength head that flags weak / missing
+      // magnets (P5).
+      const magFlag = (mag, noMag, weakMag) => (mag < noMag ? 'no magnet' : mag < weakMag ? 'weak' : '');
+
+      // Top Summary (if unhidden) - alpha/beta from the differential formula.
+      const angleAlphaEl = document.getElementById('angle-alpha');
+      const angleBetaEl = document.getElementById('angle-beta');
+      if (angleAlphaEl) angleAlphaEl.innerText = dispAlpha.toFixed(1) + '°';
+      if (angleBetaEl) angleBetaEl.innerText = dispBeta.toFixed(1) + '°';
+
+      // Standard 3D Hall Radar Readouts
+      const magStdEl = document.getElementById('radar-mag-std');
+      const alphaStdEl = document.getElementById('radar-alpha-std');
+      const betaStdEl = document.getElementById('radar-beta-std');
+
+      if (magStdEl) {
+        const flag = magFlag(sfi1px.signalStrength, NO_MAG_STD_MT, WEAK_MAG_STD_MT);
+        magStdEl.innerText = sfi1px.signalStrength.toFixed(1) + ' mT' + (flag ? ` (${flag})` : '');
+      }
+      if (alphaStdEl) alphaStdEl.innerText = sfi1px.alphaDeg.toFixed(1) + '°';
+      if (betaStdEl) betaStdEl.innerText = sfi1px.betaDeg.toFixed(1) + '°';
+
+      // MLX90396 Differential SFI Radar Readouts (Desmos Calibrated)
+      const magMlxEl = document.getElementById('radar-mag-mlx');
+      const alphaMlxEl = document.getElementById('radar-alpha-mlx');
+      const betaMlxEl = document.getElementById('radar-beta-mlx');
+
+      if (magMlxEl) {
+        const flag = magFlag(sfi2px.signalStrength, NO_MAG_DIFF_MT_MM, WEAK_MAG_DIFF_MT_MM);
+        magMlxEl.innerText = sfi2px.signalStrength.toFixed(1) + ' mT/mm' + (flag ? ` (${flag})` : '');
+      }
+      if (alphaMlxEl) alphaMlxEl.innerText = dispAlpha.toFixed(1) + '°';
+      if (betaMlxEl) betaMlxEl.innerText = dispBeta.toFixed(1) + '°';
+
+      // The dial plots tilt, so show the two numbers the needle actually uses.
+      const tiltXEl = document.getElementById('radar-tilt-x');
+      const tiltYEl = document.getElementById('radar-tilt-y');
+      if (tiltXEl) tiltXEl.innerText = tiltX.toFixed(1) + '°';
+      if (tiltYEl) tiltYEl.innerText = tiltY.toFixed(1) + '°';
+    }
 
     if (activeTab === 'tab-telemetry') {
       telemetryVisualElapsed += deltaSeconds;
@@ -811,22 +864,27 @@ export function initSfiDemo() {
         const lastStd = stdTraceHistory[stdTraceHistory.length - 1];
         const lastMlx = mlxTraceHistory[mlxTraceHistory.length - 1];
 
-        // Keep both magnet heads centred on the joint; Z remains a readout.
-        if (!lastStd || Math.abs(lastStd.x - displayStdBx) > 0.05 || Math.abs(lastStd.y - displayStdBy) > 0.05) {
+        // Both magnet heads ride the same gimbal arc. `axial` is the shared
+        // press component, so a push slides each head down its tilted axis;
+        // the raw Z values stay in the readout boxes instead of being a fake
+        // height. The channel pair remains the horizontal projection.
+        if (!lastStd || Math.abs(lastStd.x - displayStdBx) > 0.05 || Math.abs(lastStd.y - displayStdBy) > 0.05
+            || Math.abs((lastStd.axial || 0) - joyZ) > 0.02) {
           stdTraceHistory.push({ 
             x: displayStdBx, 
             y: displayStdBy, 
-            z: 0,
+            axial: joyZ,
             rawZ: displayStdBz 
           });
         }
         
         // Preserve the differential plot's Z-gradient XY trajectory.
-        if (!lastMlx || Math.abs(lastMlx.x - displayMlxDBz) > 0.05 || Math.abs(lastMlx.y - displayMlxDBzY) > 0.05) {
+        if (!lastMlx || Math.abs(lastMlx.x - displayMlxDBz) > 0.05 || Math.abs(lastMlx.y - displayMlxDBzY) > 0.05
+            || Math.abs((lastMlx.axial || 0) - joyZ) > 0.02) {
           mlxTraceHistory.push({ 
             x: displayMlxDBz,
             y: displayMlxDBzY,
-            z: 0,
+            axial: joyZ,
             rawX: displayMlxDBx,
             rawY: displayMlxDBy,
             rawZx: displayMlxDBz,
@@ -840,24 +898,25 @@ export function initSfiDemo() {
         if (stdPlot) update3DPlot(stdPlot, stdTraceHistory, true);
         if (mlxPlot) update3DPlot(mlxPlot, mlxTraceHistory, false);
 
-        // Render the differential radar from its calibrated α/β angles.
+        // Legacy: in-plane field vector (Bx, By) with +Y up.
         const radarTargetStd = isLiveHardwareConnected ? null : { x: trueBx, y: trueBy };
-        // The dashed sim ring tracks the magnet only while the differential
-        // field is meaningful; on the all-zero start frame the gradients vanish
-        // (dead null), so atan2(0,0)=0 would pin the ring to the right corner
-        // and read as a broken element. Same threshold as the needle gate.
+        // Differential: the same commanded tilt that drives the dome, so the
+        // dial, the model and the Tilt X/Y readout always agree.
         const radarTargetMlx = isLiveHardwareConnected ? null
           : (Math.hypot(targetMlxDBx, targetMlxDBz, targetMlxDBy, targetMlxDBzY) > NO_MAG_DIFF_MT_MM
-            ? {
-                x: Math.atan2(targetMlxDBx, targetMlxDBz) * 180 / Math.PI,
-                y: Math.atan2(targetMlxDBy, targetMlxDBzY) * 180 / Math.PI
-              }
+            ? { x: targetJoyX * SIM_DIFF_SWEEP_DEG, y: targetJoyY * SIM_DIFF_SWEEP_DEG }
             : null);
 
-        drawRadar(radarCtxStd, displayStdBx, displayStdBy, radarTargetStd, '#ef4444', 'LEGACY 3D HALL', 28.0);
-        drawAngleRadar(radarCtxMlx, dispAlpha, dispBeta, radarTargetMlx, '#10b981');
+        // Both dials are scaled so the full-scale value reaches the rim: 18 mT
+        // of in-plane field, 90 degrees of tilt.
+        drawRadar(radarCtxStd, displayStdBx, displayStdBy, radarTargetStd, '#ef4444', RADAR_STD_FULL_MT);
+        drawTiltRadar(radarCtxMlx, tiltX, tiltY, radarTargetMlx, '#10b981');
       }
     } else if (activeTab === 'tab-idle' && mainSceneObj) {
+      // No manual frame cap here: requestAnimationFrame is already vsync-locked,
+      // and comparing `now - lastRender >= 1000/60` against rAF's own ~16.67 ms
+      // ticks can skip every other frame depending on where the timing lands,
+      // which shows up as judder rather than a smooth 30 fps.
       controls.update();
       renderer.render(scene, camera);
     }
@@ -926,7 +985,9 @@ function resizeRadarCanvases() {
   });
 }
 
-function drawRadar(ctx, curX, curY, target, themeColor, label, maxScale = 28.0) {
+// `label` used to be passed in ('LEGACY 3D HALL') but was never drawn - the card
+// badge already names the plot - so the parameter is gone.
+function drawRadar(ctx, curX, curY, target, themeColor, maxScale = RADAR_STD_FULL_MT) {
   if (!ctx || !ctx.canvas) return;
   const w = ctx.canvas.width;
   const h = ctx.canvas.height;
@@ -1004,15 +1065,28 @@ function drawRadar(ctx, curX, curY, target, themeColor, label, maxScale = 28.0) 
 }
 
 // The frame centre is α/β = 90°; a 90° change reaches the radar rim.
-function drawAngleRadar(ctx, alphaDeg, betaDeg, target, themeColor) {
+// Radar full-scale. Both dials are more sensitive than before: the needle was
+// only reaching the middle of the disc because the full scale was well above
+// the values actually seen. 16 mT of in-plane field / 60 deg of tilt now reach
+// the rim at full stick deflection.
+const RADAR_STD_FULL_MT = 16.0;
+const RADAR_TILT_FULL_DEG = 60.0;
+
+// Differential radar: a TILT scope, not an angle dial. The needle plots the
+// same (tiltX, tiltY) pair that drives the dome, so the dial and the model can
+// never disagree: centre = neutral, +60° reaches the rim on each axis. alpha and
+// beta stay in the readout box as numbers. (The old version plotted the raw
+// alpha/beta angles through (90 - a)/90, which folded +/- onto one needle and
+// pointed somewhere unrelated to the stick.)
+function drawTiltRadar(ctx, tiltXDeg, tiltYDeg, target, themeColor) {
   if (!ctx || !ctx.canvas) return;
   const w = ctx.canvas.width;
   const h = ctx.canvas.height;
   const cx = w / 2;
   const cy = h / 2;
   const radius = Math.min(cx, cy) - 25;
-  const xOf = (a) => (90 - a) / 90;
-  const yOf = (b) => (90 - b) / 90;
+  const xOf = (v) => v / RADAR_TILT_FULL_DEG;
+  const yOf = (v) => v / RADAR_TILT_FULL_DEG;
 
   // Clamp to the circular rim (same boundary behaviour as the legacy drawRadar).
   const clampPoint = (vx, vy) => {
@@ -1044,17 +1118,14 @@ function drawAngleRadar(ctx, alphaDeg, betaDeg, target, themeColor) {
   ctx.fillStyle = '#64748b';
   ctx.font = '10px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText('α 180°', cx - radius + 16, cy - 6);
-  ctx.fillText('β 180°', cx, cy + radius - 8);
-  ctx.fillText('α 0°', cx + radius - 22, cy - 6);
-  ctx.fillText('β 0°', cx, cy - radius + 14);
+  ctx.fillText(`X -${RADAR_TILT_FULL_DEG}°`, cx - radius + 24, cy - 6);
+  ctx.fillText(`Y -${RADAR_TILT_FULL_DEG}°`, cx, cy + radius - 8);
+  ctx.fillText(`X +${RADAR_TILT_FULL_DEG}°`, cx + radius - 24, cy - 6);
+  ctx.fillText(`Y +${RADAR_TILT_FULL_DEG}°`, cx, cy - radius + 14);
 
-  // Simulation reference: dashed ring at the true α/β position.
-      if (target && !isNaN(target.x) && !isNaN(target.y)) {
-        // The target comes from a raw atan2 (−180…180) while xOf/yOf assume
-        // the 0…180 band, so it goes through the same rim clamp as the needle
-        // instead of drawing radii outside the disc.
-        const [tx, ty] = clampPoint(xOf(target.x), yOf(target.y));
+  // Simulation reference: dashed ring at the commanded tilt.
+  if (target && Number.isFinite(target.x) && Number.isFinite(target.y)) {
+    const [tx, ty] = clampPoint(xOf(target.x), yOf(target.y));
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
     ctx.lineWidth = 1.5;
     ctx.setLineDash([3, 3]);
@@ -1064,8 +1135,8 @@ function drawAngleRadar(ctx, alphaDeg, betaDeg, target, themeColor) {
     ctx.setLineDash([]);
   }
 
-  if (!isNaN(alphaDeg) && !isNaN(betaDeg)) {
-    const [mx, my] = clampPoint(xOf(alphaDeg), yOf(betaDeg));
+  if (Number.isFinite(tiltXDeg) && Number.isFinite(tiltYDeg)) {
+    const [mx, my] = clampPoint(xOf(tiltXDeg), yOf(tiltYDeg));
     const px = cx + mx * radius;
     const py = cy - my * radius;
 
@@ -1089,22 +1160,57 @@ function drawAngleRadar(ctx, alphaDeg, betaDeg, target, themeColor) {
 // Shared floor height for the 3D field plots: the grid, the axis triad and the
 // magnet hover height all key off this so they can never drift apart.
 const PLOT_FLOOR_Y = -3.2;
-// Hover of the magnet head above the floor: it sits on the grid, low and centred.
-const PLOT_HEAD_HOVER = 0.4;
+// Height of the magnet above the floor at zero tilt. The gimbal arc below drops
+// the head as it swings out, so it needs enough clearance to stay above the grid.
+const PLOT_HEAD_HOVER = 1.3;
 // Clamp radius for the head/trail: a spike pins at the rim instead of leaving
 // the grid, mirroring how the radars clamp to their rim.
 const PLOT_MAX_R = 3.0;
+// Virtual gimbal arm from the pivot (below the grid) to the magnet at neutral.
+// The horizontal channel value sets how far the arm swings out; the remaining
+// vertical component gives the dome arc the magnet rides on, exactly like the
+// Dome Kinematics tab. Press travel slides the head along that tilted arm.
+const PLOT_GIMBAL_ARM = 5.5;
+const PLOT_AXIAL_TRAVEL = 0.55;
+const PLOT_UP = new THREE.Vector3(0, 1, 0);
+
+// Project a horizontal channel pair onto the gimbal arc. `axial` is the press
+// component (0..1): positive slides the magnet down its own tilted axis toward
+// the pivot, matching the stick in the Dome Kinematics tab.
+function projectPlotPoint(hx, hz, axial = 0) {
+  const r = Math.hypot(hx, hz);
+  const radial = Math.min(r, PLOT_MAX_R);
+  const nx = r > 0 ? hx / r : 0;
+  const nz = r > 0 ? hz / r : 0;
+  const x = nx * radial;
+  const z = nz * radial;
+
+  const arm = PLOT_GIMBAL_ARM;
+  const rise = Math.sqrt(Math.max(1e-4, arm * arm - radial * radial));
+  // Unit vector from the virtual pivot to the magnet (the gimbal axis).
+  const axis = new THREE.Vector3(x, rise, z).normalize();
+
+  const press = Math.max(-1, Math.min(1, Number.isFinite(axial) ? axial : 0));
+  const slide = press * PLOT_AXIAL_TRAVEL;
+  const baseY = PLOT_FLOOR_Y + PLOT_HEAD_HOVER - arm;
+  return {
+    x: x - axis.x * slide,
+    y: baseY + rise - axis.y * slide,
+    z: z - axis.z * slide,
+    axis
+  };
+}
 
 // --- Floating XYZ orientation badge -----------------------------------------
 // A tiny self-contained scene drawn as an overlay in each plot's top-left
 // corner. Its camera is slaved to the main plot camera, so the triad spins with
 // the view exactly like a CAD "view cube". No backdrop — the arrows float.
 // Sensor frame, not the raw three.js world frame: the grid floor is the chip's
-// XY plane (X right, Y depth = world Z) and Z points up out of the board — the
-// same convention the radars and the datasheet use.
+// XY plane. X is world +X and sensor +Y is world -Z, chosen so that both axes
+// read the same way on screen as on the radar dial (right = +X, up = +Y).
 const GIZMO_AXES = [
   { dir: [1, 0, 0], color: 0xef4444, label: 'X' }, // floor, sensor +X
-  { dir: [0, 0, 1], color: 0x22c55e, label: 'Y' }, // floor, sensor +Y
+  { dir: [0, 0, -1], color: 0x22c55e, label: 'Y' }, // floor, sensor +Y
   { dir: [0, 1, 0], color: 0x3b82f6, label: 'Z' }  // up, normal to the board
 ];
 
@@ -1215,7 +1321,10 @@ function create3DFieldPlot(elementId, ringColor, fullScale = 28.0) {  const el =
   const w = el.clientWidth || 320;
   const h = el.clientHeight || 260;
   const plotCamera = new THREE.PerspectiveCamera(40, w / h, 0.1, 100);
-  plotCamera.position.set(7, 4.5, 9);
+  // Near-frontal, elevated view: screen right ≈ sensor +X and screen up ≈ sensor
+  // +Y, so the head moves in the same direction as the radar needle. A 45°
+  // azimuth (the old 7,4.5,9) threw +Y down-left, opposite the dial.
+  plotCamera.position.set(2, 7, 11);
 
   const plotRenderer = new THREE.WebGLRenderer({ antialias: true });
   plotRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
@@ -1262,16 +1371,17 @@ function create3DFieldPlot(elementId, ringColor, fullScale = 28.0) {  const el =
   // 6mm Cylindrical Magnet Assembly
   const magnetGroup = new THREE.Group();
 
+  // Same N/S palette as the Twist panel: dark charcoal north, gold south.
   const northPole = new THREE.Mesh(
     new THREE.CylinderGeometry(0.55, 0.55, 0.35, 24),
-    new THREE.MeshStandardMaterial({ color: 0xff1144, roughness: 0.25, metalness: 0.4 })
+    new THREE.MeshStandardMaterial({ color: 0x1E242B, roughness: 0.2, metalness: 0.3 })
   );
   northPole.position.y = -0.175;
   magnetGroup.add(northPole);
 
   const southPole = new THREE.Mesh(
     new THREE.CylinderGeometry(0.55, 0.55, 0.35, 24),
-    new THREE.MeshStandardMaterial({ color: 0x0088ff, roughness: 0.25, metalness: 0.4 })
+    new THREE.MeshStandardMaterial({ color: 0xEAA320, roughness: 0.2, metalness: 0.3 })
   );
   southPole.position.y = 0.175;
   magnetGroup.add(southPole);
@@ -1322,24 +1432,20 @@ function update3DPlot(plot, history, isLegacy) {
   // Subtract before scaling so head and trail recentre together.
   const zx = (plot.zero && Number.isFinite(plot.zero.x)) ? plot.zero.x : 0;
   const zy = (plot.zero && Number.isFinite(plot.zero.y)) ? plot.zero.y : 0;
-  // Height is a fixed hover just above the floor, NOT the absolute Bz: mapping
-  // absolute Bz (~28 mT live) to height parked the magnet several units up and
-  // made it bob with field strength. Bz still drives the numeric boxes, the
-  // radar and the press threshold - the 3D head shows horizontal position only.
-  const hoverY = PLOT_FLOOR_Y + PLOT_HEAD_HOVER;
-
-  const clampR = (hx, hz) => {
-    const r = Math.hypot(hx, hz);
-    if (r <= PLOT_MAX_R || r === 0) return [hx, hz];
-    return [hx * PLOT_MAX_R / r, hz * PLOT_MAX_R / r];
-  };
-
+  // The channel pair is the horizontal projection of the magnet's swing. Each
+  // point is lifted onto the gimbal arc so the head and trail follow the same
+  // dome path as the CAD model in the Dome Kinematics tab, and the press travel
+  // slides along the local (tilted) axis rather than being a flat-plane offset.
   for (let i = 0; i < len; i++) {
     const pt = history[i];
-    const [hx, hz] = clampR(-(pt.x - zx) * SCALE, -(pt.y - zy) * SCALE);
-    positions[i * 3 + 0] = hx;
-    positions[i * 3 + 1] = hoverY;
-    positions[i * 3 + 2] = hz;
+    const p = projectPlotPoint(
+      (pt.x - zx) * SCALE,
+      -(pt.y - zy) * SCALE,
+      pt.axial
+    );
+    positions[i * 3 + 0] = p.x;
+    positions[i * 3 + 1] = p.y;
+    positions[i * 3 + 2] = p.z;
   }
 
   // Draw range ensures uninitialized slots in the buffer do not stretch to the origin
@@ -1348,8 +1454,11 @@ function update3DPlot(plot, history, isLegacy) {
 
   if (len > 0) {
     const last = history[len - 1];
-    const zOffset = last.z || 0;
-    const [px, pz] = clampR(-(last.x - zx) * SCALE, -(last.y - zy) * SCALE);
+    const head = projectPlotPoint(
+      (last.x - zx) * SCALE,
+      -(last.y - zy) * SCALE,
+      last.axial
+    );
     let velocity = 0;
 
     if (len > 1) {
@@ -1364,10 +1473,10 @@ function update3DPlot(plot, history, isLegacy) {
     const velocityEl = document.getElementById(isLegacy ? 'plot-std-velocity' : 'plot-mlx-velocity');
     if (velocityEl) velocityEl.textContent = `v ${(velocity * 30).toFixed(1)} px/s`;
 
-    // The head rides the floor at the fixed hover height and stays upright: the
-    // old code leaned it by ±px/pz, a fake tilt unrelated to any measurement.
-    plot.headMesh.position.set(px, hoverY, pz);
-    plot.headMesh.rotation.set(0, 0, 0);
+    // Sit the magnet on the gimbal arm and align its axis with that arm, so it
+    // leans out over the grid exactly like the tilted stick in the other tab.
+    plot.headMesh.position.set(head.x, head.y, head.z);
+    plot.headMesh.quaternion.setFromUnitVectors(PLOT_UP, head.axis);
 
     if (isLegacy) {
       setBoxVal('plot-std-bx', last.x);
