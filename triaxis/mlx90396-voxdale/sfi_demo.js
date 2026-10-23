@@ -674,9 +674,10 @@ export function initSfiDemo() {
 
     const TILT_MAX_RAD = 0.38;
     let tiltAngle = Math.hypot(joyX, joyY) * TILT_MAX_RAD;
-    // Lean follows the stick command: +Y leans up. X is inverted here because
-    // the CAD assembly's local X reads mirrored on screen, so +joyX appeared as
-    // a left-hand lean while the radar and the plots went right.
+    // Lean follows the stick command: +Y leans up. X is inverted because the CAD
+    // assembly's local X reads mirrored on screen - verified against the dials and
+    // confirmed by eye: +X must lean the stick to screen-left to look correct on
+    // this model, which is the opposite of the radars/plots' +X-to-the-right.
     let tiltDir = Math.atan2(joyY, -joyX);
 
     // Rotate the joystick assembly rigidly about the spherical joint where the
@@ -848,12 +849,6 @@ export function initSfiDemo() {
       }
       if (alphaMlxEl) alphaMlxEl.innerText = dispAlpha.toFixed(1) + '°';
       if (betaMlxEl) betaMlxEl.innerText = dispBeta.toFixed(1) + '°';
-
-      // The dial plots tilt, so show the two numbers the needle actually uses.
-      const tiltXEl = document.getElementById('radar-tilt-x');
-      const tiltYEl = document.getElementById('radar-tilt-y');
-      if (tiltXEl) tiltXEl.innerText = tiltX.toFixed(1) + '°';
-      if (tiltYEl) tiltYEl.innerText = tiltY.toFixed(1) + '°';
     }
 
     if (activeTab === 'tab-telemetry') {
@@ -898,19 +893,10 @@ export function initSfiDemo() {
         if (stdPlot) update3DPlot(stdPlot, stdTraceHistory, true);
         if (mlxPlot) update3DPlot(mlxPlot, mlxTraceHistory, false);
 
-        // Legacy: in-plane field vector (Bx, By) with +Y up.
-        const radarTargetStd = isLiveHardwareConnected ? null : { x: trueBx, y: trueBy };
-        // Differential: the same commanded tilt that drives the dome, so the
-        // dial, the model and the Tilt X/Y readout always agree.
-        const radarTargetMlx = isLiveHardwareConnected ? null
-          : (Math.hypot(targetMlxDBx, targetMlxDBz, targetMlxDBy, targetMlxDBzY) > NO_MAG_DIFF_MT_MM
-            ? { x: targetJoyX * SIM_DIFF_SWEEP_DEG, y: targetJoyY * SIM_DIFF_SWEEP_DEG }
-            : null);
-
-        // Both dials are scaled so the full-scale value reaches the rim: 18 mT
-        // of in-plane field, 90 degrees of tilt.
-        drawRadar(radarCtxStd, displayStdBx, displayStdBy, radarTargetStd, '#ef4444', RADAR_STD_FULL_MT);
-        drawTiltRadar(radarCtxMlx, tiltX, tiltY, radarTargetMlx, '#10b981');
+        // Both dials are scaled so the full-scale value reaches the rim: 16 mT
+        // of in-plane field, 60 degrees of tilt.
+        drawRadar(radarCtxStd, displayStdBx, displayStdBy, '#ef4444', RADAR_STD_FULL_MT);
+        drawTiltRadar(radarCtxMlx, tiltX, tiltY, '#10b981');
       }
     } else if (activeTab === 'tab-idle' && mainSceneObj) {
       // No manual frame cap here: requestAnimationFrame is already vsync-locked,
@@ -987,7 +973,7 @@ function resizeRadarCanvases() {
 
 // `label` used to be passed in ('LEGACY 3D HALL') but was never drawn - the card
 // badge already names the plot - so the parameter is gone.
-function drawRadar(ctx, curX, curY, target, themeColor, maxScale = RADAR_STD_FULL_MT) {
+function drawRadar(ctx, curX, curY, themeColor, maxScale = RADAR_STD_FULL_MT) {
   if (!ctx || !ctx.canvas) return;
   const w = ctx.canvas.width;
   const h = ctx.canvas.height;
@@ -1024,22 +1010,8 @@ function drawRadar(ctx, curX, curY, target, themeColor, maxScale = RADAR_STD_FUL
   ctx.fillText('180° (-X)', cx - radius + 22, cy - 6);
   ctx.fillText('270° (-Y)', cx, cy + radius - 8);
 
-  // Target reticle (simulation reference)
-  if (target) {
-    const targetDist = Math.hypot(target.x, target.y);
-    const clampedTargetDist = Math.min(targetDist, maxScale);
-    const targetScale = targetDist > 0 ? (clampedTargetDist / targetDist) : 1;
-    const targetPxX = cx + ((target.x * targetScale) / maxScale) * radius;
-    const targetPxY = cy - ((target.y * targetScale) / maxScale) * radius;
-
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.arc(targetPxX, targetPxY, 8, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
+  // (The old dashed "simulation target" reticle was removed: it duplicated the
+  // needle on a second, unsmoothed path and could spill past the rim.)
 
   // Measured vector (Solid arrow) with boundary clamping
   const measuredDist = Math.hypot(curX, curY);
@@ -1078,7 +1050,7 @@ const RADAR_TILT_FULL_DEG = 60.0;
 // beta stay in the readout box as numbers. (The old version plotted the raw
 // alpha/beta angles through (90 - a)/90, which folded +/- onto one needle and
 // pointed somewhere unrelated to the stick.)
-function drawTiltRadar(ctx, tiltXDeg, tiltYDeg, target, themeColor) {
+function drawTiltRadar(ctx, tiltXDeg, tiltYDeg, themeColor) {
   if (!ctx || !ctx.canvas) return;
   const w = ctx.canvas.width;
   const h = ctx.canvas.height;
@@ -1123,18 +1095,7 @@ function drawTiltRadar(ctx, tiltXDeg, tiltYDeg, target, themeColor) {
   ctx.fillText(`X +${RADAR_TILT_FULL_DEG}°`, cx + radius - 24, cy - 6);
   ctx.fillText(`Y +${RADAR_TILT_FULL_DEG}°`, cx, cy - radius + 14);
 
-  // Simulation reference: dashed ring at the commanded tilt.
-  if (target && Number.isFinite(target.x) && Number.isFinite(target.y)) {
-    const [tx, ty] = clampPoint(xOf(target.x), yOf(target.y));
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.arc(cx + tx * radius, cy - ty * radius, 8, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
-
+  // (Dashed "simulation target" ring removed - the needle is the reading.)
   if (Number.isFinite(tiltXDeg) && Number.isFinite(tiltYDeg)) {
     const [mx, my] = clampPoint(xOf(tiltXDeg), yOf(tiltYDeg));
     const px = cx + mx * radius;

@@ -697,7 +697,7 @@
     .hidden { display: none !important; }
     /* Temporary graph-first layout: remove class="temporary-hidden" from any block to restore it. */
     .temporary-hidden { display: none !important; }
-    .telemetry-graphs-expanded .plot3d-canvas { height: 560px; }
+    .telemetry-graphs-expanded .plot3d-canvas { height: 504px; }
     @media (max-width: 900px) {
       .telemetry-hud-grid, .radar-matrix-row, .diagnostics-grid { grid-template-columns: 1fr; }
     }
@@ -707,7 +707,7 @@
       .header-row { align-items: flex-start; gap: var(--space-2); }
       #canvas3d-container { height: 420px; }
       .telemetry-summary { grid-template-columns: 1fr; }
-      .telemetry-graphs-expanded .plot3d-canvas { height: 420px; }
+      .telemetry-graphs-expanded .plot3d-canvas { height: 378px; }
     }
 
     /* --- HELP MODAL --- */
@@ -941,7 +941,7 @@
     &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&beta; = atan2( &radic;(Y13&sup2; + (k2&middot;(Z02 &minus; o21&middot;Y13))&sup2;), Z13 &minus; o22&middot;Y13 )<br/>
     Angles in degrees; calibration constants update live.
   </p>
-</div>
+
       <!-- TEMPORARILY HIDDEN: remove temporary-hidden to restore the angle summary. -->
       <details style="margin-bottom: var(--space-4); background: var(--color-surface-raised); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 10px 12px;">
         <summary style="cursor: pointer; font-family: var(--font-display); font-size: var(--font-size-xs); font-weight: 700; text-transform: uppercase; color: var(--color-ink);">
@@ -978,33 +978,33 @@
             b1 = atan2( &radic;(z1&sup2; + (k2&middot;(x1 &minus; o21&middot;z1))&sup2;), y1 &minus; o22&middot;z1 )
           </p>
           <p>
-            The default 2px selection runs the reviewer&rsquo;s <b>normal formula</b> (their step 1),
-            each in its own differential axis:
+            The plain <b>Normal</b> formula uses each gradient pair directly, one pair per axis:
           </p>
           <p style="font-family: ui-monospace, Consolas, monospace;">
             &alpha; = ATAN2(dB<sub>x</sub>/dx, dB<sub>z</sub>/dx) &nbsp;=&nbsp; ATAN2(X02, Z02)<br>
             &beta; = ATAN2(dB<sub>y</sub>/dy, dB<sub>z</sub>/dy) &nbsp;=&nbsp; ATAN2(Y13, Z13)
           </p>
           <p>
-            The radar plots that &alpha; on the X axis and &beta; on the Y axis in the same circular
-            polar style as the legacy radar (centre = (90&deg;,&nbsp;90&deg;)), and every readout
-            (summary, radar labels, Tilt&nbsp;X/Y) uses the same two numbers.
+            The differential radar is a tilt scope: its needle plots the Tilt&nbsp;X/Y pair that drives
+            the dome (centre = neutral, &plusmn;60&deg; reaches the rim), while &alpha;/&beta; stay in the
+            readout box as numbers.
           </p>
           <p>
-            Select <b>Enhanced</b> in Calibration Tuning to apply the reviewed cross-axis formula:
+            <b>Enhanced</b> (the default) applies the reviewed cross-axis formula:
           </p>
           <p style="font-family: ui-monospace, Consolas, monospace;">
             &alpha; = atan2( &radic;(X02&sup2; + (k1&middot;(Z13 &minus; o11&middot;X02))&sup2;), Z02 &minus; o12&middot;X02 )<br>
             &beta; = atan2( &radic;(Y13&sup2; + (k2&middot;(Z02 &minus; o21&middot;Y13))&sup2;), Z13 &minus; o22&middot;Y13 )
           </p>
           <p>
-            The selected formula feeds the &alpha;/&beta; readouts, radars and live gimbal.
+            The selected formula feeds the &alpha;/&beta; readouts and the live gimbal.
           </p>
           <p>
             Inputs and parameters are normalised against NaN/Infinity, so a bad sample can never break the loop.
           </p>
         </div>
       </details>
+      </div>
       <div class="telemetry-summary temporary-hidden" style="margin-bottom: var(--space-4);">
         <div><span>Alpha tilt</span><b id="angle-alpha">0.0°</b></div>
         <div><span>Beta tilt</span><b id="angle-beta">0.0°</b></div>
@@ -1138,8 +1138,6 @@
           <div class="plot-overlay" style="top: 12px; right: 14px; bottom: auto;">
             <div class="plot-overlay-boxes">
               <span class="xyz-value-box"><span class="xyz-value-lbl">|∇B|</span><b id="radar-mag-mlx">0.0 mT/mm</b></span>
-              <span class="xyz-value-box"><span class="xyz-value-lbl">Tilt X</span><b id="radar-tilt-x">0.0°</b></span>
-              <span class="xyz-value-box"><span class="xyz-value-lbl">Tilt Y</span><b id="radar-tilt-y">0.0°</b></span>
               <span class="xyz-value-box"><span class="xyz-value-lbl">α_diff</span><b id="radar-alpha-mlx">0.0°</b></span>
               <span class="xyz-value-box"><span class="xyz-value-lbl">β_diff</span><b id="radar-beta-mlx">0.0°</b></span>
             </div>

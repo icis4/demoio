@@ -202,8 +202,8 @@ const raw1 = calculate1pxAngles({ Bx: 31, By: 343, Bz: 8 });
 const scaled1 = calculate1pxAngles({ Bx: 31 / 20, By: 343 / 20, Bz: 8 / 20 });
 chk('1px angle is invariant under the mT scaling',
   near(raw1.alphaDeg, scaled1.alphaDeg) && near(raw1.betaDeg, scaled1.betaDeg));
-const raw2 = calculate2pxAngles({ dBxdx: 21, dBzdx: -3, dBydy: -61, dbzdy: 39 });
-const scaled2 = calculate2pxAngles({ dBxdx: 21 / 20, dBzdx: -3 / 20, dBydy: -61 / 20, dbzdy: 39 / 20 });
+const raw2 = calculate2pxAngles({ dBxdx: 21, dBzdx: -3, dBydy: -61, dBzdy: 39 });
+const scaled2 = calculate2pxAngles({ dBxdx: 21 / 20, dBzdx: -3 / 20, dBydy: -61 / 20, dBzdy: 39 / 20 });
 chk('2px angle is invariant under the mT/mm scaling',
   near(raw2.alphaDeg, scaled2.alphaDeg) && near(raw2.betaDeg, scaled2.betaDeg));
 
