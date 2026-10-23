@@ -574,12 +574,13 @@ async function runJoystickDemo() {
           await scpiQuery(":VDD:3V3");
         }
 
-        // Trim BOTH gain fields to the selected preset before streaming. The
-        // chip powers up with GAINSEL_2PX = 0, which leaves the differential
-        // (2px) channels near zero: the SFI radar then flags "no magnet" while
-        // the 1px legacy path still reads fine. Writing the preset here makes
-        // the 2px path work without the user having to touch the gain control.
-        await setVoxGain(voxGain);
+        // Apply each pixel's own trim before streaming. The chip powers up with
+        // GAINSEL_2PX = 0, which leaves the differential (2px) channels near
+        // zero: the SFI radar then flags "no magnet" while the 1px legacy path
+        // still reads fine. The two fields are independent, so both are written
+        // here with whatever value the user trimmed for that pixel.
+        await setVoxGain('1px', voxGains['1px']);
+        await setVoxGain('2px', voxGains['2px']);
       }
 
       const K_ROT_X = 0.10, K_ROT_Y = 0.10;
@@ -841,106 +842,133 @@ btnCalibReset?.addEventListener('click', () => {
   appendLog('[CALIBRATION] Reset parameters to default (K=1.0, Ortho=0.0, pitch=1.0 mm).\n', 'log-okprompt');
 });
 
-// --- 2. GAINSEL PRESET (1x / 3x) ---
+// --- 2. GAINSEL PRESET (1x / 3x), INDEPENDENT PER PIXEL ---
 // Two factory presets plus a free 0-63 trim field for the AE's final-test
-// value. The control lives in the Calibration Tuning drawer alongside the k/o
-// constants, and writes BOTH the 1px and 2px fields.
+// value. PX1 and PX2 each have their own control and are written separately:
+// GAINSEL_1PX lives in reg 0x00 bits [5:0], GAINSEL_2PX in bits [11:6], so a
+// trim on one path must never overwrite the other.
 const VOX_GAIN_COUNTS = { 9: '~72', 37: '~219' };
-const voxGainSeg = document.getElementById('vox-gain-seg');
-const voxGainHint = document.getElementById('vox-gain-hint');
-const voxGainReadback = document.getElementById('vox-gain-readback');
-// Default 3x: the AE specifies 37 for the 1px path, and Voxdale shows 1px and
-// 2px together, so both fields start at the higher trim.
-let voxGain = 37;
+const VOX_GAIN_MODES = ['1px', '2px'];
+// Defaults follow the AE's guidance for the two paths: 3x on the 1px legacy
+// channel, factory 1x on the differential (2px) pair. Each is independently
+// trimmable afterwards.
+const VOX_GAIN_DEFAULTS = { '1px': 37, '2px': 9 };
+let voxGains = { ...VOX_GAIN_DEFAULTS };
 
-function syncVoxGainControl() {
-  if (voxGainSeg) {
-    voxGainSeg.querySelectorAll('button[data-gain]').forEach((btn) => {
-      const on = parseInt(btn.dataset.gain, 10) === voxGain;
+const voxGainUI = {
+  '1px': {
+    seg: document.getElementById('vox-gain-seg-1px'),
+    hint: document.getElementById('vox-gain-hint-1px'),
+    readback: document.getElementById('vox-gain-readback-1px'),
+    custom: document.getElementById('vox-gain-custom-1px')
+  },
+  '2px': {
+    seg: document.getElementById('vox-gain-seg-2px'),
+    hint: document.getElementById('vox-gain-hint-2px'),
+    readback: document.getElementById('vox-gain-readback-2px'),
+    custom: document.getElementById('vox-gain-custom-2px')
+  }
+};
+
+function gainBits(g) {
+  return `0b${g.toString(2).padStart(6, '0')}`;
+}
+
+function syncVoxGainControl(mode) {
+  const ui = voxGainUI[mode];
+  if (!ui) return;
+  const g = voxGains[mode];
+  if (ui.seg) {
+    ui.seg.querySelectorAll('button[data-gain]').forEach((btn) => {
+      const on = parseInt(btn.dataset.gain, 10) === g;
       btn.setAttribute('aria-pressed', on ? 'true' : 'false');
       btn.className = on
         ? 'ds-button ds-button--primary ds-button--sm'
         : 'ds-button ds-button--secondary ds-button--sm';
     });
   }
-  if (voxGainHint) {
-    const counts = VOX_GAIN_COUNTS[voxGain] ? ` → ${VOX_GAIN_COUNTS[voxGain]}` : '';
-    voxGainHint.textContent = `1px & 2px gain = ${voxGain} (0b${voxGain.toString(2).padStart(6, '0')})${counts}`;
+  if (ui.hint) {
+    const counts = VOX_GAIN_COUNTS[g] ? ` → ${VOX_GAIN_COUNTS[g]}` : '';
+    ui.hint.textContent = `${mode} gain = ${g} (${gainBits(g)})${counts}`;
   }
-  const custom = document.getElementById('vox-gain-custom');
-  if (custom) custom.value = voxGain;
+  if (ui.custom) ui.custom.value = g;
 }
 
-function setVoxGainReadback(value) {
-  if (!voxGainReadback) return;
+function syncAllVoxGainControls() {
+  VOX_GAIN_MODES.forEach(syncVoxGainControl);
+}
+
+function setVoxGainReadback(mode, value) {
+  const el = voxGainUI[mode]?.readback;
+  if (!el) return;
   if (typeof value === 'number' && !isNaN(value)) {
-    voxGainReadback.textContent = `Device confirmed: ${value} (0b${value.toString(2).padStart(6, '0')})`;
-    voxGainReadback.style.color = '#59FFB0';
+    el.textContent = `Device confirmed: ${value} (${gainBits(value)})`;
+    el.style.color = '#59FFB0';
   } else {
-    voxGainReadback.textContent = 'Device: not read';
-    voxGainReadback.style.color = 'var(--color-ink-muted)';
+    el.textContent = 'Device: not read';
+    el.style.color = 'var(--color-ink-muted)';
   }
 }
 
-async function setVoxGain(gainVal, persist = false) {
+async function setVoxGain(mode, gainVal, persist = false) {
+  const targetMode = mode === '2px' ? '2px' : '1px';
   const requested = parseInt(gainVal, 10);
   // Accept any 0-63 code as well as the two presets: the AE's final-test trim
   // can sit between the factory 1x (9) and 3x (37) codes.
-  const g = Number.isFinite(requested) ? Math.min(63, Math.max(0, requested)) : voxGain;
-  voxGain = g;
-  syncVoxGainControl();
+  const g = Number.isFinite(requested)
+    ? Math.min(63, Math.max(0, requested))
+    : voxGains[targetMode];
+  voxGains[targetMode] = g;
+  syncVoxGainControl(targetMode);
 
   if (!isConnected || currentDriverType !== 'scpi') {
-    setVoxGainReadback(null);
+    setVoxGainReadback(targetMode, null);
     return false;
   }
 
   try {
-    const bits = `0b${g.toString(2).padStart(6, '0')}`;
-    appendLog(`[GAIN] Writing GAINSEL_1PX = ${g} (${bits}) and GAINSEL_2PX = ${g} (${bits})...\n`, 'log-okprompt');
-    // Voxdale compares the 1px and 2px paths, so both gain fields are trimmed
-    // together; writing only 1px would leave the differential (2px) gain on the
-    // sensor untouched and the GAINSEL_2PX preset meaningless.
-    const res1 = await activeDevice.setGain('1px', g, persist);
-    const res2 = await activeDevice.setGain('2px', g, persist);
-    if (res1.ok && res2.ok) {
-      const rb1 = await activeDevice.readGain('1px');
-      const rb2 = await activeDevice.readGain('2px');
-      const v1 = rb1 && !rb1.error ? rb1.value : null;
-      const v2 = rb2 && !rb2.error ? rb2.value : null;
-      if (v1 !== null && v2 !== null) {
-        voxGainReadback.textContent = `Device confirmed: 1px ${v1} (0b${v1.toString(2).padStart(6, '0')}), 2px ${v2} (0b${v2.toString(2).padStart(6, '0')})`;
-        voxGainReadback.style.color = '#59FFB0';
-      } else {
-        setVoxGainReadback(null);
-      }
-      const good = v1 === g && v2 === g;
-      appendLog(good ? `[GAIN] Verified 1px=${v1}, 2px=${v2} on device.\n` : '[GAIN] Write/verify returned no readback.\n', good ? 'log-okprompt' : 'log-badprompt');
+    appendLog(`[GAIN] Writing GAINSEL_${targetMode.toUpperCase()} = ${g} (${gainBits(g)})...\n`, 'log-okprompt');
+    const res = await activeDevice.setGain(targetMode, g, persist);
+    if (res.ok) {
+      const rb = await activeDevice.readGain(targetMode);
+      const v = rb && !rb.error ? rb.value : null;
+      setVoxGainReadback(targetMode, v);
+      const good = v === g;
+      appendLog(
+        good
+          ? `[GAIN] Verified ${targetMode}=${v} on device.\n`
+          : `[GAIN] Wrote ${targetMode}=${g} but readback returned ${v === null ? 'nothing' : v}.\n`,
+        good ? 'log-okprompt' : 'log-badprompt'
+      );
       return good;
     }
-    setVoxGainReadback(null);
-    appendLog(`[GAIN] Write/verify failed for ${g}.\n`, 'log-badprompt');
+    setVoxGainReadback(targetMode, null);
+    appendLog(`[GAIN] Write/verify failed for ${targetMode}=${g}.\n`, 'log-badprompt');
     return false;
   } catch (err) {
     appendLog(`[GAIN ERROR] ${err.message}\n`, 'log-badprompt');
-    setVoxGainReadback(null);
+    setVoxGainReadback(targetMode, null);
     return false;
   }
 }
 
+// Console hooks: setVoxGain('1px', 12), or the two pixel-specific shortcuts.
 window.setVoxGain = setVoxGain;
+window.setVoxGain1Px = (g, persist) => setVoxGain('1px', g, persist);
+window.setVoxGain2Px = (g, persist) => setVoxGain('2px', g, persist);
 
-voxGainSeg?.querySelectorAll('button[data-gain]').forEach((btn) => {
-  btn.addEventListener('click', () => setVoxGain(parseInt(btn.dataset.gain, 10)));
+VOX_GAIN_MODES.forEach((mode) => {
+  const ui = voxGainUI[mode];
+  ui.seg?.querySelectorAll('button[data-gain]').forEach((btn) => {
+    btn.addEventListener('click', () => setVoxGain(mode, parseInt(btn.dataset.gain, 10)));
+  });
+  ui.custom?.addEventListener('change', () => {
+    const v = parseInt(ui.custom.value, 10);
+    if (Number.isFinite(v)) setVoxGain(mode, v);
+  });
 });
 
-const voxGainCustom = document.getElementById('vox-gain-custom');
-voxGainCustom?.addEventListener('change', () => {
-  const v = parseInt(voxGainCustom.value, 10);
-  if (Number.isFinite(v)) setVoxGain(v);
-});
-
-syncVoxGainControl();
+syncAllVoxGainControls();
 
 // --- 3. SENSOR DIAGNOSTICS (thumbstick-style frame health + raw LSB) ---
 // Mirrors the MLX90396 thumbstick diagnostics: status byte decode, per-transfer

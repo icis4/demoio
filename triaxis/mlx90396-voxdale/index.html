@@ -697,7 +697,7 @@
     .hidden { display: none !important; }
     /* Temporary graph-first layout: remove class="temporary-hidden" from any block to restore it. */
     .temporary-hidden { display: none !important; }
-    .telemetry-graphs-expanded .plot3d-canvas { height: 560px; }
+    .telemetry-graphs-expanded .plot3d-canvas { height: 504px; }
     @media (max-width: 900px) {
       .telemetry-hud-grid, .radar-matrix-row, .diagnostics-grid { grid-template-columns: 1fr; }
     }
@@ -707,7 +707,7 @@
       .header-row { align-items: flex-start; gap: var(--space-2); }
       #canvas3d-container { height: 420px; }
       .telemetry-summary { grid-template-columns: 1fr; }
-      .telemetry-graphs-expanded .plot3d-canvas { height: 420px; }
+      .telemetry-graphs-expanded .plot3d-canvas { height: 378px; }
     }
 
     /* --- HELP MODAL --- */
@@ -853,21 +853,39 @@
   </div>
 
   <div style="display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; margin-bottom: var(--space-4);">
-    <div class="ds-field" style="min-width: 240px; margin-bottom: 0;">
-      <span class="ds-field__label">GAINSEL (electrical gain)</span>
-      <div id="vox-gain-seg" role="group" aria-label="Electrical gain preset" style="display: flex; gap: 6px;">
+    <div class="ds-field" style="min-width: 300px; margin-bottom: 0;">
+      <span class="ds-field__label">GAINSEL_1PX (electrical gain)</span>
+      <div id="vox-gain-seg-1px" role="group" aria-label="1px electrical gain preset" style="display: flex; gap: 6px;">
         <button type="button" class="ds-button ds-button--secondary ds-button--sm" data-gain="9" aria-pressed="false">1x (gain 9)</button>
         <button type="button" class="ds-button ds-button--primary ds-button--sm" data-gain="37" aria-pressed="true">3x (gain 37)</button>
       </div>
       <div style="display: flex; align-items: center; gap: 6px; margin-top: 6px;">
-        <label for="vox-gain-custom" style="font-size: var(--font-size-xs); color: var(--color-ink-muted);">trim</label>
-        <input id="vox-gain-custom" type="number" min="0" max="63" step="1" class="ds-field__input" style="width: 5.5rem;" />
-        <span style="font-size: var(--font-size-xs); color: var(--color-ink-muted);">0&ndash;63 (final-test value)</span>
+        <label for="vox-gain-custom-1px" style="font-size: var(--font-size-xs); color: var(--color-ink-muted);">trim</label>
+        <input id="vox-gain-custom-1px" type="number" min="0" max="63" step="1" class="ds-field__input" style="width: 5.5rem;" />
+        <span style="font-size: var(--font-size-xs); color: var(--color-ink-muted);">0&ndash;63 (PX1 only)</span>
       </div>
-      <small id="vox-gain-hint" style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
-        1px &amp; 2px gain = 37 (0b100101) &rarr; ~219
+      <small id="vox-gain-hint-1px" style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+        1px gain = 37 (0b100101) &rarr; ~219
       </small>
-      <small id="vox-gain-readback" style="display: block; margin-top: 2px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+      <small id="vox-gain-readback-1px" style="display: block; margin-top: 2px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+        Device: not read
+      </small>
+    </div>
+    <div class="ds-field" style="min-width: 300px; margin-bottom: 0;">
+      <span class="ds-field__label">GAINSEL_2PX (electrical gain)</span>
+      <div id="vox-gain-seg-2px" role="group" aria-label="2px electrical gain preset" style="display: flex; gap: 6px;">
+        <button type="button" class="ds-button ds-button--primary ds-button--sm" data-gain="9" aria-pressed="true">1x (gain 9)</button>
+        <button type="button" class="ds-button ds-button--secondary ds-button--sm" data-gain="37" aria-pressed="false">3x (gain 37)</button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; margin-top: 6px;">
+        <label for="vox-gain-custom-2px" style="font-size: var(--font-size-xs); color: var(--color-ink-muted);">trim</label>
+        <input id="vox-gain-custom-2px" type="number" min="0" max="63" step="1" class="ds-field__input" style="width: 5.5rem;" />
+        <span style="font-size: var(--font-size-xs); color: var(--color-ink-muted);">0&ndash;63 (PX2 only)</span>
+      </div>
+      <small id="vox-gain-hint-2px" style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
+        2px gain = 9 (0b001001) &rarr; ~72
+      </small>
+      <small id="vox-gain-readback-2px" style="display: block; margin-top: 2px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
         Device: not read
       </small>
     </div>
@@ -909,8 +927,8 @@
   <div class="ds-field" style="width: min(100%, 360px); margin-bottom: var(--space-3);">
     <label class="ds-field__label" for="sel-angle-formula">Differential angle formula</label>
     <select id="sel-angle-formula" class="ds-field__input">
-      <option value="normal" selected>Normal: ATAN2(X02, Z02) / ATAN2(Y13, Z13)</option>
-      <option value="enhanced">Enhanced: cross-axis calibrated</option>
+      <option value="normal">Normal: ATAN2(X02, Z02) / ATAN2(Y13, Z13)</option>
+      <option value="enhanced" selected>Enhanced: cross-axis calibrated</option>
     </select>
     <small style="display: block; margin-top: 4px; font-size: var(--font-size-xs); color: var(--color-ink-muted);">
       Enhanced mode applies k1, k2 and o11–o22 to the differential channels.
@@ -923,7 +941,7 @@
     &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&beta; = atan2( &radic;(Y13&sup2; + (k2&middot;(Z02 &minus; o21&middot;Y13))&sup2;), Z13 &minus; o22&middot;Y13 )<br/>
     Angles in degrees; calibration constants update live.
   </p>
-</div>
+
       <!-- TEMPORARILY HIDDEN: remove temporary-hidden to restore the angle summary. -->
       <details style="margin-bottom: var(--space-4); background: var(--color-surface-raised); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 10px 12px;">
         <summary style="cursor: pointer; font-family: var(--font-display); font-size: var(--font-size-xs); font-weight: 700; text-transform: uppercase; color: var(--color-ink);">
@@ -960,33 +978,33 @@
             b1 = atan2( &radic;(z1&sup2; + (k2&middot;(x1 &minus; o21&middot;z1))&sup2;), y1 &minus; o22&middot;z1 )
           </p>
           <p>
-            The default 2px selection runs the reviewer&rsquo;s <b>normal formula</b> (their step 1),
-            each in its own differential axis:
+            The plain <b>Normal</b> formula uses each gradient pair directly, one pair per axis:
           </p>
           <p style="font-family: ui-monospace, Consolas, monospace;">
             &alpha; = ATAN2(dB<sub>x</sub>/dx, dB<sub>z</sub>/dx) &nbsp;=&nbsp; ATAN2(X02, Z02)<br>
             &beta; = ATAN2(dB<sub>y</sub>/dy, dB<sub>z</sub>/dy) &nbsp;=&nbsp; ATAN2(Y13, Z13)
           </p>
           <p>
-            The radar plots that &alpha; on the X axis and &beta; on the Y axis in the same circular
-            polar style as the legacy radar (centre = (90&deg;,&nbsp;90&deg;)), and every readout
-            (summary, radar labels, Tilt&nbsp;X/Y) uses the same two numbers.
+            The differential radar is a tilt scope: its needle plots the Tilt&nbsp;X/Y pair that drives
+            the dome (centre = neutral, &plusmn;60&deg; reaches the rim), while &alpha;/&beta; stay in the
+            readout box as numbers.
           </p>
           <p>
-            Select <b>Enhanced</b> in Calibration Tuning to apply the reviewed cross-axis formula:
+            <b>Enhanced</b> (the default) applies the reviewed cross-axis formula:
           </p>
           <p style="font-family: ui-monospace, Consolas, monospace;">
             &alpha; = atan2( &radic;(X02&sup2; + (k1&middot;(Z13 &minus; o11&middot;X02))&sup2;), Z02 &minus; o12&middot;X02 )<br>
             &beta; = atan2( &radic;(Y13&sup2; + (k2&middot;(Z02 &minus; o21&middot;Y13))&sup2;), Z13 &minus; o22&middot;Y13 )
           </p>
           <p>
-            The selected formula feeds the &alpha;/&beta; readouts, radars and live gimbal.
+            The selected formula feeds the &alpha;/&beta; readouts and the live gimbal.
           </p>
           <p>
             Inputs and parameters are normalised against NaN/Infinity, so a bad sample can never break the loop.
           </p>
         </div>
       </details>
+      </div>
       <div class="telemetry-summary temporary-hidden" style="margin-bottom: var(--space-4);">
         <div><span>Alpha tilt</span><b id="angle-alpha">0.0°</b></div>
         <div><span>Beta tilt</span><b id="angle-beta">0.0°</b></div>
@@ -1087,7 +1105,7 @@
       <div class="battle-matrix-grid telemetry-graphs-expanded">
         <div class="battle-card fail">
           <div class="battle-card-header"><span>Legacy field and 6 mm magnet model</span><span class="ds-badge ds-badge--success">STRAY-SENSITIVE</span></div>
-          <div class="plot3d-canvas" id="canvas3d-std-plot"><div id="plot-overlay-std" class="plot-overlay" style="font-size: 13px;"><div class="plot-overlay-row"><span id="plot-std-velocity">v 0.0 px/s</span><span class="plot-overlay-units">mT</span></div><div class="plot-overlay-boxes"><span class="xyz-value-box"><span class="xyz-value-lbl">Bx</span><b id="plot-std-bx">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">By</span><b id="plot-std-by">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">Bz</span><b id="plot-std-bz">0.0</b></span></div></div></div>
+          <div class="plot3d-canvas" id="canvas3d-std-plot"><div id="plot-overlay-std" class="plot-overlay" style="font-size: 12px;"><div class="plot-overlay-row"><span id="plot-std-velocity">v 0.0 px/s</span><span class="plot-overlay-units">mT</span></div><div class="plot-overlay-boxes"><span class="xyz-value-box"><span class="xyz-value-lbl">Bx</span><b id="plot-std-bx">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">By</span><b id="plot-std-by">0.0</b></span><span class="xyz-value-box"><span class="xyz-value-lbl">Bz</span><b id="plot-std-bz">0.0</b></span></div></div></div>
         </div>
         <div class="battle-card pass">
           <div class="battle-card-header"><span>MLX90396 differential field and 6 mm magnet model</span><span class="ds-badge ds-badge--success">SFI COMPENSATED</span></div>
